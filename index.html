@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Avance | Painel de Gestão</title>
+<script src="chart.min.js"></script>
+<script src="chartjs-plugin-datalabels.min.js"></script>
+<script src="xlsx.full.min.js"></script>
+<style>
+:root{
+  --red:#D0021B;
+  --red-dark:#8C0011;
+  --red-soft:#FCE9EA;
+  --ink:#17181C;
+  --ink-soft:#5B5F6B;
+  --paper:#F4F4F6;
+  --card:#FFFFFF;
+  --line:#E6E6EA;
+  --green:#1C9A6C;
+  --amber:#E1971F;
+  --sidebar-w:250px;
+  font-variant-numeric: tabular-nums;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  background:var(--paper);
+  color:var(--ink);
+  display:flex;
+  min-height:100vh;
+}
+
+/* ---------- SIDEBAR ---------- */
+#sidebar{
+  width:var(--sidebar-w);
+  background:var(--ink);
+  color:#fff;
+  position:fixed;
+  top:0; left:0; bottom:0;
+  display:flex;
+  flex-direction:column;
+  z-index:50;
+  overflow-y:auto;
+}
+#sidebar .brand{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:22px 20px 18px 20px;
+  border-bottom:1px solid rgba(255,255,255,.08);
+}
+#sidebar .brand .mark{
+  width:34px;height:34px;
+  background:var(--red);
+  border-radius:8px;
+  position:relative;
+  overflow:hidden;
+  flex-shrink:0;
+}
+#sidebar .brand .mark::after{
+  content:"";
+  position:absolute;
+  width:60px;height:14px;
+  background:#fff;
+  opacity:.18;
+  transform:rotate(-35deg);
+  top:14px; left:-14px;
+}
+#sidebar .brand .txt{line-height:1.15;}
+#sidebar .brand .txt b{font-size:15.5px; letter-spacing:.3px; display:block;}
+#sidebar .brand .txt span{font-size:11px; color:#B9BCC6;}
+
+nav.menu{padding:14px 10px; flex:1;}
+nav.menu .grp-label{
+  font-size:10.5px;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  color:#8A8DA0;
+  padding:14px 12px 6px 12px;
+}
+nav.menu button{
+  width:100%;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  text-align:left;
+  background:transparent;
+  border:none;
+  color:#D7D8E2;
+  font-size:13.5px;
+  padding:9px 12px;
+  border-radius:8px;
+  cursor:pointer;
+  margin-bottom:2px;
+  transition:background .15s, color .15s;
+}
+nav.menu button .ic{font-size:15px; width:18px; text-align:center;}
+nav.menu button:hover{background:rgba(255,255,255,.06); color:#fff;}
+nav.menu button.active{background:var(--red); color:#fff; font-weight:600;}
+
+#sidebar .foot{
+  padding:14px 18px 18px 18px;
+  border-top:1px solid rgba(255,255,255,.08);
+  font-size:11px;
+  color:#8A8DA0;
+}
+#sidebar .foot b{color:#D7D8E2; display:block; margin-bottom:2px; font-size:11.5px;}
+
+/* ---------- MAIN ---------- */
+#main{
+  margin-left:var(--sidebar-w);
+  flex:1;
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+}
+header.topbar{
+  background:var(--card);
+  border-bottom:1px solid var(--line);
+  padding:16px 28px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  position:sticky;
+  top:0;
+  z-index:40;
+}
+header.topbar h1{font-size:19px; font-weight:700; letter-spacing:-.2px;}
+header.topbar .sub{font-size:12px; color:var(--ink-soft); margin-top:2px; font-weight:400;}
+header.topbar .right{display:flex; align-items:center; gap:14px;}
+.pill{
+  font-size:11px;
+  background:var(--paper);
+  border:1px solid var(--line);
+  color:var(--ink-soft);
+  padding:6px 12px;
+  border-radius:20px;
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.pill b{color:var(--ink);}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);}
+
+main.content{padding:26px 28px 60px 28px;}
+.page{display:none;}
+.page.active{display:block; animation:fadeIn .25s ease;}
+@keyframes fadeIn{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:translateY(0);}}
+
+.page-head{margin-bottom:20px;}
+.page-head h2{font-size:22px; font-weight:800; letter-spacing:-.3px;}
+.page-head p{font-size:13px; color:var(--ink-soft); margin-top:3px;}
+
+/* KPI cards */
+.kpi-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(190px,1fr));
+  gap:14px;
+  margin-bottom:22px;
+}
+.kpi{
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:16px 18px;
+  position:relative;
+  overflow:hidden;
+}
+.kpi::before{
+  content:"";
+  position:absolute;
+  top:0; right:0;
+  width:46px; height:46px;
+  background:var(--red);
+  opacity:.06;
+  clip-path:polygon(100% 0, 0 0, 100% 100%);
+}
+.kpi .lbl{font-size:11.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; font-weight:600;}
+.kpi .val{font-size:24px; font-weight:800; margin-top:6px; letter-spacing:-.4px;}
+.kpi .delta{font-size:11.5px; margin-top:6px; font-weight:600; display:inline-flex; align-items:center; gap:4px;}
+.delta.up{color:var(--red-dark);}
+.delta.down{color:var(--green);}
+.delta.flat{color:var(--ink-soft);}
+
+/* Cards / panels */
+.grid-2{display:grid; grid-template-columns:1.4fr 1fr; gap:16px; margin-bottom:16px;}
+.grid-3{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:16px;}
+@media(max-width:1100px){.grid-2,.grid-3{grid-template-columns:1fr;}}
+
+.panel{
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:18px 20px;
+}
+.panel h3{font-size:14px; font-weight:700; margin-bottom:2px;}
+.panel .hint{font-size:11.5px; color:var(--ink-soft); margin-bottom:14px;}
+.chart-wrap{position:relative; width:100%;}
+
+table{width:100%; border-collapse:collapse; font-size:12.5px;}
+table th{
+  text-align:left;
+  font-size:10.5px;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+  color:#fff;
+  background:var(--ink);
+  padding:9px 10px;
+}
+table th:first-child{border-radius:6px 0 0 6px;}
+table th:last-child{border-radius:0 6px 6px 0;}
+table td{padding:8px 10px; border-bottom:1px solid var(--line);}
+table tr:hover td{background:var(--red-soft);}
+table td.num, table th.num{text-align:right; font-variant-numeric:tabular-nums;}
+table td.rank{font-weight:700; color:var(--red-dark);}
+
+.badge{display:inline-block; padding:2px 8px; border-radius:20px; font-size:10.5px; font-weight:700;}
+.badge.red{background:var(--red-soft); color:var(--red-dark);}
+.badge.green{background:#E4F5EE; color:var(--green);}
+.badge.amber{background:#FCF1DE; color:var(--amber);}
+
+.overview-card{
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:18px;
+  cursor:pointer;
+  transition:transform .15s, box-shadow .15s, border-color .15s;
+  position:relative;
+  overflow:hidden;
+}
+.overview-card:hover{transform:translateY(-3px); box-shadow:0 10px 24px rgba(0,0,0,.08); border-color:var(--red);}
+.overview-card .top{display:flex; justify-content:space-between; align-items:flex-start;}
+.overview-card .ic{
+  width:38px;height:38px;
+  background:var(--red);
+  border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:18px;
+  color:#fff;
+}
+.overview-card .arrow{color:var(--ink-soft); font-size:13px;}
+.overview-card h4{font-size:13.5px; margin-top:14px; font-weight:700;}
+.overview-card .big{font-size:21px; font-weight:800; margin-top:4px;}
+.overview-card .foot{font-size:11.5px; color:var(--ink-soft); margin-top:6px;}
+.overview-card canvas{margin-top:10px; height:36px !important;}
+
+.empty-state{
+  text-align:center;
+  padding:50px 20px;
+  color:var(--ink-soft);
+}
+.empty-state .glyph{font-size:34px; margin-bottom:10px;}
+.empty-state h4{color:var(--ink); font-size:15px; margin-bottom:6px;}
+.empty-state p{font-size:12.5px; max-width:420px; margin:0 auto;}
+
+.legend-note{font-size:11px; color:var(--ink-soft); margin-top:10px;}
+
+.tabs{display:flex; gap:6px; margin-bottom:16px;}
+.tabs button{
+  background:var(--card);
+  border:1px solid var(--line);
+  color:var(--ink-soft);
+  font-size:12.5px;
+  font-weight:600;
+  padding:8px 16px;
+  border-radius:20px;
+  cursor:pointer;
+}
+.tabs button.active{background:var(--ink); color:#fff; border-color:var(--ink);}
+.subtab{display:none;}
+.subtab.active{display:block;}
+
+#entryFormArea label{
+  display:flex; flex-direction:column; gap:5px;
+  font-size:11.5px; font-weight:600; color:var(--ink-soft);
+}
+#entryFormArea input, #entryFormArea select{
+  font-family:inherit;
+  font-size:13.5px;
+  color:var(--ink);
+  padding:9px 11px;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:var(--paper);
+  outline:none;
+}
+#entryFormArea input:focus, #entryFormArea select:focus{ border-color:var(--red); background:#fff; }
+.entry-submit{
+  margin-top:16px;
+  background:var(--red);
+  color:#fff;
+  border:none;
+  padding:11px 20px;
+  border-radius:9px;
+  font-size:13px;
+  font-weight:700;
+  cursor:pointer;
+}
+.entry-submit:hover{ background:var(--red-dark); }
+.sub-tab-btn{
+  background:var(--paper);
+  border:1px solid var(--line);
+  color:var(--ink-soft);
+  font-size:12px;
+  font-weight:600;
+  padding:6px 14px;
+  border-radius:20px;
+  cursor:pointer;
+  margin-right:6px;
+}
+.sub-tab-btn.active{ background:var(--ink); color:#fff; border-color:var(--ink); }
+
+::-webkit-scrollbar{width:9px; height:9px;}
+::-webkit-scrollbar-thumb{background:#c7c8d1; border-radius:10px;}
+::-webkit-scrollbar-track{background:transparent;}
+
+@media(max-width:880px){
+  #sidebar{transform:translateX(-100%); transition:transform .2s;}
+  #sidebar.open{transform:translateX(0);}
+  #main{margin-left:0;}
+  #menuBtn{display:inline-flex !important;}
+}
+#menuBtn{
+  display:none;
+  align-items:center;justify-content:center;
+  width:34px;height:34px;
+  border-radius:8px;
+  border:1px solid var(--line);
+  background:var(--card);
+  cursor:pointer;
+  margin-right:10px;
+}
+</style>
+</head>
+<body>
+
+<aside id="sidebar">
+  <div class="brand">
+    <div class="mark"></div>
+    <div class="txt"><b>AVANCE</b><span>Painel de Gestão · BI</span></div>
+  </div>
+  <nav class="menu" id="navMenu">
+    <div class="grp-label">Visão Geral</div>
+    <button data-page="overview" class="active"><span class="ic">🏠</span> Painel Executivo</button>
+    <button data-page="entrada"><span class="ic">📥</span> Entrada de Dados</button>
+
+    <div class="grp-label">Frota &amp; Operação</div>
+    <button data-page="manutencao"><span class="ic">🔩</span> Manutenção de Carreta</button>
+    <button data-page="diesel"><span class="ic">⛽</span> Diesel</button>
+    <button data-page="compras"><span class="ic">🧰</span> Compras de Peças</button>
+    <button data-page="infracoes"><span class="ic">🚨</span> Infrações</button>
+    <button data-page="acidentes"><span class="ic">⚠️</span> Acidentes &amp; Incidentes</button>
+
+    <div class="grp-label">Pessoas</div>
+    <button data-page="folha"><span class="ic">💰</span> Folha (Benefícios+Salário)</button>
+    <button data-page="horaextra"><span class="ic">⏱️</span> Hora Extra</button>
+    <button data-page="atestados"><span class="ic">🩺</span> Atestados</button>
+  </nav>
+  <div class="foot">
+    <b>Fabiano da Silva Ribeiro</b>
+    Gestor de Suprimentos · Atualização manual dos dados
+  </div>
+</aside>
+
+<div id="main">
+  <header class="topbar">
+    <div style="display:flex; align-items:center;">
+      <div id="menuBtn" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</div>
+      <div>
+        <h1 id="pageTitle">Painel Executivo</h1>
+        <div class="sub" id="pageSub">Consolidado de indicadores · Avance Transporte Logístico</div>
+      </div>
+    </div>
+    <div class="right">
+      <div class="pill"><span class="dot"></span> Dados até <b id="lastUpdate">jun/2026</b></div>
+      <div class="pill">Ano base: <b>2025 / 2026</b></div>
+      <button onclick="exportDataJs()" style="background:var(--red); color:#fff; border:none; padding:8px 14px; border-radius:20px; font-size:11.5px; font-weight:700; cursor:pointer;">⬇ Exportar data.js</button>
+    </div>
+  </header>
+
+  <main class="content" id="content"></main>
+</div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
