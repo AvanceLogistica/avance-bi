@@ -120,7 +120,7 @@ async function loadFromSupabase(){
     if(!compras.length && !contas.length && !series.length) return false; // banco ainda vazio
 
     if(compras.length){
-      DATA.compras.comprasLancamentos = compras.map(r=>({ d:r.data, p:r.placa||"", l:r.local||"", c:r.categoria||"", i:r.item||"", v:Number(r.valor) }));
+      DATA.compras.comprasLancamentos = compras.map(r=>({ id:r.id, d:r.data, p:r.placa||"", l:r.local||"", c:r.categoria||"", i:r.item||"", v:Number(r.valor) }));
     }
     if(contas.length){
       DATA.contasPagar.lancamentos = contas.map(r=>({
@@ -309,6 +309,92 @@ function sumIf(labels, values, test){
   return s;
 }
 
+// Acessa DATA por um caminho tipo "horaExtraCusto.y2026" — usado pelos descritores de "desfazer"
+// abaixo, que precisam ser puro JSON (serializável em localStorage) pra sobreviver a um F5.
+function getByPath(path){
+  return path.split(".").reduce((o,k)=> o ? o[k] : undefined, DATA);
+}
+// Funções de recálculo referenciáveis por nome (um descritor salvo em localStorage não pode
+// guardar uma função direto, só o nome dela).
+const RECOMPUTE_FN = { recomputeDiesel, recomputeManutencao, recomputeFolha, recomputeHoraExtraCusto, recomputeHoraExtraQtd, recomputeInfracoes, deriveCompras };
+
+// Monta um DESCRITOR (objeto simples, serializável) de "desfazer" para um lançamento por período
+// (Diesel, Manutenção, Folha, Atestados, Infrações). Guarda o estado de ANTES do upsertPeriod: se o
+// período já existia, restaura os valores antigos; se era novo, remove a linha inteira.
+// Chame ANTES de chamar upsertPeriod.
+function prepararDesfazerPeriodo(containerPath, labelsKey, label, campos, recomputeName, sbTable, sbRowsBase){
+  const container = getByPath(containerPath);
+  const labels = container[labelsKey];
+  const idx = labels.indexOf(label);
+  const existed = idx !== -1;
+  const anteriores = {};
+  if(existed) campos.forEach(c=>{ anteriores[c] = (container[c] && container[c][idx]!=null) ? container[c][idx] : null; });
+  return { kind:"periodo", containerPath, labelsKey, label, campos, existed, anteriores, recomputeName, sbTable, sbRowsBase };
+}
+
+// Mesma ideia, mas para séries de índice fixo (Hora Extra, Acidentes por mês) onde o "lançamento"
+// só substitui o valor de um mês que já existe no array — nunca cria nem remove posição.
+function prepararDesfazerIndice(containerPath, idx, recomputeName, sbRow){
+  const arr = getByPath(containerPath);
+  return { kind:"indice", containerPath, idx, anterior: arr[idx]!=null ? arr[idx] : null, recomputeName, sbRow };
+}
+
+// Descritor de "desfazer" para uma linha nova numa lista (Compras de Peças, Contas a Pagar,
+// Acidentes · plano de ação) — encontra a linha pelo id local/do banco, não por referência de
+// objeto, pra funcionar mesmo depois de recarregar a página.
+function prepararDesfazerArrayById(containerPath, itemId, sbTable){
+  return { kind:"arrayById", containerPath, itemId, sbId:null, sbTable };
+}
+function localId(){
+  return (crypto.randomUUID ? crypto.randomUUID() : ("id_" + Date.now() + "_" + Math.random().toString(36).slice(2)));
+}
+
+// Executa um descritor de "desfazer" (chamado ao clicar em Excluir no histórico de lançamentos —
+// pode ser um descritor recém-criado nesta sessão ou um recarregado do localStorage após um F5).
+async function executarUndo(d){
+  if(!d) return;
+  if(d.kind === "periodo"){
+    const container = getByPath(d.containerPath);
+    const labels = container[d.labelsKey];
+    const i = labels.indexOf(d.label);
+    if(i === -1) return;
+    if(d.existed){
+      d.campos.forEach(c=>{ if(container[c]) container[c][i] = d.anteriores[c]; });
+    } else {
+      labels.splice(i,1);
+      d.campos.forEach(c=>{ if(container[c]) container[c].splice(i,1); });
+    }
+    if(d.recomputeName && RECOMPUTE_FN[d.recomputeName]) RECOMPUTE_FN[d.recomputeName]();
+    if(sb && d.sbTable && d.sbRowsBase){
+      if(d.existed){
+        await sb.from(d.sbTable).upsert(d.sbRowsBase.map(r=>({ ...r, valor: d.anteriores[r.campo] })), { onConflict:"modulo,campo,label" });
+      } else {
+        for(const r of d.sbRowsBase) await sb.from(d.sbTable).delete().match({ modulo:r.modulo, campo:r.campo, label:r.label });
+      }
+    }
+  } else if(d.kind === "indice"){
+    const arr = getByPath(d.containerPath);
+    arr[d.idx] = d.anterior;
+    if(d.recomputeName && RECOMPUTE_FN[d.recomputeName]) RECOMPUTE_FN[d.recomputeName]();
+    if(sb && d.sbRow) await sb.from("series_periodo").upsert({ ...d.sbRow, valor:d.anterior }, { onConflict:"modulo,campo,label" });
+  } else if(d.kind === "arrayById"){
+    const arr = getByPath(d.containerPath);
+    const i = arr.findIndex(r=>r.id === d.itemId);
+    if(i>=0) arr.splice(i,1);
+    if(d.containerPath === "compras.comprasLancamentos") deriveCompras();
+    if(sb && d.sbTable && d.sbId) await sb.from(d.sbTable).delete().eq("id", d.sbId);
+  } else if(d.kind === "folhaAnual"){
+    updateFolhaAnual(d.anterior25, d.anterior26);
+  } else if(d.kind === "bulkImportCompras"){
+    DATA.compras.comprasLancamentos = d.anteriores;
+    deriveCompras();
+    if(sb){
+      await sb.from("compras_lancamentos").delete().not("id","is",null);
+      if(d.anteriores.length) await sbBulkInsert("compras_lancamentos", d.anteriores.map(r=>({ data:r.d, placa:r.p, local:r.l, categoria:r.c, item:r.i, valor:r.v })));
+    }
+  }
+}
+
 function recomputeManutencao(){
   const m = DATA.manutencao;
   m.totalGeral = m.manutencaoGeral.map((v,i)=> (v||0)+(m.pinturaTeto[i]||0)+(m.outrosServicos[i]||0));
@@ -390,12 +476,50 @@ function deriveCompras(){
   c.top10CaminhoesPct = totalGeral ? Math.round(top10Sum/totalGeral*100) : 0;
 }
 
-// Log de lançamentos feitos nesta sessão (só para feedback visual, não persiste sozinho)
+// Histórico de lançamentos feitos por aqui (feedback visual + permite excluir um lançamento errado).
+// Fica salvo no localStorage deste navegador, então sobrevive a um F5 — some só se você limpar os
+// dados do site ou trocar de navegador/computador.
+const SESSION_LOG_KEY = "avanceBI_sessionLog";
 const sessionLog = [];
-function logEntry(modulo, descricao){
-  sessionLog.unshift({ hora:new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}), modulo, descricao });
-  if(sessionLog.length > 30) sessionLog.pop();
+let sessionLogSeq = 0;
+function salvarSessionLogLocal(){
+  try{ localStorage.setItem(SESSION_LOG_KEY, JSON.stringify(sessionLog)); }
+  catch(e){ console.warn("Não foi possível salvar o histórico de lançamentos neste navegador:", e); }
 }
+function carregarSessionLogLocal(){
+  try{
+    const raw = localStorage.getItem(SESSION_LOG_KEY);
+    if(!raw) return;
+    const salvos = JSON.parse(raw);
+    if(Array.isArray(salvos)){
+      sessionLog.push(...salvos);
+      sessionLogSeq = salvos.reduce((m,l)=>Math.max(m, l.id||0), 0);
+    }
+  }catch(e){ console.warn("Não foi possível carregar o histórico de lançamentos salvo:", e); }
+}
+function logEntry(modulo, descricao, undo){
+  sessionLog.unshift({ id: ++sessionLogSeq, hora:new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}), modulo, descricao, undo });
+  if(sessionLog.length > 30) sessionLog.pop();
+  salvarSessionLogLocal();
+}
+// Chamado pelo botão "Excluir" na tabela de "Lançamentos desta sessão": desfaz o lançamento
+// (restaura o valor anterior, ou remove o período/linha se era novo) local e no banco.
+window.deleteSessionEntry = async (id) => {
+  const idx = sessionLog.findIndex(l=>l.id===id);
+  if(idx===-1) return;
+  const entry = sessionLog[idx];
+  if(!confirm(`Excluir este lançamento?\n\n${entry.modulo} · ${entry.descricao}`)) return;
+  if(entry.undo){
+    try{ await executarUndo(entry.undo); }
+    catch(e){ toast("⚠ Falha ao excluir: " + e.message); return; }
+  }
+  sessionLog.splice(idx,1);
+  salvarSessionLogLocal();
+  renderSessionLog();
+  const activePage = document.querySelector('nav.menu button.active')?.dataset.page;
+  if(activePage) navigate(activePage);
+  toast("Lançamento excluído ✓");
+};
 function toast(msg){
   const t = document.createElement("div");
   t.textContent = msg;
@@ -1164,7 +1288,7 @@ renderers.entrada = () => `
     </div>
     <div class="panel">
       <h3>Lançamentos desta sessão</h3>
-      <div class="hint">Histórico do que você adicionou agora (some se recarregar a página sem exportar)</div>
+      <div class="hint">Fica salvo neste navegador (sobrevive a recarregar a página) — clique em Excluir pra desfazer um lançamento errado</div>
       <div id="sessionLogArea"><div class="empty-state" style="padding:24px;"><div class="glyph">🕓</div><p>Nenhum lançamento ainda nesta sessão.</p></div></div>
     </div>
   </div>
@@ -1177,8 +1301,13 @@ function renderSessionLog(){
     el.innerHTML = `<div class="empty-state" style="padding:24px;"><div class="glyph">🕓</div><p>Nenhum lançamento ainda nesta sessão.</p></div>`;
     return;
   }
-  el.innerHTML = `<table><thead><tr><th>Hora</th><th>Módulo</th><th>Lançamento</th></tr></thead><tbody>
-    ${sessionLog.map(l=>`<tr><td>${l.hora}</td><td>${l.modulo}</td><td>${l.descricao}</td></tr>`).join("")}
+  el.innerHTML = `<table><thead><tr><th>Hora</th><th>Módulo</th><th>Lançamento</th><th></th></tr></thead><tbody>
+    ${sessionLog.map(l=>`<tr><td>${l.hora}</td><td>${l.modulo}</td><td>${l.descricao}</td><td style="text-align:right;">
+      <button type="button" onclick="deleteSessionEntry(${l.id})" title="Excluir este lançamento"
+        style="border:1px solid var(--line); background:#fff; color:var(--red); border-radius:6px; padding:4px 8px; font-size:12px; cursor:pointer;">
+        🗑 Excluir
+      </button>
+    </td></tr>`).join("")}
   </tbody></table>`;
 }
 
@@ -1418,9 +1547,10 @@ window.importComprasXlsx = async () => {
       return;
     }
 
+    const anteriores = DATA.compras.comprasLancamentos;
     DATA.compras.comprasLancamentos = novos;
     deriveCompras();
-    logEntry("Compras (importação)", `${novos.length} lançamentos importados de "${file.name}"`);
+    logEntry("Compras (importação)", `${novos.length} lançamentos importados de "${file.name}"`, { kind:"bulkImportCompras", anteriores });
     renderSessionLog();
 
     const datas = novos.map(r=>r.d).sort();
@@ -1464,12 +1594,13 @@ window.submitContaPagar = async () => {
   if(!prestador || isNaN(valor) || !vencimento){ toast("Preencha ao menos prestador, valor e vencimento."); return; }
 
   const novaConta = {
-    id: "cp_" + Date.now(), prestador, cnpj, tipoServico: tipo || "Outros", valor, formaPagamento: forma,
+    id: localId(), prestador, cnpj, tipoServico: tipo || "Outros", valor, formaPagamento: forma,
     dataEmissao: emissao || null, dataVencimento: vencimento, numeroDocumento: numdoc || null,
     status: "Pendente", dataPagamento: null
   };
   DATA.contasPagar.lancamentos.push(novaConta);
-  logEntry("Contas a Pagar", `${prestador} · ${fmtBRL2(valor)} · vence ${vencimento.split("-").reverse().join("/")}`);
+  const undoDescr = prepararDesfazerArrayById("contasPagar.lancamentos", novaConta.id, "contas_pagar");
+  logEntry("Contas a Pagar", `${prestador} · ${fmtBRL2(valor)} · vence ${vencimento.split("-").reverse().join("/")}`, undoDescr);
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "contaspagar") navigate("contaspagar");
 
@@ -1480,6 +1611,9 @@ window.submitContaPagar = async () => {
     }).select().single();
     if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
     novaConta.id = data.id; // troca o id local pelo id real do banco, pra "marcar como pago" funcionar depois
+    undoDescr.itemId = data.id;
+    undoDescr.sbId = data.id;
+    salvarSessionLogLocal();
   }
   toast("Conta a pagar adicionada ✓" + (sb ? " (salvo no banco)" : ""));
 };
@@ -1492,15 +1626,21 @@ window.submitCompra = async () => {
   const local = document.getElementById("ec-local").value.trim()||"Não informado";
   const categoria = document.getElementById("ec-categoria").value;
   const item = document.getElementById("ec-item").value.trim()||"—";
-  DATA.compras.comprasLancamentos.push({ d, p:placa, l:local, c:categoria, i:item, v });
+  const registro = { id: localId(), d, p:placa, l:local, c:categoria, i:item, v };
+  DATA.compras.comprasLancamentos.push(registro);
   deriveCompras();
-  logEntry("Compras de Peças", `${d.split("-").reverse().join("/")} · ${fmtBRL2(v)}`);
+  const undoDescr = prepararDesfazerArrayById("compras.comprasLancamentos", registro.id, "compras_lancamentos");
+  logEntry("Compras de Peças", `${d.split("-").reverse().join("/")} · ${fmtBRL2(v)}`, undoDescr);
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "compras") navigate("compras");
 
   if(sb){
-    const { error } = await sb.from("compras_lancamentos").insert({ data:d, placa, local, categoria, item, valor:v });
+    const { data, error } = await sb.from("compras_lancamentos").insert({ data:d, placa, local, categoria, item, valor:v }).select().single();
     if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+    registro.id = data.id;
+    undoDescr.itemId = data.id;
+    undoDescr.sbId = data.id;
+    salvarSessionLogLocal();
   }
   toast("Compra adicionada ✓" + (sb ? " (salvo no banco)" : ""));
 };
@@ -1512,18 +1652,20 @@ window.submitDiesel = async () => {
     const label = document.getElementById("ed-mes").value.trim();
     const v = parseFloat(document.getElementById("ed-valor").value);
     if(!label || isNaN(v)){ toast("Preencha mês e valor."); return; }
+    sbRow = { modulo:"diesel_mensal", campo:"mensal", label, valor:v };
+    const undo = prepararDesfazerPeriodo("diesel", "mensalLabels", label, ["mensal"], "recomputeDiesel", "series_periodo", [sbRow]);
     upsertPeriod(DATA.diesel, "mensalLabels", label, { mensal:v });
     recomputeDiesel();
-    logEntry("Diesel (mensal)", `${label} · ${fmtBRL(v)}`);
-    sbRow = { modulo:"diesel_mensal", campo:"mensal", label, valor:v };
+    logEntry("Diesel (mensal)", `${label} · ${fmtBRL(v)}`, undo);
   } else {
     const label = document.getElementById("ed-semana").value.trim();
     const v = parseFloat(document.getElementById("ed-valorsem").value);
     if(!label || isNaN(v)){ toast("Preencha semana e valor."); return; }
+    sbRow = { modulo:"diesel_semanal", campo:"semanal_x1000", label, valor:v };
+    const undo = prepararDesfazerPeriodo("diesel", "semanalLabels", label, ["semanal_x1000"], "recomputeDiesel", "series_periodo", [sbRow]);
     upsertPeriod(DATA.diesel, "semanalLabels", label, { semanal_x1000:v });
     recomputeDiesel();
-    logEntry("Diesel (semanal)", `${label} · ${v}K`);
-    sbRow = { modulo:"diesel_semanal", campo:"semanal_x1000", label, valor:v };
+    logEntry("Diesel (semanal)", `${label} · ${v}K`, undo);
   }
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "diesel") navigate("diesel");
@@ -1536,9 +1678,15 @@ window.submitManutencao = async () => {
   const p = parseFloat(document.getElementById("em-pintura").value) || 0;
   const o = parseFloat(document.getElementById("em-outros").value) || 0;
   if(!label){ toast("Informe o mês."); return; }
+  const sbRows = [
+    { modulo:"manutencao", campo:"manutencaoGeral", label, valor:g },
+    { modulo:"manutencao", campo:"pinturaTeto", label, valor:p },
+    { modulo:"manutencao", campo:"outrosServicos", label, valor:o }
+  ];
+  const undo = prepararDesfazerPeriodo("manutencao", "labels", label, ["manutencaoGeral","pinturaTeto","outrosServicos"], "recomputeManutencao", "series_periodo", sbRows);
   upsertPeriod(DATA.manutencao, "labels", label, { manutencaoGeral:g, pinturaTeto:p, outrosServicos:o });
   recomputeManutencao();
-  logEntry("Manutenção de Carreta", `${label} · ${fmtBRL(g+p+o)}`);
+  logEntry("Manutenção de Carreta", `${label} · ${fmtBRL(g+p+o)}`, undo);
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "manutencao") navigate("manutencao");
   await gravarSeriesPeriodo([
@@ -1554,9 +1702,15 @@ window.submitFolha = async () => {
   const ad = parseFloat(document.getElementById("ef-ad40").value) || 0;
   const sal = parseFloat(document.getElementById("ef-salario").value) || 0;
   if(!label){ toast("Informe o mês."); return; }
+  const sbRows = [
+    { modulo:"folha", campo:"vtVr", label, valor:vt },
+    { modulo:"folha", campo:"ad40", label, valor:ad },
+    { modulo:"folha", campo:"salario", label, valor:sal }
+  ];
+  const undo = prepararDesfazerPeriodo("folha", "labels", label, ["vtVr","ad40","salario"], "recomputeFolha", "series_periodo", sbRows);
   upsertPeriod(DATA.folha, "labels", label, { vtVr:vt, ad40:ad, salario:sal });
   recomputeFolha();
-  logEntry("Folha", `${label} · total salário ${(ad+sal).toFixed(1)} mil`);
+  logEntry("Folha", `${label} · total salário ${(ad+sal).toFixed(1)} mil`, undo);
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "folha") navigate("folha");
   await gravarSeriesPeriodo([
@@ -1569,8 +1723,9 @@ window.submitFolha = async () => {
 window.submitFolhaAnual = () => {
   const v25 = parseFloat(document.getElementById("ef-tot25").value);
   const v26 = parseFloat(document.getElementById("ef-tot26").value);
+  const anterior25 = DATA.folha.totalSalario2025_M, anterior26 = DATA.folha.totalSalario2026_M;
   updateFolhaAnual(isNaN(v25)?null:v25, isNaN(v26)?null:v26);
-  logEntry("Folha (totais anuais)", `2025: ${DATA.folha.totalSalario2025_M} Mi · 2026: ${DATA.folha.totalSalario2026_M} Mi`);
+  logEntry("Folha (totais anuais)", `2025: ${DATA.folha.totalSalario2025_M} Mi · 2026: ${DATA.folha.totalSalario2026_M} Mi`, { kind:"folhaAnual", anterior25, anterior26 });
   toast("Totais anuais atualizados ✓ (guardado só nesta aba — este KPI não é enviado ao banco)");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "folha") navigate("folha");
@@ -1585,17 +1740,21 @@ window.submitHoraExtra = async () => {
   if(custoOn){
     const v = parseFloat(document.getElementById("eh-valor-custo").value);
     if(isNaN(v)){ toast("Informe o valor."); return; }
-    DATA.horaExtraCusto[ano==="2025"?"y2025":"y2026"][idx] = v;
-    recomputeHoraExtraCusto();
-    logEntry("Hora Extra (custo)", `${mes}/${ano} · ${fmtBRL(v)}`);
+    const containerPath = `horaExtraCusto.${ano==="2025"?"y2025":"y2026"}`;
     sbRow = { modulo:`horaextra_custo_${ano}`, campo:"valor", label:mes, valor:v };
+    const undo = prepararDesfazerIndice(containerPath, idx, "recomputeHoraExtraCusto", sbRow);
+    getByPath(containerPath)[idx] = v;
+    recomputeHoraExtraCusto();
+    logEntry("Hora Extra (custo)", `${mes}/${ano} · ${fmtBRL(v)}`, undo);
   } else {
     const v = parseFloat(document.getElementById("eh-valor-qtd").value);
     if(isNaN(v)){ toast("Informe as horas."); return; }
-    DATA.horaExtraQtd[ano==="2025"?"y2025":"y2026"][idx] = v;
-    recomputeHoraExtraQtd();
-    logEntry("Hora Extra (horas)", `${mes}/${ano} · ${v}h`);
+    const containerPath = `horaExtraQtd.${ano==="2025"?"y2025":"y2026"}`;
     sbRow = { modulo:`horaextra_qtd_${ano}`, campo:"valor", label:mes, valor:v };
+    const undo = prepararDesfazerIndice(containerPath, idx, "recomputeHoraExtraQtd", sbRow);
+    getByPath(containerPath)[idx] = v;
+    recomputeHoraExtraQtd();
+    logEntry("Hora Extra (horas)", `${mes}/${ano} · ${v}h`, undo);
   }
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "horaextra") navigate("horaextra");
@@ -1606,8 +1765,10 @@ window.submitAtestado = async () => {
   const label = document.getElementById("ea-mes").value.trim();
   const v = parseInt(document.getElementById("ea-valor").value);
   if(!label || isNaN(v)){ toast("Preencha mês e ocorrências."); return; }
+  const sbRow = { modulo:"atestados", campo:"ocorrencias", label, valor:v };
+  const undo = prepararDesfazerPeriodo("atestados", "labels", label, ["ocorrencias"], null, "series_periodo", [sbRow]);
   upsertPeriod(DATA.atestados, "labels", label, { ocorrencias:v });
-  logEntry("Atestados", `${label} · ${v} ocorrência(s)`);
+  logEntry("Atestados", `${label} · ${v} ocorrência(s)`, undo);
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "atestados") navigate("atestados");
   await gravarSeriePeriodo({ modulo:"atestados", campo:"ocorrencias", label, valor:v }, "Atestados");
@@ -1619,9 +1780,11 @@ window.submitInfracao = async () => {
     const label = document.getElementById("ei-mes").value.trim();
     const v = parseInt(document.getElementById("ei-valor").value);
     if(!label || isNaN(v)){ toast("Preencha mês e ocorrências."); return; }
+    const sbRow = { modulo:"infracoes", campo:"ocorrencias", label, valor:v };
+    const undo = prepararDesfazerPeriodo("infracoes", "labels", label, ["ocorrencias"], "recomputeInfracoes", "series_periodo", [sbRow]);
     upsertPeriod(DATA.infracoes, "labels", label, { ocorrencias:v });
     recomputeInfracoes();
-    logEntry("Infrações (mensal)", `${label} · ${v} ocorrência(s)`);
+    logEntry("Infrações (mensal)", `${label} · ${v} ocorrência(s)`, undo);
     renderSessionLog();
     if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
     await gravarSeriePeriodo({ modulo:"infracoes", campo:"ocorrencias", label, valor:v }, "Infrações");
@@ -1630,8 +1793,13 @@ window.submitInfracao = async () => {
     const t1 = parseInt(document.getElementById("ei-turno1").value) || 0;
     const t2 = parseInt(document.getElementById("ei-turno2").value) || 0;
     if(!label){ toast("Informe a data."); return; }
+    const sbRows = [
+      { modulo:"infracoes_diario", campo:"turno1", label, valor:t1 },
+      { modulo:"infracoes_diario", campo:"turno2", label, valor:t2 }
+    ];
+    const undo = prepararDesfazerPeriodo("infracoes.diario", "labels", label, ["turno1","turno2"], null, "eventos_diarios", sbRows);
     upsertPeriod(DATA.infracoes.diario, "labels", label, { turno1:t1, turno2:t2 });
-    logEntry("Infrações (diário)", `${label} · T1:${t1} T2:${t2}`);
+    logEntry("Infrações (diário)", `${label} · T1:${t1} T2:${t2}`, undo);
     renderSessionLog();
     if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
     await gravarEventosDiarios([
@@ -1646,8 +1814,14 @@ window.submitAcidenteMes = async () => {
   const v = parseInt(document.getElementById("eac-valor").value);
   if(isNaN(v)){ toast("Informe a quantidade."); return; }
   const idx = DATA.acidentes.labels.indexOf(mes);
-  if(idx>=0) DATA.acidentes.valores[idx] = v;
-  logEntry("Acidentes", `${mes} · ${v} ocorrência(s)`);
+  if(idx>=0){
+    const sbRow = { modulo:"acidentes", campo:"valores", label:mes, valor:v };
+    const undo = prepararDesfazerIndice("acidentes.valores", idx, null, sbRow);
+    DATA.acidentes.valores[idx] = v;
+    logEntry("Acidentes", `${mes} · ${v} ocorrência(s)`, undo);
+  } else {
+    logEntry("Acidentes", `${mes} · ${v} ocorrência(s)`);
+  }
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "acidentes") navigate("acidentes");
   await gravarSeriePeriodo({ modulo:"acidentes", campo:"valores", label:mes, valor:v }, "Acidentes");
@@ -1657,13 +1831,19 @@ window.submitAcidenteAcao = async () => {
   const acao = document.getElementById("eac-acao").value.trim();
   const responsavel = document.getElementById("eac-resp").value.trim();
   if(!problema){ toast("Descreva o problema."); return; }
-  DATA.acidentes.acoes.push({ problema, acao, responsavel });
-  logEntry("Acidentes (plano de ação)", problema);
+  const registro = { id: localId(), problema, acao, responsavel };
+  DATA.acidentes.acoes.push(registro);
+  const undoDescr = prepararDesfazerArrayById("acidentes.acoes", registro.id, "acidentes_acoes");
+  logEntry("Acidentes (plano de ação)", problema, undoDescr);
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "acidentes") navigate("acidentes");
   if(sb){
-    const { error } = await sb.from("acidentes_acoes").insert({ problema, acao, responsavel });
+    const { data, error } = await sb.from("acidentes_acoes").insert({ problema, acao, responsavel }).select().single();
     if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+    registro.id = data.id;
+    undoDescr.itemId = data.id;
+    undoDescr.sbId = data.id;
+    salvarSessionLogLocal();
   }
   toast("Ação adicionada ✓" + (sb ? " (salvo no banco)" : ""));
 };
@@ -1714,6 +1894,7 @@ function updateSyncPill(){
   deriveCompras(); // garante que os dados locais (data.js) já estão prontos como base/fallback
   const carregouDoBanco = await loadFromSupabase();
   SUPABASE_SINCRONIZADO = carregouDoBanco;
+  carregarSessionLogLocal();
   updateSyncPill();
   navigate("overview");
 })();
