@@ -7,6 +7,8 @@
 <script src="chart.min.js"></script>
 <script src="chartjs-plugin-datalabels.min.js"></script>
 <script src="xlsx.full.min.js"></script>
+<script src="supabase.min.js"></script>
+<script src="supabase-config.js"></script>
 <style>
 :root{
   --red:#D0021B;
@@ -357,6 +359,9 @@ table td.rank{font-weight:700; color:var(--red-dark);}
     <button data-page="folha"><span class="ic">💰</span> Folha (Benefícios+Salário)</button>
     <button data-page="horaextra"><span class="ic">⏱️</span> Hora Extra</button>
     <button data-page="atestados"><span class="ic">🩺</span> Atestados</button>
+
+    <div class="grp-label">Financeiro</div>
+    <button data-page="contaspagar"><span class="ic">💵</span> Contas a Pagar</button>
   </nav>
   <div class="foot">
     <b>Fabiano da Silva Ribeiro</b>
@@ -375,6 +380,7 @@ table td.rank{font-weight:700; color:var(--red-dark);}
     </div>
     <div class="right">
       <div class="pill"><span class="dot"></span> Dados até <b id="lastUpdate">jun/2026</b></div>
+      <div class="pill" id="syncPill">Conectando...</div>
       <div class="pill">Ano base: <b>2025 / 2026</b></div>
       <button onclick="exportDataJs()" style="background:var(--red); color:#fff; border:none; padding:8px 14px; border-radius:20px; font-size:11.5px; font-weight:700; cursor:pointer;">⬇ Exportar data.js</button>
     </div>

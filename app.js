@@ -39,6 +39,170 @@ function fmtLabelBRL(v){
 }
 function fmtLabelNum(v){ return v==null ? "" : fmtNum(Math.round(v)); }
 
+/* ============================================================================
+   CONEXÃO COM O SUPABASE (banco de dados)
+   ============================================================================ */
+const sb = (typeof supabase !== "undefined" && typeof SUPABASE_URL !== "undefined" && SUPABASE_URL)
+  ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+let SUPABASE_SINCRONIZADO = false; // true assim que carregarmos dados reais do banco com sucesso
+
+async function sbFetchAll(table){
+  if(!sb) return [];
+  let all = [], from = 0;
+  const pageSize = 1000;
+  while(true){
+    const { data, error } = await sb.from(table).select("*").range(from, from + pageSize - 1);
+    if(error){ console.warn("Erro ao buscar", table, error); break; }
+    all = all.concat(data);
+    if(!data.length || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
+async function sbBulkInsert(table, rows){
+  if(!rows.length) return;
+  const chunkSize = 500;
+  for(let i=0;i<rows.length;i+=chunkSize){
+    const { error } = await sb.from(table).insert(rows.slice(i, i+chunkSize));
+    if(error) throw error;
+  }
+}
+
+function setMonthValue(arr, label, val, labelsArr){
+  const labels = labelsArr || MONTH_ABBR;
+  const idx = labels.indexOf(label);
+  if(idx>=0) arr[idx] = val;
+}
+
+// Aplica as linhas de series_periodo (vindas do Supabase) por cima do DATA já carregado do data.js.
+function applySeriesPeriodo(rows){
+  rows.forEach(r=>{
+    const val = Number(r.valor);
+    switch(r.modulo){
+      case "manutencao": upsertPeriod(DATA.manutencao, "labels", r.label, { [r.campo]: val }); break;
+      case "diesel_mensal": upsertPeriod(DATA.diesel, "mensalLabels", r.label, { mensal: val }); break;
+      case "diesel_semanal": upsertPeriod(DATA.diesel, "semanalLabels", r.label, { semanal_x1000: val }); break;
+      case "folha": upsertPeriod(DATA.folha, "labels", r.label, { [r.campo]: val }); break;
+      case "horaextra_custo_2025": setMonthValue(DATA.horaExtraCusto.y2025, r.label, val); break;
+      case "horaextra_custo_2026": setMonthValue(DATA.horaExtraCusto.y2026, r.label, val); break;
+      case "horaextra_qtd_2025": setMonthValue(DATA.horaExtraQtd.y2025, r.label, val); break;
+      case "horaextra_qtd_2026": setMonthValue(DATA.horaExtraQtd.y2026, r.label, val); break;
+      case "atestados": upsertPeriod(DATA.atestados, "labels", r.label, { ocorrencias: val }); break;
+      case "infracoes": upsertPeriod(DATA.infracoes, "labels", r.label, { ocorrencias: val }); break;
+      case "acidentes": setMonthValue(DATA.acidentes.valores, r.label, val, DATA.acidentes.labels); break;
+    }
+  });
+  recomputeManutencao(); recomputeDiesel(); recomputeFolha();
+  recomputeHoraExtraCusto(); recomputeInfracoes();
+}
+function applyEventosDiarios(rows){
+  rows.forEach(r=>{
+    if(r.modulo === "infracoes_diario"){
+      upsertPeriod(DATA.infracoes.diario, "labels", r.label, { [r.campo]: Number(r.valor) });
+    }
+  });
+}
+
+// Busca tudo do banco e substitui/atualiza o DATA local. Retorna true se havia dados no banco.
+async function loadFromSupabase(){
+  if(!sb) return false;
+  try{
+    const [compras, contas, series, diarios, acoes] = await Promise.all([
+      sbFetchAll("compras_lancamentos"),
+      sbFetchAll("contas_pagar"),
+      sbFetchAll("series_periodo"),
+      sbFetchAll("eventos_diarios"),
+      sbFetchAll("acidentes_acoes")
+    ]);
+
+    if(!compras.length && !contas.length && !series.length) return false; // banco ainda vazio
+
+    if(compras.length){
+      DATA.compras.comprasLancamentos = compras.map(r=>({ d:r.data, p:r.placa||"", l:r.local||"", c:r.categoria||"", i:r.item||"", v:Number(r.valor) }));
+    }
+    if(contas.length){
+      DATA.contasPagar.lancamentos = contas.map(r=>({
+        id:r.id, prestador:r.prestador, cnpj:r.cnpj, tipoServico:r.tipo_servico, valor:Number(r.valor),
+        formaPagamento:r.forma_pagamento, dataEmissao:r.data_emissao, dataVencimento:r.data_vencimento,
+        numeroDocumento:r.numero_documento, status:r.status, dataPagamento:r.data_pagamento
+      }));
+    }
+    applySeriesPeriodo(series);
+    applyEventosDiarios(diarios);
+    if(acoes.length) DATA.acidentes.acoes = acoes.map(a=>({ id:a.id, problema:a.problema, acao:a.acao, responsavel:a.responsavel }));
+
+    deriveCompras();
+    return true;
+  }catch(e){
+    console.warn("Falha ao carregar do Supabase, mantendo dados locais:", e);
+    return false;
+  }
+}
+
+// Envia TUDO que está em DATA (vindo do data.js) para o Supabase — só deve ser usado uma vez,
+// para popular o banco pela primeira vez. Ver botão "Migrar dados para o Supabase".
+async function migrarParaSupabase(onProgress){
+  const say = (msg) => { if(onProgress) onProgress(msg); };
+  if(!sb){ say("⚠ Conexão com Supabase não configurada."); return; }
+
+  say("Enviando Contas a Pagar...");
+  const contasRows = DATA.contasPagar.lancamentos.map(i=>({
+    prestador:i.prestador, cnpj:i.cnpj, tipo_servico:i.tipoServico, valor:i.valor, forma_pagamento:i.formaPagamento,
+    data_emissao:i.dataEmissao, data_vencimento:i.dataVencimento, numero_documento:i.numeroDocumento,
+    status:i.status, data_pagamento:i.dataPagamento
+  }));
+  if(contasRows.length){ const { error } = await sb.from("contas_pagar").insert(contasRows); if(error) throw error; }
+
+  say(`Enviando ${fmtNum(DATA.compras.comprasLancamentos.length)} lançamentos de Compras de Peças (pode levar um minuto)...`);
+  const comprasRows = DATA.compras.comprasLancamentos.map(r=>({ data:r.d, placa:r.p, local:r.l, categoria:r.c, item:r.i, valor:r.v }));
+  await sbBulkInsert("compras_lancamentos", comprasRows);
+
+  say("Enviando séries mensais (Manutenção, Diesel, Folha, Hora Extra, Atestados, Infrações, Acidentes)...");
+  const seriesRows = [];
+  const pushSeries = (modulo, labels, camposMap) => {
+    labels.forEach((label,idx)=>{
+      Object.entries(camposMap).forEach(([campo, arr])=>{
+        const v = arr[idx];
+        if(v!=null) seriesRows.push({ modulo, campo, label, valor:v });
+      });
+    });
+  };
+  pushSeries("manutencao", DATA.manutencao.labels, { manutencaoGeral:DATA.manutencao.manutencaoGeral, pinturaTeto:DATA.manutencao.pinturaTeto, outrosServicos:DATA.manutencao.outrosServicos });
+  pushSeries("diesel_mensal", DATA.diesel.mensalLabels, { mensal:DATA.diesel.mensal });
+  pushSeries("diesel_semanal", DATA.diesel.semanalLabels, { semanal_x1000:DATA.diesel.semanal_x1000 });
+  pushSeries("folha", DATA.folha.labels, { vtVr:DATA.folha.vtVr, ad40:DATA.folha.ad40, salario:DATA.folha.salario });
+  pushSeries("horaextra_custo_2025", MONTH_ABBR, { valor:DATA.horaExtraCusto.y2025 });
+  pushSeries("horaextra_custo_2026", MONTH_ABBR, { valor:DATA.horaExtraCusto.y2026 });
+  pushSeries("horaextra_qtd_2025", MONTH_ABBR, { valor:DATA.horaExtraQtd.y2025 });
+  pushSeries("horaextra_qtd_2026", MONTH_ABBR, { valor:DATA.horaExtraQtd.y2026 });
+  pushSeries("atestados", DATA.atestados.labels, { ocorrencias:DATA.atestados.ocorrencias });
+  pushSeries("infracoes", DATA.infracoes.labels, { ocorrencias:DATA.infracoes.ocorrencias });
+  pushSeries("acidentes", DATA.acidentes.labels, { valores:DATA.acidentes.valores });
+  await sbBulkInsert("series_periodo", seriesRows);
+
+  say("Enviando eventos diários de Infrações...");
+  const diariosRows = [];
+  DATA.infracoes.diario.labels.forEach((label,idx)=>{
+    diariosRows.push({ modulo:"infracoes_diario", campo:"turno1", label, valor: DATA.infracoes.diario.turno1[idx]||0 });
+    diariosRows.push({ modulo:"infracoes_diario", campo:"turno2", label, valor: DATA.infracoes.diario.turno2[idx]||0 });
+  });
+  await sbBulkInsert("eventos_diarios", diariosRows);
+
+  say("Enviando plano de ação de Acidentes...");
+  if(DATA.acidentes.acoes.length){
+    const { error } = await sb.from("acidentes_acoes").insert(DATA.acidentes.acoes.map(a=>({ problema:a.problema, acao:a.acao, responsavel:a.responsavel })));
+    if(error) throw error;
+  }
+
+  say("Recarregando do banco pra confirmar tudo certo...");
+  await loadFromSupabase();
+  SUPABASE_SINCRONIZADO = true;
+
+  say(`✅ Migração concluída! ${fmtNum(comprasRows.length)} compras, ${contasRows.length} conta(s) a pagar, ${fmtNum(seriesRows.length)} pontos de série.`);
+}
+
 /* ---------- Helpers de formatação ---------- */
 function fmtBRL(v){
   if(v === null || v === undefined) return "—";
@@ -56,6 +220,16 @@ function fmtMil(v){
   return (v/1000).toLocaleString("pt-BR",{maximumFractionDigits:0}) + "K";
 }
 function sumArr(a){ return a.filter(v=>v!==null && v!==undefined).reduce((x,y)=>x+y,0); }
+
+// Status calculado de uma conta a pagar: Pago (já quitada) / Vencida (passou do vencimento) / A vencer.
+function statusConta(c){
+  if(c.status === "Pago") return "Pago";
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const venc = new Date(c.dataVencimento + "T00:00:00");
+  return venc < hoje ? "Vencido" : "A vencer";
+}
+function statusBadgeClass(s){ return s === "Pago" ? "green" : (s === "Vencido" ? "red" : "amber"); }
+function fmtDataBR(iso){ return iso ? iso.split("-").reverse().join("/") : "—"; }
 function deltaPct(a,b){ if(!b) return null; return ((a-b)/b*100); }
 
 function deltaBadge(pct, invert){
@@ -68,10 +242,11 @@ function deltaBadge(pct, invert){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes"];
+const pages = ["overview","entrada","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar"];
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
+  contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
   manutencao: ["Manutenção de Carreta","Custos de manutenção geral, pintura e outros serviços"],
   diesel: ["Diesel","Custo de abastecimento mensal, semanal e por veículo"],
   folha: ["Folha · Benefícios + Salário","Evolução de VT/VR, adicional 40% e salário"],
@@ -250,7 +425,10 @@ const initCharts = {};
 /* -------------------- OVERVIEW -------------------- */
 renderers.overview = () => {
   const m = DATA.manutencao, d = DATA.diesel, f = DATA.folha, he = DATA.horaExtraCusto,
-        c = DATA.compras, at = DATA.atestados, inf = DATA.infracoes, ac = DATA.acidentes;
+        c = DATA.compras, at = DATA.atestados, inf = DATA.infracoes, ac = DATA.acidentes, cp = DATA.contasPagar;
+
+  const cpPendente = sumArr(cp.lancamentos.filter(i=>i.status!=="Pago").map(i=>i.valor));
+  const cpVencidas = cp.lancamentos.filter(i=>statusConta(i)==="Vencido").length;
 
   const cards = [
     { page:"manutencao", ic:"🔩", label:"Manutenção de Carreta", big:fmtBRL(m.totalPeriodo), foot:"Total acumulado dez/25–jun/26", id:"spk-manutencao" },
@@ -260,7 +438,8 @@ renderers.overview = () => {
     { page:"compras", ic:"🧰", label:"Compras de Peças (2026)", big:fmtBRL(c.totalAno2026), foot:`Top 10 veículos = ${c.top10CaminhoesPct}%`, id:"spk-compras" },
     { page:"atestados", ic:"🩺", label:"Atestados (mai/26)", big:fmtNum(at.ocorrencias[at.ocorrencias.length-1]), foot:"Ocorrências no último mês fechado", id:"spk-atestados" },
     { page:"infracoes", ic:"🚨", label:"Infrações (2026)", big:fmtNum(inf.totalAno2026), foot:`Uso de celular: ${inf.usoCelular2026} ocorrências`, id:"spk-infracoes" },
-    { page:"acidentes", ic:"⚠️", label:"Acidentes & Incidentes", big:"0", foot:"Nenhuma ocorrência registrada em 2025", id:"spk-acidentes" }
+    { page:"acidentes", ic:"⚠️", label:"Acidentes & Incidentes", big:"0", foot:"Nenhuma ocorrência registrada em 2025", id:"spk-acidentes" },
+    { page:"contaspagar", ic:"💵", label:"Contas a Pagar", big:fmtBRL(cpPendente), foot: cpVencidas>0 ? `⚠ ${cpVencidas} conta(s) vencida(s)` : "Nenhuma conta vencida" }
   ];
 
   return `
@@ -278,7 +457,7 @@ renderers.overview = () => {
           <h4>${c.label}</h4>
           <div class="big">${c.big}</div>
           <div class="foot">${c.foot}</div>
-          <canvas id="${c.id}" height="36"></canvas>
+          ${c.id ? `<canvas id="${c.id}" height="36"></canvas>` : ""}
         </div>
       `).join("")}
     </div>
@@ -823,8 +1002,120 @@ initCharts.acidentes = () => {
   });
 };
 
+/* -------------------- CONTAS A PAGAR -------------------- */
+renderers.contaspagar = () => {
+  const cp = DATA.contasPagar;
+  const itens = [...cp.lancamentos].sort((a,b)=> a.dataVencimento.localeCompare(b.dataVencimento));
+  const totalPendente = sumArr(itens.filter(i=>i.status!=="Pago").map(i=>i.valor));
+  const totalPago = sumArr(itens.filter(i=>i.status==="Pago").map(i=>i.valor));
+  const vencidas = itens.filter(i=>statusConta(i)==="Vencido");
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const em7dias = new Date(hoje.getTime()+7*86400000);
+  const venc7 = itens.filter(i=>{
+    if(i.status==="Pago") return false;
+    const v = new Date(i.dataVencimento+"T00:00:00");
+    return v>=hoje && v<=em7dias;
+  });
+
+  const porTipo = {};
+  itens.forEach(i=>{ porTipo[i.tipoServico] = (porTipo[i.tipoServico]||0) + i.valor; });
+  const porTipoArr = Object.entries(porTipo).sort((a,b)=>b[1]-a[1]);
+
+  const porPrestador = {};
+  itens.forEach(i=>{ porPrestador[i.prestador] = (porPrestador[i.prestador]||0) + i.valor; });
+  const topPrestadores = Object.entries(porPrestador).sort((a,b)=>b[1]-a[1]).slice(0,10);
+
+  return `
+    <div class="page-head"><h2>Contas a Pagar</h2><p>Prestadores de serviço — controle de vencimentos e status de pagamento</p></div>
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Total pendente</div><div class="val">${fmtBRL(totalPendente)}</div><div class="delta flat">${itens.filter(i=>i.status!=="Pago").length} conta(s) em aberto</div></div>
+      <div class="kpi"><div class="lbl">Vencidas</div><div class="val">${vencidas.length}</div>${vencidas.length>0?`<span class="delta up">↑ ${fmtBRL(sumArr(vencidas.map(i=>i.valor)))}</span>`:`<span class="delta down">↓ nenhuma</span>`}</div>
+      <div class="kpi"><div class="lbl">Vencendo em 7 dias</div><div class="val">${venc7.length}</div><div class="delta flat">${fmtBRL(sumArr(venc7.map(i=>i.valor)))}</div></div>
+      <div class="kpi"><div class="lbl">Total já pago</div><div class="val">${fmtBRL(totalPago)}</div></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Custo por tipo de serviço</h3>
+        <div class="chart-wrap" style="height:260px;"><canvas id="ch-cp-tipo"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Maiores prestadores</h3>
+        <table>
+          <thead><tr><th>#</th><th>Prestador</th><th class="num">Valor</th></tr></thead>
+          <tbody>${topPrestadores.map(([nome,v],i)=>`<tr><td class="rank">${i+1}</td><td>${nome}</td><td class="num">${fmtBRL2(v)}</td></tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Todas as contas</h3>
+      <div class="hint">Ordenadas por vencimento — clique em "Marcar como pago" para dar baixa</div>
+      <table>
+        <thead><tr><th>Status</th><th>Prestador</th><th>Tipo de Serviço</th><th>CNPJ</th><th>Forma Pgto</th><th class="num">Valor</th><th>Vencimento</th><th>Ação</th></tr></thead>
+        <tbody>
+          ${itens.map(i=>{
+            const st = statusConta(i);
+            return `<tr>
+              <td><span class="badge ${statusBadgeClass(st)}">${st}</span></td>
+              <td>${i.prestador}</td>
+              <td>${i.tipoServico}</td>
+              <td>${i.cnpj}</td>
+              <td>${i.formaPagamento}</td>
+              <td class="num">${fmtBRL2(i.valor)}</td>
+              <td>${fmtDataBR(i.dataVencimento)}</td>
+              <td>${i.status==="Pago" ? `<span class="hint" style="margin:0;">pago em ${fmtDataBR(i.dataPagamento)}</span>` : `<button onclick="marcarContaPaga('${i.id}')" style="background:var(--green); color:#fff; border:none; padding:5px 10px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;">Marcar como pago</button>`}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+};
+initCharts.contaspagar = () => {
+  const cp = DATA.contasPagar;
+  const porTipo = {};
+  cp.lancamentos.forEach(i=>{ porTipo[i.tipoServico] = (porTipo[i.tipoServico]||0) + i.valor; });
+  const arr = Object.entries(porTipo).sort((a,b)=>b[1]-a[1]);
+  mkChart("ch-cp-tipo", {
+    type:"bar",
+    data:{ labels:arr.map(a=>a[0]), datasets:[{ data:arr.map(a=>a[1]), backgroundColor:COLORS.red, borderRadius:4 }]},
+    options:{ indexAxis:"y", responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
+        datalabels:{ display:true, anchor:"end", align:"right", color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } },
+      layout:{ padding:{ right:46 } },
+      scales:{ x:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, y:{grid:{display:false}} } }
+  });
+};
+window.marcarContaPaga = async (id) => {
+  const item = DATA.contasPagar.lancamentos.find(i=>i.id===id);
+  if(!item) return;
+  item.status = "Pago";
+  item.dataPagamento = new Date().toISOString().slice(0,10);
+  navigate("contaspagar");
+  if(sb){
+    const { error } = await sb.from("contas_pagar").update({ status:"Pago", data_pagamento:item.dataPagamento }).eq("id", id);
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+  }
+  toast(`✓ Conta de ${item.prestador} marcada como paga`);
+};
+
+window.rodarMigracaoSupabase = async () => {
+  const statusEl = document.getElementById("migracaoStatus");
+  try{
+    await migrarParaSupabase((msg)=>{ if(statusEl) statusEl.textContent = msg; });
+    updateSyncPill();
+    toast("✓ Migração para o Supabase concluída");
+    navigate("entrada");
+  }catch(e){
+    console.error(e);
+    if(statusEl) statusEl.textContent = "⚠ Erro na migração: " + e.message;
+    toast("⚠ Erro ao migrar — veja detalhes na tela");
+  }
+};
+
 /* -------------------- ENTRADA DE DADOS -------------------- */
 const ENTRY_MODULES = [
+  { key:"contaspagar", ic:"💵", label:"Contas a Pagar", desc:"Prestador de serviço, CNPJ, valor, forma de pagamento e vencimento" },
   { key:"compras", ic:"🧰", label:"Compras de Peças", desc:"Lançamento diário — data, local/fornecedor, categoria e valor" },
   { key:"diesel", ic:"⛽", label:"Diesel", desc:"Custo mensal ou semanal" },
   { key:"manutencao", ic:"🔩", label:"Manutenção de Carreta", desc:"Custo mensal por tipo de serviço" },
@@ -836,17 +1127,30 @@ const ENTRY_MODULES = [
 ];
 
 const CATEGORIAS_COMPRAS = ["💡 ELÉTRICA","🧱 ESTRUTURA / CABINE","🚛 SUSPENSÃO / AR","🔧 PEÇAS MECÂNICAS","🛢️ FILTROS E LUBRIFICANTES","🧪 QUÍMICOS / CONSUMO","🧰 FIXAÇÃO / METAIS","🧼 LIMPEZA / EPI","⚙️ SERVIÇOS"];
+const TIPOS_SERVICO = ["Manutenção e Reparação","Frete / Transporte","Consultoria","Jurídico","Contábil","TI / Software","Limpeza","Segurança","Combustível","Locação de Equipamento","Outros"];
+const FORMAS_PAGAMENTO = ["Boleto","PIX","Transferência (TED/DOC)","Cartão","Dinheiro"];
 
 renderers.entrada = () => `
-  <div class="page-head"><h2>Entrada de Dados</h2><p>Escolha a categoria, informe o período e o valor. Os gráficos e KPIs recalculam na hora — no final, baixe o <code>data.js</code> atualizado para guardar as mudanças.</p></div>
+  <div class="page-head"><h2>Entrada de Dados</h2><p>Escolha a categoria, informe o período e o valor. Os gráficos e KPIs recalculam na hora.</p></div>
 
+  ${!sb ? `
+  <div class="panel" style="margin-bottom:16px; border-color:#F0B9C0; background:var(--red-soft);">
+    <h3 style="margin-bottom:4px;">⚠ Sem conexão com o banco</h3>
+    <div class="hint" style="margin-bottom:0;">Confira se o arquivo <code>supabase-config.js</code> está na mesma pasta e se a URL/chave estão corretas. Por enquanto os lançamentos ficam só nesta aba (use "Baixar data.js atualizado" para não perder).</div>
+  </div>` : !SUPABASE_SINCRONIZADO ? `
+  <div class="panel" style="margin-bottom:16px; border-color:#F0B9C0; background:var(--red-soft);">
+    <h3 style="margin-bottom:4px;">📤 Banco vazio — migre os dados atuais uma única vez</h3>
+    <div class="hint" style="margin-bottom:10px;">Isso envia tudo que já está carregado (compras, manutenção, folha, contas a pagar, etc.) para o Supabase. Faça isso só uma vez — depois disso todo mundo que abrir o link já vê os dados do banco, e novos lançamentos vão direto pra lá.</div>
+    <button onclick="rodarMigracaoSupabase()" style="background:var(--red); color:#fff; border:none; padding:11px 20px; border-radius:9px; font-size:13px; font-weight:700; cursor:pointer;">Migrar dados para o Supabase</button>
+    <div id="migracaoStatus" class="hint" style="margin-top:10px;"></div>
+  </div>` : `
   <div class="panel" style="margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">
     <div>
-      <h3 style="margin-bottom:4px;">Salvar as alterações</h3>
-      <div class="hint" style="margin-bottom:0;">Isso não acontece sozinho: baixe o arquivo e substitua o <code>data.js</code> na sua pasta para não perder o que foi lançado.</div>
+      <h3 style="margin-bottom:4px;">✅ Conectado ao Supabase</h3>
+      <div class="hint" style="margin-bottom:0;">Todo lançamento feito abaixo já é salvo direto no banco — quem abrir o link já vê a atualização, sem precisar de nada manual.</div>
     </div>
-    <button onclick="exportDataJs()" style="background:var(--red); color:#fff; border:none; padding:12px 20px; border-radius:10px; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap;">⬇ Baixar data.js atualizado</button>
-  </div>
+    <button onclick="exportDataJs()" style="background:var(--card); color:var(--ink); border:1px solid var(--line); padding:10px 16px; border-radius:9px; font-size:12.5px; font-weight:700; cursor:pointer; white-space:nowrap;">⬇ Backup local (data.js)</button>
+  </div>`}
 
   <div class="tabs" id="entryModTabs">
     ${ENTRY_MODULES.map((m,i)=>`<button class="tab-btn ${i===0?"active":""}" data-mod="${m.key}">${m.ic} ${m.label}</button>`).join("")}
@@ -879,6 +1183,21 @@ function renderSessionLog(){
 }
 
 const ENTRY_FORMS = {
+  contaspagar: () => `
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+      <label style="grid-column:1/-1;">Prestador de Serviço<input type="text" id="ecp-prestador" list="dl-prestadores" placeholder="Ex: MANUTENÇÃO E REPARAÇÃO CB MECA"></label>
+      <datalist id="dl-prestadores">${[...new Set(DATA.contasPagar.lancamentos.map(r=>r.prestador))].sort().map(l=>`<option value="${l}">`).join("")}</datalist>
+      <label>CNPJ<input type="text" id="ecp-cnpj" placeholder="00.000.000/0000-00"></label>
+      <label>Tipo de Serviço<input type="text" id="ecp-tipo" list="dl-tipos-servico" placeholder="Ex: Manutenção e Reparação"></label>
+      <datalist id="dl-tipos-servico">${TIPOS_SERVICO.map(t=>`<option value="${t}">`).join("")}</datalist>
+      <label>Valor do Serviço (R$)<input type="number" id="ecp-valor" step="0.01" placeholder="0,00"></label>
+      <label>Forma de Pagamento<select id="ecp-forma">${FORMAS_PAGAMENTO.map(f=>`<option>${f}</option>`).join("")}</select></label>
+      <label>Data de Emissão<input type="date" id="ecp-emissao" value="${new Date().toISOString().slice(0,10)}"></label>
+      <label>Data de Vencimento<input type="date" id="ecp-vencimento"></label>
+      <label style="grid-column:1/-1;">Nº do Documento (opcional)<input type="text" id="ecp-numdoc" placeholder="Ex: 0262"></label>
+    </div>
+    <button class="entry-submit" onclick="submitContaPagar()">Adicionar conta a pagar</button>
+  `,
   compras: () => `
     <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
       <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
@@ -1102,38 +1421,93 @@ window.importComprasXlsx = async () => {
     DATA.compras.comprasLancamentos = novos;
     deriveCompras();
     logEntry("Compras (importação)", `${novos.length} lançamentos importados de "${file.name}"`);
-    toast(`✓ ${novos.length} lançamentos importados`);
     renderSessionLog();
 
     const datas = novos.map(r=>r.d).sort();
-    statusEl.innerHTML = `✓ <b>${fmtNum(novos.length)}</b> lançamentos importados (${datas[0].split("-").reverse().join("/")} a ${datas[datas.length-1].split("-").reverse().join("/")}), total ${fmtBRL(novos.reduce((s,r)=>s+r.v,0))}.` +
+    let statusMsg = `✓ <b>${fmtNum(novos.length)}</b> lançamentos importados (${datas[0].split("-").reverse().join("/")} a ${datas[datas.length-1].split("-").reverse().join("/")}), total ${fmtBRL(novos.reduce((s,r)=>s+r.v,0))}.` +
       (manutCount>0 ? `<br>${manutCount} linhas com placa "MANUTENÇÃO" (${fmtBRL(manutSoma)}) foram ignoradas — pertencem ao módulo de Manutenção de Carreta, não a Compras de Peças.` : "") +
       (ignoradas>0 ? `<br>${ignoradas} linha(s) sem data ou valor válido foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
 
     if(document.querySelector('nav.menu button.active')?.dataset.page === "compras") navigate("compras");
+
+    if(sb){
+      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
+      const { error: delError } = await sb.from("compras_lancamentos").delete().not("id","is",null);
+      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      try{
+        await sbBulkInsert("compras_lancamentos", novos.map(r=>({ data:r.d, placa:r.p, local:r.l, categoria:r.c, item:r.i, valor:r.v })));
+        statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+        toast(`✓ ${novos.length} lançamentos importados (salvo no banco)`);
+      }catch(e){
+        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+      }
+    } else {
+      toast(`✓ ${novos.length} lançamentos importados`);
+    }
   }catch(e){
     console.error(e);
     statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message;
   }
 };
 
-window.submitCompra = () => {
+window.submitContaPagar = async () => {
+  const prestador = document.getElementById("ecp-prestador").value.trim();
+  const cnpj = document.getElementById("ecp-cnpj").value.trim();
+  const tipo = document.getElementById("ecp-tipo").value.trim();
+  const valor = parseFloat(document.getElementById("ecp-valor").value);
+  const forma = document.getElementById("ecp-forma").value;
+  const emissao = document.getElementById("ecp-emissao").value;
+  const vencimento = document.getElementById("ecp-vencimento").value;
+  const numdoc = document.getElementById("ecp-numdoc").value.trim();
+
+  if(!prestador || isNaN(valor) || !vencimento){ toast("Preencha ao menos prestador, valor e vencimento."); return; }
+
+  const novaConta = {
+    id: "cp_" + Date.now(), prestador, cnpj, tipoServico: tipo || "Outros", valor, formaPagamento: forma,
+    dataEmissao: emissao || null, dataVencimento: vencimento, numeroDocumento: numdoc || null,
+    status: "Pendente", dataPagamento: null
+  };
+  DATA.contasPagar.lancamentos.push(novaConta);
+  logEntry("Contas a Pagar", `${prestador} · ${fmtBRL2(valor)} · vence ${vencimento.split("-").reverse().join("/")}`);
+  renderSessionLog();
+  if(document.querySelector('nav.menu button.active')?.dataset.page === "contaspagar") navigate("contaspagar");
+
+  if(sb){
+    const { data, error } = await sb.from("contas_pagar").insert({
+      prestador, cnpj, tipo_servico: tipo || "Outros", valor, forma_pagamento: forma,
+      data_emissao: emissao || null, data_vencimento: vencimento, numero_documento: numdoc || null, status: "Pendente"
+    }).select().single();
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+    novaConta.id = data.id; // troca o id local pelo id real do banco, pra "marcar como pago" funcionar depois
+  }
+  toast("Conta a pagar adicionada ✓" + (sb ? " (salvo no banco)" : ""));
+};
+
+window.submitCompra = async () => {
   const d = document.getElementById("ec-data").value;
   const v = parseFloat(document.getElementById("ec-valor").value);
   if(!d || isNaN(v)){ toast("Preencha data e valor."); return; }
-  DATA.compras.comprasLancamentos.push({
-    d, p:document.getElementById("ec-placa").value.trim(), l:document.getElementById("ec-local").value.trim()||"Não informado",
-    c:document.getElementById("ec-categoria").value, i:document.getElementById("ec-item").value.trim()||"—", v
-  });
+  const placa = document.getElementById("ec-placa").value.trim();
+  const local = document.getElementById("ec-local").value.trim()||"Não informado";
+  const categoria = document.getElementById("ec-categoria").value;
+  const item = document.getElementById("ec-item").value.trim()||"—";
+  DATA.compras.comprasLancamentos.push({ d, p:placa, l:local, c:categoria, i:item, v });
   deriveCompras();
   logEntry("Compras de Peças", `${d.split("-").reverse().join("/")} · ${fmtBRL2(v)}`);
-  toast("Compra adicionada ✓");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "compras") navigate("compras");
+
+  if(sb){
+    const { error } = await sb.from("compras_lancamentos").insert({ data:d, placa, local, categoria, item, valor:v });
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+  }
+  toast("Compra adicionada ✓" + (sb ? " (salvo no banco)" : ""));
 };
 
-window.submitDiesel = () => {
+window.submitDiesel = async () => {
   const mensalOn = document.getElementById("diesel-mensal").style.display !== "none";
+  let sbRow = null;
   if(mensalOn){
     const label = document.getElementById("ed-mes").value.trim();
     const v = parseFloat(document.getElementById("ed-valor").value);
@@ -1141,6 +1515,7 @@ window.submitDiesel = () => {
     upsertPeriod(DATA.diesel, "mensalLabels", label, { mensal:v });
     recomputeDiesel();
     logEntry("Diesel (mensal)", `${label} · ${fmtBRL(v)}`);
+    sbRow = { modulo:"diesel_mensal", campo:"mensal", label, valor:v };
   } else {
     const label = document.getElementById("ed-semana").value.trim();
     const v = parseFloat(document.getElementById("ed-valorsem").value);
@@ -1148,13 +1523,14 @@ window.submitDiesel = () => {
     upsertPeriod(DATA.diesel, "semanalLabels", label, { semanal_x1000:v });
     recomputeDiesel();
     logEntry("Diesel (semanal)", `${label} · ${v}K`);
+    sbRow = { modulo:"diesel_semanal", campo:"semanal_x1000", label, valor:v };
   }
-  toast("Diesel atualizado ✓");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "diesel") navigate("diesel");
+  await gravarSeriePeriodo(sbRow, "Diesel");
 };
 
-window.submitManutencao = () => {
+window.submitManutencao = async () => {
   const label = document.getElementById("em-mes").value.trim();
   const g = parseFloat(document.getElementById("em-geral").value) || 0;
   const p = parseFloat(document.getElementById("em-pintura").value) || 0;
@@ -1163,12 +1539,16 @@ window.submitManutencao = () => {
   upsertPeriod(DATA.manutencao, "labels", label, { manutencaoGeral:g, pinturaTeto:p, outrosServicos:o });
   recomputeManutencao();
   logEntry("Manutenção de Carreta", `${label} · ${fmtBRL(g+p+o)}`);
-  toast("Manutenção atualizada ✓");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "manutencao") navigate("manutencao");
+  await gravarSeriesPeriodo([
+    { modulo:"manutencao", campo:"manutencaoGeral", label, valor:g },
+    { modulo:"manutencao", campo:"pinturaTeto", label, valor:p },
+    { modulo:"manutencao", campo:"outrosServicos", label, valor:o }
+  ], "Manutenção");
 };
 
-window.submitFolha = () => {
+window.submitFolha = async () => {
   const label = document.getElementById("ef-mes").value.trim();
   const vt = parseFloat(document.getElementById("ef-vtvr").value) || 0;
   const ad = parseFloat(document.getElementById("ef-ad40").value) || 0;
@@ -1177,9 +1557,13 @@ window.submitFolha = () => {
   upsertPeriod(DATA.folha, "labels", label, { vtVr:vt, ad40:ad, salario:sal });
   recomputeFolha();
   logEntry("Folha", `${label} · total salário ${(ad+sal).toFixed(1)} mil`);
-  toast("Folha atualizada ✓");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "folha") navigate("folha");
+  await gravarSeriesPeriodo([
+    { modulo:"folha", campo:"vtVr", label, valor:vt },
+    { modulo:"folha", campo:"ad40", label, valor:ad },
+    { modulo:"folha", campo:"salario", label, valor:sal }
+  ], "Folha");
 };
 
 window.submitFolhaAnual = () => {
@@ -1187,46 +1571,49 @@ window.submitFolhaAnual = () => {
   const v26 = parseFloat(document.getElementById("ef-tot26").value);
   updateFolhaAnual(isNaN(v25)?null:v25, isNaN(v26)?null:v26);
   logEntry("Folha (totais anuais)", `2025: ${DATA.folha.totalSalario2025_M} Mi · 2026: ${DATA.folha.totalSalario2026_M} Mi`);
-  toast("Totais anuais atualizados ✓");
+  toast("Totais anuais atualizados ✓ (guardado só nesta aba — este KPI não é enviado ao banco)");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "folha") navigate("folha");
 };
 
-window.submitHoraExtra = () => {
+window.submitHoraExtra = async () => {
   const ano = document.getElementById("eh-ano").value;
   const mes = document.getElementById("eh-mes").value;
   const idx = MONTH_ABBR.indexOf(mes);
   const custoOn = document.getElementById("he-custo").style.display !== "none";
+  let sbRow = null;
   if(custoOn){
     const v = parseFloat(document.getElementById("eh-valor-custo").value);
     if(isNaN(v)){ toast("Informe o valor."); return; }
     DATA.horaExtraCusto[ano==="2025"?"y2025":"y2026"][idx] = v;
     recomputeHoraExtraCusto();
     logEntry("Hora Extra (custo)", `${mes}/${ano} · ${fmtBRL(v)}`);
+    sbRow = { modulo:`horaextra_custo_${ano}`, campo:"valor", label:mes, valor:v };
   } else {
     const v = parseFloat(document.getElementById("eh-valor-qtd").value);
     if(isNaN(v)){ toast("Informe as horas."); return; }
     DATA.horaExtraQtd[ano==="2025"?"y2025":"y2026"][idx] = v;
     recomputeHoraExtraQtd();
     logEntry("Hora Extra (horas)", `${mes}/${ano} · ${v}h`);
+    sbRow = { modulo:`horaextra_qtd_${ano}`, campo:"valor", label:mes, valor:v };
   }
-  toast("Hora extra atualizada ✓");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "horaextra") navigate("horaextra");
+  await gravarSeriePeriodo(sbRow, "Hora Extra");
 };
 
-window.submitAtestado = () => {
+window.submitAtestado = async () => {
   const label = document.getElementById("ea-mes").value.trim();
   const v = parseInt(document.getElementById("ea-valor").value);
   if(!label || isNaN(v)){ toast("Preencha mês e ocorrências."); return; }
   upsertPeriod(DATA.atestados, "labels", label, { ocorrencias:v });
   logEntry("Atestados", `${label} · ${v} ocorrência(s)`);
-  toast("Atestados atualizado ✓");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "atestados") navigate("atestados");
+  await gravarSeriePeriodo({ modulo:"atestados", campo:"ocorrencias", label, valor:v }, "Atestados");
 };
 
-window.submitInfracao = () => {
+window.submitInfracao = async () => {
   const mensalOn = document.getElementById("inf-mensal").style.display !== "none";
   if(mensalOn){
     const label = document.getElementById("ei-mes").value.trim();
@@ -1235,6 +1622,9 @@ window.submitInfracao = () => {
     upsertPeriod(DATA.infracoes, "labels", label, { ocorrencias:v });
     recomputeInfracoes();
     logEntry("Infrações (mensal)", `${label} · ${v} ocorrência(s)`);
+    renderSessionLog();
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
+    await gravarSeriePeriodo({ modulo:"infracoes", campo:"ocorrencias", label, valor:v }, "Infrações");
   } else {
     const label = document.getElementById("ei-data").value.trim();
     const t1 = parseInt(document.getElementById("ei-turno1").value) || 0;
@@ -1242,37 +1632,61 @@ window.submitInfracao = () => {
     if(!label){ toast("Informe a data."); return; }
     upsertPeriod(DATA.infracoes.diario, "labels", label, { turno1:t1, turno2:t2 });
     logEntry("Infrações (diário)", `${label} · T1:${t1} T2:${t2}`);
+    renderSessionLog();
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
+    await gravarEventosDiarios([
+      { modulo:"infracoes_diario", campo:"turno1", label, valor:t1 },
+      { modulo:"infracoes_diario", campo:"turno2", label, valor:t2 }
+    ], "Infrações");
   }
-  toast("Infrações atualizado ✓");
-  renderSessionLog();
-  if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
 };
 
-window.submitAcidenteMes = () => {
+window.submitAcidenteMes = async () => {
   const mes = document.getElementById("eac-mes").value;
   const v = parseInt(document.getElementById("eac-valor").value);
   if(isNaN(v)){ toast("Informe a quantidade."); return; }
   const idx = DATA.acidentes.labels.indexOf(mes);
   if(idx>=0) DATA.acidentes.valores[idx] = v;
   logEntry("Acidentes", `${mes} · ${v} ocorrência(s)`);
-  toast("Acidentes atualizado ✓");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "acidentes") navigate("acidentes");
+  await gravarSeriePeriodo({ modulo:"acidentes", campo:"valores", label:mes, valor:v }, "Acidentes");
 };
-window.submitAcidenteAcao = () => {
+window.submitAcidenteAcao = async () => {
   const problema = document.getElementById("eac-problema").value.trim();
   const acao = document.getElementById("eac-acao").value.trim();
   const responsavel = document.getElementById("eac-resp").value.trim();
   if(!problema){ toast("Descreva o problema."); return; }
   DATA.acidentes.acoes.push({ problema, acao, responsavel });
   logEntry("Acidentes (plano de ação)", problema);
-  toast("Ação adicionada ✓");
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "acidentes") navigate("acidentes");
+  if(sb){
+    const { error } = await sb.from("acidentes_acoes").insert({ problema, acao, responsavel });
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+  }
+  toast("Ação adicionada ✓" + (sb ? " (salvo no banco)" : ""));
 };
 
+// Helpers usados pelos submits acima pra gravar no Supabase com upsert (não duplica se lançar o mesmo período de novo)
+async function gravarSeriePeriodo(row, nomeModulo){
+  return gravarSeriesPeriodo([row], nomeModulo);
+}
+async function gravarSeriesPeriodo(rows, nomeModulo){
+  if(!sb){ toast(`${nomeModulo} atualizado ✓ (modo local)`); return; }
+  const { error } = await sb.from("series_periodo").upsert(rows, { onConflict: "modulo,campo,label" });
+  if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+  toast(`${nomeModulo} atualizado ✓ (salvo no banco)`);
+}
+async function gravarEventosDiarios(rows, nomeModulo){
+  if(!sb){ toast(`${nomeModulo} atualizado ✓ (modo local)`); return; }
+  const { error } = await sb.from("eventos_diarios").upsert(rows, { onConflict: "modulo,campo,label" });
+  if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+  toast(`${nomeModulo} atualizado ✓ (salvo no banco)`);
+}
+
 initCharts.entrada = () => {
-  mountEntryForm("compras");
+  mountEntryForm(ENTRY_MODULES[0].key);
   renderSessionLog();
   document.getElementById("entryModTabs").addEventListener("click", (e)=>{
     const btn = e.target.closest(".tab-btn");
@@ -1284,5 +1698,22 @@ initCharts.entrada = () => {
 };
 
 /* ---------- Inicialização ---------- */
-deriveCompras();
-navigate("overview");
+function updateSyncPill(){
+  const el = document.getElementById("syncPill");
+  if(!el) return;
+  if(!sb){
+    el.innerHTML = `<span class="dot" style="background:var(--inkSoft);"></span> Modo local (sem banco configurado)`;
+  } else if(SUPABASE_SINCRONIZADO){
+    el.innerHTML = `<span class="dot"></span> Conectado ao banco`;
+  } else {
+    el.innerHTML = `<span class="dot" style="background:var(--amber);"></span> Banco vazio — vá em Entrada de Dados para migrar`;
+  }
+}
+
+(async function initApp(){
+  deriveCompras(); // garante que os dados locais (data.js) já estão prontos como base/fallback
+  const carregouDoBanco = await loadFromSupabase();
+  SUPABASE_SINCRONIZADO = carregouDoBanco;
+  updateSyncPill();
+  navigate("overview");
+})();

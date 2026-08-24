@@ -2674,6 +2674,31 @@ const DATA = {
     labels: ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"],
     valores: [0,0,0,0,0,0,0,0,0,0,0,0],
     acoes: [] // { problema, acao, responsavel }
+  },
+
+  /* ---------------------------------------------------------------------
+     10. CONTAS A PAGAR - PRESTADORES DE SERVIÇO
+     Cada item: prestador, cnpj, tipoServico, valor, formaPagamento,
+     dataEmissao, dataVencimento, numeroDocumento, status ("Pendente"/"Pago"),
+     dataPagamento (preenchida quando status vira "Pago").
+  --------------------------------------------------------------------- */
+  contasPagar: {
+    lancamentos: [
+      {
+        id: "cp_0001",
+        prestador: "MANUTENÇÃO E REPARAÇÃO CB MECA",
+        cnpj: "33.490.407/0001-01",
+        tipoServico: "Manutenção e Reparação",
+        valor: 4300.00,
+        formaPagamento: "Boleto",
+        dataEmissao: "2026-07-14",
+        dataVencimento: "2026-08-14",
+        numeroDocumento: "0262",
+        status: "Pendente",
+        dataPagamento: null
+      }
+    ]
   }
 
 };
+
