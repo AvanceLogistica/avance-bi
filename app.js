@@ -109,12 +109,13 @@ function applyEventosDiarios(rows){
 async function loadFromSupabase(){
   if(!sb) return false;
   try{
-    const [compras, contas, series, diarios, acoes] = await Promise.all([
+    const [compras, contas, series, diarios, acoes, manutLanc] = await Promise.all([
       sbFetchAll("compras_lancamentos"),
       sbFetchAll("contas_pagar"),
       sbFetchAll("series_periodo"),
       sbFetchAll("eventos_diarios"),
-      sbFetchAll("acidentes_acoes")
+      sbFetchAll("acidentes_acoes"),
+      sbFetchAll("manutencao_lancamentos")
     ]);
 
     if(!compras.length && !contas.length && !series.length) return false; // banco ainda vazio
@@ -132,8 +133,15 @@ async function loadFromSupabase(){
     applySeriesPeriodo(series);
     applyEventosDiarios(diarios);
     if(acoes.length) DATA.acidentes.acoes = acoes.map(a=>({ id:a.id, problema:a.problema, acao:a.acao, responsavel:a.responsavel }));
+    if(manutLanc.length){
+      DATA.manutencao.lancamentos = manutLanc.map(r=>({
+        id:r.id, d:r.data, placa:r.placa||"", local:r.local||"", nf:r.nf||"", os:r.os||"",
+        frota:r.frota||"", servico:r.servico||"", status:r.status||"", v:Number(r.valor)
+      }));
+    }
 
     deriveCompras();
+    deriveManutencao();
     return true;
   }catch(e){
     console.warn("Falha ao carregar do Supabase, mantendo dados locais:", e);
@@ -158,6 +166,12 @@ async function migrarParaSupabase(onProgress){
   say(`Enviando ${fmtNum(DATA.compras.comprasLancamentos.length)} lançamentos de Compras de Peças (pode levar um minuto)...`);
   const comprasRows = DATA.compras.comprasLancamentos.map(r=>({ data:r.d, placa:r.p, local:r.l, categoria:r.c, item:r.i, valor:r.v }));
   await sbBulkInsert("compras_lancamentos", comprasRows);
+
+  if(DATA.manutencao.lancamentos.length){
+    say(`Enviando ${fmtNum(DATA.manutencao.lancamentos.length)} lançamentos de Manutenção de Carreta...`);
+    const manutRows = DATA.manutencao.lancamentos.map(r=>({ data:r.d, placa:r.placa, local:r.local, nf:r.nf, os:r.os, frota:r.frota, servico:r.servico, status:r.status, valor:r.v }));
+    await sbBulkInsert("manutencao_lancamentos", manutRows);
+  }
 
   say("Enviando séries mensais (Manutenção, Diesel, Folha, Hora Extra, Atestados, Infrações, Acidentes)...");
   const seriesRows = [];
@@ -316,7 +330,7 @@ function getByPath(path){
 }
 // Funções de recálculo referenciáveis por nome (um descritor salvo em localStorage não pode
 // guardar uma função direto, só o nome dela).
-const RECOMPUTE_FN = { recomputeDiesel, recomputeManutencao, recomputeFolha, recomputeHoraExtraCusto, recomputeHoraExtraQtd, recomputeInfracoes, deriveCompras };
+const RECOMPUTE_FN = { recomputeDiesel, recomputeManutencao, recomputeFolha, recomputeHoraExtraCusto, recomputeHoraExtraQtd, recomputeInfracoes, deriveCompras, deriveManutencao };
 
 // Monta um DESCRITOR (objeto simples, serializável) de "desfazer" para um lançamento por período
 // (Diesel, Manutenção, Folha, Atestados, Infrações). Guarda o estado de ANTES do upsertPeriod: se o
@@ -382,6 +396,7 @@ async function executarUndo(d){
     const i = arr.findIndex(r=>r.id === d.itemId);
     if(i>=0) arr.splice(i,1);
     if(d.containerPath === "compras.comprasLancamentos") deriveCompras();
+    else if(d.containerPath === "manutencao.lancamentos") deriveManutencao();
     if(sb && d.sbTable && d.sbId) await sb.from(d.sbTable).delete().eq("id", d.sbId);
   } else if(d.kind === "folhaAnual"){
     updateFolhaAnual(d.anterior25, d.anterior26);
@@ -391,6 +406,13 @@ async function executarUndo(d){
     if(sb){
       await sb.from("compras_lancamentos").delete().not("id","is",null);
       if(d.anteriores.length) await sbBulkInsert("compras_lancamentos", d.anteriores.map(r=>({ data:r.d, placa:r.p, local:r.l, categoria:r.c, item:r.i, valor:r.v })));
+    }
+  } else if(d.kind === "bulkImportManutencao"){
+    DATA.manutencao.lancamentos = d.anteriores;
+    deriveManutencao();
+    if(sb){
+      await sb.from("manutencao_lancamentos").delete().not("id","is",null);
+      if(d.anteriores.length) await sbBulkInsert("manutencao_lancamentos", d.anteriores.map(r=>({ data:r.d, placa:r.placa, local:r.local, nf:r.nf, os:r.os, frota:r.frota, servico:r.servico, status:r.status, valor:r.v })));
     }
   }
 }
@@ -474,6 +496,57 @@ function deriveCompras(){
   const placasSorted = Object.values(placaMap).sort((a,b)=>b-a);
   const top10Sum = placasSorted.slice(0,10).reduce((a,b)=>a+b,0);
   c.top10CaminhoesPct = totalGeral ? Math.round(top10Sum/totalGeral*100) : 0;
+}
+
+// Decide em qual dos 3 grupos do módulo Manutenção um serviço entra, a partir do texto livre da
+// coluna "Serviço" da planilha (ou do valor escolhido no formulário avulso, que já vem exato).
+function categorizarServicoManutencao(servico){
+  const s = (servico||"").toUpperCase();
+  if(s.includes("PINTURA")) return "pinturaTeto";
+  if(s.includes("GERAL")) return "manutencaoGeral";
+  return "outrosServicos";
+}
+
+// Snapshot dos totais mensais de Manutenção como vieram do data.js, capturado uma única vez no
+// carregamento da página — é pra onde deriveManutencao() volta se todos os lançamentos
+// transacionais (avulsos ou de importação) forem excluídos, pra nunca ficar com tela em branco.
+const MANUTENCAO_BASELINE_AGREGADOS = {
+  labels: [...DATA.manutencao.labels], manutencaoGeral: [...DATA.manutencao.manutencaoGeral],
+  pinturaTeto: [...DATA.manutencao.pinturaTeto], outrosServicos: [...DATA.manutencao.outrosServicos],
+  totalGeral: [...DATA.manutencao.totalGeral], totalPeriodo: DATA.manutencao.totalPeriodo,
+  composicao: DATA.manutencao.composicao.map(c=>({ ...c }))
+};
+
+// Recalcula os totais mensais do módulo Manutenção a partir dos lançamentos individuais — mesma
+// lógica do deriveCompras() acima. Só entra em ação depois do primeiro lançamento (avulso ou por
+// importação de planilha); até lá (ou se todos forem excluídos de novo), os valores originais do
+// data.js continuam valendo. A partir do primeiro lançamento, eles passam a ser a fonte única da verdade.
+function deriveManutencao(){
+  const m = DATA.manutencao;
+  if(!Array.isArray(m.lancamentos)) m.lancamentos = [];
+  if(m.lancamentos.length === 0){
+    m.labels = [...MANUTENCAO_BASELINE_AGREGADOS.labels];
+    m.manutencaoGeral = [...MANUTENCAO_BASELINE_AGREGADOS.manutencaoGeral];
+    m.pinturaTeto = [...MANUTENCAO_BASELINE_AGREGADOS.pinturaTeto];
+    m.outrosServicos = [...MANUTENCAO_BASELINE_AGREGADOS.outrosServicos];
+    m.totalGeral = [...MANUTENCAO_BASELINE_AGREGADOS.totalGeral];
+    m.totalPeriodo = MANUTENCAO_BASELINE_AGREGADOS.totalPeriodo;
+    m.composicao = MANUTENCAO_BASELINE_AGREGADOS.composicao.map(c=>({ ...c }));
+    return;
+  }
+
+  const monthMap = {};
+  m.lancamentos.forEach(r=>{
+    const ym = r.d.slice(0,7);
+    if(!monthMap[ym]) monthMap[ym] = { manutencaoGeral:0, pinturaTeto:0, outrosServicos:0 };
+    monthMap[ym][categorizarServicoManutencao(r.servico)] += r.v;
+  });
+  const keys = Object.keys(monthMap).sort();
+  m.labels = keys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
+  m.manutencaoGeral = keys.map(k=>Math.round(monthMap[k].manutencaoGeral));
+  m.pinturaTeto = keys.map(k=>Math.round(monthMap[k].pinturaTeto));
+  m.outrosServicos = keys.map(k=>Math.round(monthMap[k].outrosServicos));
+  recomputeManutencao();
 }
 
 // Histórico de lançamentos feitos por aqui (feedback visual + permite excluir um lançamento errado).
@@ -1251,6 +1324,7 @@ const ENTRY_MODULES = [
 ];
 
 const CATEGORIAS_COMPRAS = ["💡 ELÉTRICA","🧱 ESTRUTURA / CABINE","🚛 SUSPENSÃO / AR","🔧 PEÇAS MECÂNICAS","🛢️ FILTROS E LUBRIFICANTES","🧪 QUÍMICOS / CONSUMO","🧰 FIXAÇÃO / METAIS","🧼 LIMPEZA / EPI","⚙️ SERVIÇOS"];
+const MANUTENCAO_SERVICOS = ["Manutenção Geral","Pintura do Teto","Outros Serviços"];
 const TIPOS_SERVICO = ["Manutenção e Reparação","Frete / Transporte","Consultoria","Jurídico","Contábil","TI / Software","Limpeza","Segurança","Combustível","Locação de Equipamento","Outros"];
 const FORMAS_PAGAMENTO = ["Boleto","PIX","Transferência (TED/DOC)","Cartão","Dinheiro"];
 
@@ -1371,15 +1445,29 @@ const ENTRY_FORMS = {
     <button class="entry-submit" onclick="submitDiesel()">Adicionar</button>
   `,
   manutencao: () => `
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
-      <label>Mês (ex: jul/26)<input type="text" id="em-mes" list="dl-manut-meses" placeholder="jul/26"></label>
-      <datalist id="dl-manut-meses">${DATA.manutencao.labels.map(l=>`<option value="${l}">`).join("")}</datalist>
-      <div></div>
-      <label>Manutenção Geral (R$)<input type="number" id="em-geral" step="0.01" placeholder="0,00"></label>
-      <label>Pintura do Teto (R$)<input type="number" id="em-pintura" step="0.01" placeholder="0,00"></label>
-      <label>Outros Serviços (R$)<input type="number" id="em-outros" step="0.01" placeholder="0,00"></label>
+    <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
+      <div class="hint" style="margin-bottom:10px;">
+        Colunas esperadas: DATA DO SERVIÇO, LOCAL, NF'S, O.S, FROTA, PLACA, VALOR R$, SERVIÇO, STATUS
+        — a mesma estrutura do seu relatório semanal de manutenção de carreta.<br>
+        <b>Importar substitui todo o histórico de Manutenção de Carreta do sistema pelo conteúdo da planilha</b>
+        (os totais mensais do dashboard passam a vir só dos lançamentos importados).
+      </div>
+      <input type="file" id="em-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="importManutencaoXlsx()">Importar e substituir</button>
+      <div id="em-import-status" class="hint" style="margin-top:10px;"></div>
     </div>
-    <button class="entry-submit" onclick="submitManutencao()">Adicionar / atualizar mês</button>
+    <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+    <div class="hint" style="margin-bottom:4px;">Ou lance um serviço avulso manualmente:</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+      <label>Data<input type="date" id="em-data" value="${new Date().toISOString().slice(0,10)}"></label>
+      <label>Placa / Frota<input type="text" id="em-placa" placeholder="Ex: DPB-3917"></label>
+      <label style="grid-column:1/-1;">Local / Oficina (opcional)<input type="text" id="em-local" list="dl-manut-locais" placeholder="Ex: Oficina Central"></label>
+      <datalist id="dl-manut-locais">${[...new Set(DATA.manutencao.lancamentos.map(r=>r.local).filter(Boolean))].sort().map(l=>`<option value="${l}">`).join("")}</datalist>
+      <label>Tipo de Serviço<select id="em-servico">${MANUTENCAO_SERVICOS.map(s=>`<option>${s}</option>`).join("")}</select></label>
+      <label>Valor (R$)<input type="number" id="em-valor" step="0.01" placeholder="0,00"></label>
+    </div>
+    <button class="entry-submit" onclick="submitManutencao()">Adicionar lançamento</button>
   `,
   folha: () => `
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
@@ -1581,6 +1669,116 @@ window.importComprasXlsx = async () => {
   }
 };
 
+// Converte "R$ 1.240,00" (ou já número) pro formato numérico usado internamente.
+function parseValorBRL(v){
+  if(typeof v === "number") return v;
+  if(v == null) return NaN;
+  return parseFloat(String(v).replace(/[R$\s.]/g,"").replace(",","."));
+}
+
+window.importManutencaoXlsx = async () => {
+  const fileInput = document.getElementById("em-import-file");
+  const statusEl = document.getElementById("em-import-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada (confira se xlsx.full.min.js está na pasta)."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+
+    // Procura, em qualquer aba, a linha de cabeçalho que contenha "DATA DO SERVIÇO"
+    let headerRow = null, sheetRows = null;
+    for(const name of wb.SheetNames){
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:null });
+      for(let i=0;i<Math.min(rows.length,15);i++){
+        const r = rows[i];
+        if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="DATA DO SERVIÇO")){
+          headerRow = r; sheetRows = rows.slice(i+1); break;
+        }
+      }
+      if(headerRow) break;
+    }
+    if(!headerRow){
+      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'Data do Serviço'). Confira se é a mesma estrutura do seu relatório semanal.";
+      return;
+    }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (name) => idx[name];
+    const cData = col("DATA DO SERVIÇO"), cLocal = col("LOCAL"), cNf = col("NF'S") ?? col("NF"),
+          cOs = col("O.S") ?? col("O.S."), cFrota = col("FROTA"), cPlaca = col("PLACA"),
+          cValor = col("VALOR R$") ?? col("VALOR"), cServico = col("SERVIÇO"), cStatus = col("STATUS");
+
+    if(cData==null || cValor==null){
+      statusEl.textContent = "⚠ Faltam colunas essenciais (DATA DO SERVIÇO ou VALOR R$). Confira o cabeçalho da planilha.";
+      return;
+    }
+
+    const novos = [];
+    let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const dataRaw = r[cData], valorRaw = r[cValor];
+      if(dataRaw == null || valorRaw == null || valorRaw === "") { ignoradas++; return; }
+      const iso = excelDateToISO(dataRaw);
+      if(!iso){ ignoradas++; return; }
+      const valor = parseValorBRL(valorRaw);
+      if(isNaN(valor)){ ignoradas++; return; }
+      novos.push({
+        id: localId(),
+        d: iso,
+        placa: (cPlaca!=null ? (r[cPlaca]||"").toString().trim() : ""),
+        local: (cLocal!=null ? (r[cLocal]||"").toString().trim() : "") || "Não informado",
+        nf: (cNf!=null ? (r[cNf]||"").toString().trim() : ""),
+        os: (cOs!=null ? (r[cOs]||"").toString().trim() : ""),
+        frota: (cFrota!=null ? (r[cFrota]||"").toString().trim() : ""),
+        servico: (cServico!=null ? (r[cServico]||"").toString().trim() : "") || "Outros Serviços",
+        status: (cStatus!=null ? (r[cStatus]||"").toString().trim() : ""),
+        v: valor
+      });
+    });
+
+    if(novos.length === 0){
+      statusEl.textContent = "⚠ Nenhum lançamento válido encontrado na planilha.";
+      return;
+    }
+
+    const anteriores = DATA.manutencao.lancamentos;
+    DATA.manutencao.lancamentos = novos;
+    deriveManutencao();
+    logEntry("Manutenção (importação)", `${novos.length} lançamentos importados de "${file.name}"`, { kind:"bulkImportManutencao", anteriores });
+    renderSessionLog();
+
+    const datas = novos.map(r=>r.d).sort();
+    let statusMsg = `✓ <b>${fmtNum(novos.length)}</b> lançamentos importados (${datas[0].split("-").reverse().join("/")} a ${datas[datas.length-1].split("-").reverse().join("/")}), total ${fmtBRL(novos.reduce((s,r)=>s+r.v,0))}.` +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem data ou valor válido foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
+
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "manutencao") navigate("manutencao");
+
+    if(sb){
+      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
+      const { error: delError } = await sb.from("manutencao_lancamentos").delete().not("id","is",null);
+      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      try{
+        await sbBulkInsert("manutencao_lancamentos", novos.map(r=>({ data:r.d, placa:r.placa, local:r.local, nf:r.nf, os:r.os, frota:r.frota, servico:r.servico, status:r.status, valor:r.v })));
+        statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+        toast(`✓ ${novos.length} lançamentos importados (salvo no banco)`);
+      }catch(e){
+        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+      }
+    } else {
+      toast(`✓ ${novos.length} lançamentos importados`);
+    }
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message;
+  }
+};
+
 window.submitContaPagar = async () => {
   const prestador = document.getElementById("ecp-prestador").value.trim();
   const cnpj = document.getElementById("ecp-cnpj").value.trim();
@@ -1673,27 +1871,29 @@ window.submitDiesel = async () => {
 };
 
 window.submitManutencao = async () => {
-  const label = document.getElementById("em-mes").value.trim();
-  const g = parseFloat(document.getElementById("em-geral").value) || 0;
-  const p = parseFloat(document.getElementById("em-pintura").value) || 0;
-  const o = parseFloat(document.getElementById("em-outros").value) || 0;
-  if(!label){ toast("Informe o mês."); return; }
-  const sbRows = [
-    { modulo:"manutencao", campo:"manutencaoGeral", label, valor:g },
-    { modulo:"manutencao", campo:"pinturaTeto", label, valor:p },
-    { modulo:"manutencao", campo:"outrosServicos", label, valor:o }
-  ];
-  const undo = prepararDesfazerPeriodo("manutencao", "labels", label, ["manutencaoGeral","pinturaTeto","outrosServicos"], "recomputeManutencao", "series_periodo", sbRows);
-  upsertPeriod(DATA.manutencao, "labels", label, { manutencaoGeral:g, pinturaTeto:p, outrosServicos:o });
-  recomputeManutencao();
-  logEntry("Manutenção de Carreta", `${label} · ${fmtBRL(g+p+o)}`, undo);
+  const d = document.getElementById("em-data").value;
+  const v = parseFloat(document.getElementById("em-valor").value);
+  if(!d || isNaN(v)){ toast("Preencha data e valor."); return; }
+  const placa = document.getElementById("em-placa").value.trim();
+  const local = document.getElementById("em-local").value.trim() || "Não informado";
+  const servico = document.getElementById("em-servico").value;
+  const registro = { id: localId(), d, placa, local, nf:"", os:"", frota:"", servico, status:"", v };
+  DATA.manutencao.lancamentos.push(registro);
+  deriveManutencao();
+  const undoDescr = prepararDesfazerArrayById("manutencao.lancamentos", registro.id, "manutencao_lancamentos");
+  logEntry("Manutenção de Carreta", `${d.split("-").reverse().join("/")} · ${servico} · ${fmtBRL2(v)}`, undoDescr);
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "manutencao") navigate("manutencao");
-  await gravarSeriesPeriodo([
-    { modulo:"manutencao", campo:"manutencaoGeral", label, valor:g },
-    { modulo:"manutencao", campo:"pinturaTeto", label, valor:p },
-    { modulo:"manutencao", campo:"outrosServicos", label, valor:o }
-  ], "Manutenção");
+
+  if(sb){
+    const { data, error } = await sb.from("manutencao_lancamentos").insert({ data:d, placa, local, servico, valor:v }).select().single();
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+    registro.id = data.id;
+    undoDescr.itemId = data.id;
+    undoDescr.sbId = data.id;
+    salvarSessionLogLocal();
+  }
+  toast("Lançamento de manutenção adicionado ✓" + (sb ? " (salvo no banco)" : ""));
 };
 
 window.submitFolha = async () => {
@@ -1892,6 +2092,7 @@ function updateSyncPill(){
 
 (async function initApp(){
   deriveCompras(); // garante que os dados locais (data.js) já estão prontos como base/fallback
+  deriveManutencao();
   const carregouDoBanco = await loadFromSupabase();
   SUPABASE_SINCRONIZADO = carregouDoBanco;
   carregarSessionLogLocal();

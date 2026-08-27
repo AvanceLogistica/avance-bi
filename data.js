@@ -29,7 +29,12 @@ const DATA = {
       { nome: "Manutenção Geral", valor: 563875, pct: 96 },
       { nome: "Pintura do Teto",  valor: 22765,  pct: 4 },
       { nome: "Outros Serviços",  valor: 1325,   pct: 0 }
-    ]
+    ],
+    // Lançamentos individuais (data, placa, serviço, valor) importados da planilha semanal ou
+    // lançados avulsos — assim que existir pelo menos um, os totais mensais acima passam a ser
+    // recalculados a partir daqui (ver deriveManutencao em app.js), substituindo os valores
+    // digitados manualmente por mês.
+    lancamentos: []
   },
 
   /* ---------------------------------------------------------------------
