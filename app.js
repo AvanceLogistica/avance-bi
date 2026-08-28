@@ -532,14 +532,36 @@ function deriveManutencao(){
     m.totalGeral = [...MANUTENCAO_BASELINE_AGREGADOS.totalGeral];
     m.totalPeriodo = MANUTENCAO_BASELINE_AGREGADOS.totalPeriodo;
     m.composicao = MANUTENCAO_BASELINE_AGREGADOS.composicao.map(c=>({ ...c }));
+    m.topCaminhoesValor = [];
+    m.topCaminhoesFrequencia = [];
+    m.porLocal = [];
+    m.pendentes = { qtd:0, valor:0 };
     return;
   }
 
-  const monthMap = {};
+  const monthMap = {}, placaMap = {}, localMap = {};
+  let pendQtd = 0, pendValor = 0;
   m.lancamentos.forEach(r=>{
     const ym = r.d.slice(0,7);
     if(!monthMap[ym]) monthMap[ym] = { manutencaoGeral:0, pinturaTeto:0, outrosServicos:0 };
     monthMap[ym][categorizarServicoManutencao(r.servico)] += r.v;
+
+    if(r.placa && r.placa.trim()){
+      const p = r.placa.trim();
+      if(!placaMap[p]) placaMap[p] = { valor:0, qtd:0 };
+      placaMap[p].valor += r.v;
+      placaMap[p].qtd += 1;
+    }
+    if(r.local && r.local.trim()){
+      const l = r.local.trim();
+      if(!localMap[l]) localMap[l] = { valor:0, qtd:0 };
+      localMap[l].valor += r.v;
+      localMap[l].qtd += 1;
+    }
+    if((r.status||"").trim().toUpperCase() === "PENDENTE"){
+      pendQtd += 1;
+      pendValor += r.v;
+    }
   });
   const keys = Object.keys(monthMap).sort();
   m.labels = keys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
@@ -547,6 +569,14 @@ function deriveManutencao(){
   m.pinturaTeto = keys.map(k=>Math.round(monthMap[k].pinturaTeto));
   m.outrosServicos = keys.map(k=>Math.round(monthMap[k].outrosServicos));
   recomputeManutencao();
+
+  m.topCaminhoesValor = Object.entries(placaMap).sort((a,b)=>b[1].valor-a[1].valor).slice(0,10)
+    .map(([placa,d])=>({ placa, valor:Math.round(d.valor), qtd:d.qtd }));
+  m.topCaminhoesFrequencia = Object.entries(placaMap).sort((a,b)=>b[1].qtd-a[1].qtd).slice(0,10)
+    .map(([placa,d])=>({ placa, qtd:d.qtd, valor:Math.round(d.valor) }));
+  m.porLocal = Object.entries(localMap).sort((a,b)=>b[1].valor-a[1].valor)
+    .map(([local,d])=>({ local, valor:Math.round(d.valor), qtd:d.qtd }));
+  m.pendentes = { qtd:pendQtd, valor:Math.round(pendValor) };
 }
 
 // Histórico de lançamentos feitos por aqui (feedback visual + permite excluir um lançamento errado).
@@ -739,6 +769,7 @@ renderers.manutencao = () => {
       <div class="kpi"><div class="lbl">Manutenção geral</div><div class="val">${m.composicao[0].pct}%</div>${deltaBadge(0)}</div>
       <div class="kpi"><div class="lbl">Pintura do teto</div><div class="val">${m.composicao[1].pct}%</div></div>
       <div class="kpi"><div class="lbl">Último mês (${m.labels[m.labels.length-1]})</div><div class="val">${fmtBRL(ultimo)}</div>${deltaBadge(deltaPct(ultimo,penult), true)}</div>
+      <div class="kpi"><div class="lbl">Serviços pendentes</div><div class="val">${fmtNum(m.pendentes.qtd)}</div><div class="delta flat">${fmtBRL(m.pendentes.valor)} em aberto</div></div>
     </div>
     <div class="grid-2">
       <div class="panel">
@@ -764,6 +795,42 @@ renderers.manutencao = () => {
         </tbody>
       </table>
     </div>
+    ${m.lancamentos.length === 0 ? `
+    <div class="panel">
+      <div class="empty-state" style="padding:24px;"><div class="glyph">📋</div><p>Rankings por caminhão e por local aparecem aqui depois da primeira importação de planilha ou lançamento avulso.</p></div>
+    </div>` : `
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Top 10 caminhões por custo de manutenção</h3>
+        <div class="hint">Soma de todos os lançamentos, ${m.labels[0]} a ${m.labels[m.labels.length-1]}</div>
+        <table>
+          <thead><tr><th>#</th><th>Placa</th><th class="num">Serviços</th><th class="num">Valor total</th></tr></thead>
+          <tbody>
+            ${m.topCaminhoesValor.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.placa}</td><td class="num">${fmtNum(t.qtd)}</td><td class="num">${fmtBRL2(t.valor)}</td></tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h3>Top 10 caminhões por frequência</h3>
+        <div class="hint">Quantidade de vezes na oficina — ajuda a achar veículo com problema recorrente, não só caro</div>
+        <table>
+          <thead><tr><th>#</th><th>Placa</th><th class="num">Serviços</th><th class="num">Valor total</th></tr></thead>
+          <tbody>
+            ${m.topCaminhoesFrequencia.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.placa}</td><td class="num">${fmtNum(t.qtd)}</td><td class="num">${fmtBRL2(t.valor)}</td></tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Custo por local</h3>
+      <div class="hint">Onde os serviços foram realizados</div>
+      <table>
+        <thead><tr><th>Local</th><th class="num">Serviços</th><th class="num">Valor total</th><th class="num">%</th></tr></thead>
+        <tbody>
+          ${m.porLocal.map(l=>`<tr><td>${l.local}</td><td class="num">${fmtNum(l.qtd)}</td><td class="num">${fmtBRL2(l.valor)}</td><td class="num">${m.totalPeriodo ? (l.valor/m.totalPeriodo*100).toFixed(1) : "0"}%</td></tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`}
   `;
 };
 initCharts.manutencao = () => {
