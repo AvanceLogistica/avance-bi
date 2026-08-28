@@ -733,7 +733,7 @@ renderers.manutencao = () => {
   const ultimo = m.totalGeral[m.totalGeral.length-1];
   const penult = m.totalGeral[m.totalGeral.length-2];
   return `
-    <div class="page-head"><h2>Manutenção de Carreta</h2><p>Custo em R$ por tipo de serviço, dez/25 a jun/26</p></div>
+    <div class="page-head"><h2>Manutenção de Carreta</h2><p>Custo em R$ por tipo de serviço, ${m.labels[0]} a ${m.labels[m.labels.length-1]}</p></div>
     <div class="kpi-grid">
       <div class="kpi"><div class="lbl">Total do período</div><div class="val">${fmtBRL(m.totalPeriodo)}</div></div>
       <div class="kpi"><div class="lbl">Manutenção geral</div><div class="val">${m.composicao[0].pct}%</div>${deltaBadge(0)}</div>
