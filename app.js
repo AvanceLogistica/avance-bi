@@ -317,6 +317,31 @@ document.getElementById("navMenu").addEventListener("click", (e)=>{
 document.getElementById("lastUpdate").textContent = DATA.meta.lastUpdate;
 
 /* ============================================================================
+   FILTRO DE ANO — Diesel, Manutenção de Carreta e Compras de Peças
+   ----------------------------------------------------------------------------
+   "todos" = sem filtro (usa DATA.x direto). Um ano específico = renderers.x monta
+   uma "visão filtrada" via computarXStats(lancamentos do ano) e guarda em xView,
+   que tanto renderers.x quanto initCharts.x leem — sem mexer no DATA.x real.
+   ============================================================================ */
+const FILTRO_ANO = { diesel:"todos", manutencao:"todos", compras:"todos" };
+// Última "visão" (filtrada ou não) montada pelo renderers.x de cada módulo — initCharts.x lê daqui
+// em vez de DATA.x direto, pra ficar em sincronia com o filtro de ano sem precisar mudar navigate().
+let dieselView = null, manutencaoView = null, comprasView = null;
+window.setFiltroAno = (modulo, ano) => {
+  FILTRO_ANO[modulo] = ano;
+  navigate(modulo);
+};
+// Monta o <div> com os botões de filtro (Todos + um por ano com lançamento) — some sozinho se só
+// houver 1 ano de dados (nada pra filtrar) ou nenhum lançamento ainda.
+function montarFiltroAno(modulo, lancamentos){
+  const anos = [...new Set(lancamentos.map(r=>r.d.slice(0,4)))].sort();
+  if(anos.length < 2) return "";
+  const atual = FILTRO_ANO[modulo];
+  const btn = (valor,label) => `<button class="sub-tab-btn ${atual===valor?"active":""}" onclick="setFiltroAno('${modulo}','${valor}')">${label}</button>`;
+  return `<div class="tabs" style="margin-top:10px;">${btn("todos","Todos")}${anos.map(a=>btn(a,a)).join("")}</div>`;
+}
+
+/* ============================================================================
    ENTRADA DE DADOS — funções de atualização e recálculo
    ============================================================================ */
 const MONTH_ABBR = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
@@ -492,33 +517,45 @@ function recomputeInfracoes(){
   inf.totalAno2026 = Math.round(sumIf(inf.labels, inf.ocorrencias, l=>l.includes("/26")));
 }
 
-// Recalcula tudo do módulo Compras a partir dos lançamentos individuais (fonte única da verdade).
-function deriveCompras(){
-  const c = DATA.compras;
+// Calcula os totais mensais + rankings do módulo Compras a partir de uma LISTA de lançamentos —
+// função pura, não mexe em DATA.compras. Usada tanto pra recalcular o estado real (deriveCompras,
+// com TODOS os lançamentos) quanto pra gerar a "visão filtrada" quando o usuário escolhe um ano
+// específico no filtro da página (ver renderers.compras).
+function computarComprasStats(lancamentos){
   const monthMap = {}, localMap = {}, catMap = {}, placaMap = {};
-  c.comprasLancamentos.forEach(r=>{
+  let totalGeral = 0;
+  lancamentos.forEach(r=>{
     const ym = r.d.slice(0,7);
     monthMap[ym] = (monthMap[ym]||0) + r.v;
     if(r.l) localMap[r.l] = (localMap[r.l]||0) + r.v;
     const cat = r.c || "Sem categoria";
     catMap[cat] = (catMap[cat]||0) + r.v;
     if(r.p && r.p.trim()) placaMap[r.p.trim()] = (placaMap[r.p.trim()]||0) + r.v;
+    totalGeral += r.v;
   });
   const keys = Object.keys(monthMap).sort();
-  c.mensalLabels = keys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
-  c.mensal = keys.map(k=> Math.round(monthMap[k]));
-  c.totalAno2026 = Math.round(keys.filter(k=>k.startsWith("2026")).reduce((s,k)=>s+monthMap[k],0));
+  const mensalLabels = keys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
+  const mensal = keys.map(k=> Math.round(monthMap[k]));
 
-  const totalGeral = Object.values(localMap).reduce((a,b)=>a+b,0);
   const locaisSorted = Object.entries(localMap).sort((a,b)=>b[1]-a[1]).slice(0,10);
-  c.topLocais = locaisSorted.map(([local,valor])=>({ local, valor }));
-  c.topLocaisTotal = Math.round(locaisSorted.reduce((s,[,v])=>s+v,0));
+  const topLocais = locaisSorted.map(([local,valor])=>({ local, valor }));
+  const topLocaisTotal = Math.round(locaisSorted.reduce((s,[,v])=>s+v,0));
 
-  c.porCategoria = Object.entries(catMap).sort((a,b)=>b[1]-a[1]).map(([categoria,valor])=>({ categoria, valor }));
+  const porCategoria = Object.entries(catMap).sort((a,b)=>b[1]-a[1]).map(([categoria,valor])=>({ categoria, valor }));
 
   const placasSorted = Object.values(placaMap).sort((a,b)=>b-a);
   const top10Sum = placasSorted.slice(0,10).reduce((a,b)=>a+b,0);
-  c.top10CaminhoesPct = totalGeral ? Math.round(top10Sum/totalGeral*100) : 0;
+  const top10CaminhoesPct = totalGeral ? Math.round(top10Sum/totalGeral*100) : 0;
+
+  return { comprasLancamentos: lancamentos, mensalLabels, mensal, totalPeriodo: Math.round(totalGeral), topLocais, topLocaisTotal, porCategoria, top10CaminhoesPct };
+}
+
+// Recalcula tudo do módulo Compras a partir dos lançamentos individuais (fonte única da verdade).
+function deriveCompras(){
+  const c = DATA.compras;
+  Object.assign(c, computarComprasStats(c.comprasLancamentos));
+  const lanc2026 = c.comprasLancamentos.filter(r=>r.d.startsWith("2026"));
+  c.totalAno2026 = Math.round(lanc2026.reduce((s,r)=>s+r.v,0));
 }
 
 // Decide em qual dos 3 grupos do módulo Manutenção um serviço entra, a partir do texto livre da
@@ -540,31 +577,14 @@ const MANUTENCAO_BASELINE_AGREGADOS = {
   composicao: DATA.manutencao.composicao.map(c=>({ ...c }))
 };
 
-// Recalcula os totais mensais do módulo Manutenção a partir dos lançamentos individuais — mesma
-// lógica do deriveCompras() acima. Só entra em ação depois do primeiro lançamento (avulso ou por
-// importação de planilha); até lá (ou se todos forem excluídos de novo), os valores originais do
-// data.js continuam valendo. A partir do primeiro lançamento, eles passam a ser a fonte única da verdade.
-function deriveManutencao(){
-  const m = DATA.manutencao;
-  if(!Array.isArray(m.lancamentos)) m.lancamentos = [];
-  if(m.lancamentos.length === 0){
-    m.labels = [...MANUTENCAO_BASELINE_AGREGADOS.labels];
-    m.manutencaoGeral = [...MANUTENCAO_BASELINE_AGREGADOS.manutencaoGeral];
-    m.pinturaTeto = [...MANUTENCAO_BASELINE_AGREGADOS.pinturaTeto];
-    m.outrosServicos = [...MANUTENCAO_BASELINE_AGREGADOS.outrosServicos];
-    m.totalGeral = [...MANUTENCAO_BASELINE_AGREGADOS.totalGeral];
-    m.totalPeriodo = MANUTENCAO_BASELINE_AGREGADOS.totalPeriodo;
-    m.composicao = MANUTENCAO_BASELINE_AGREGADOS.composicao.map(c=>({ ...c }));
-    m.topCaminhoesValor = [];
-    m.topCaminhoesFrequencia = [];
-    m.porLocal = [];
-    m.pendentes = { qtd:0, valor:0 };
-    return;
-  }
-
+// Calcula os totais mensais + rankings do módulo Manutenção a partir de uma LISTA de lançamentos —
+// função pura, não mexe em DATA.manutencao. Usada tanto pra recalcular o estado real (deriveManutencao,
+// com TODOS os lançamentos) quanto pra gerar a "visão filtrada" quando o usuário escolhe um ano
+// específico no filtro da página (ver renderers.manutencao).
+function computarManutencaoStats(lancamentos){
   const monthMap = {}, placaMap = {}, localMap = {};
   let pendQtd = 0, pendValor = 0;
-  m.lancamentos.forEach(r=>{
+  lancamentos.forEach(r=>{
     const ym = r.d.slice(0,7);
     if(!monthMap[ym]) monthMap[ym] = { manutencaoGeral:0, pinturaTeto:0, outrosServicos:0 };
     monthMap[ym][categorizarServicoManutencao(r.servico)] += r.v;
@@ -587,19 +607,51 @@ function deriveManutencao(){
     }
   });
   const keys = Object.keys(monthMap).sort();
-  m.labels = keys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
-  m.manutencaoGeral = keys.map(k=>Math.round(monthMap[k].manutencaoGeral));
-  m.pinturaTeto = keys.map(k=>Math.round(monthMap[k].pinturaTeto));
-  m.outrosServicos = keys.map(k=>Math.round(monthMap[k].outrosServicos));
-  recomputeManutencao();
+  const labels = keys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
+  const manutencaoGeral = keys.map(k=>Math.round(monthMap[k].manutencaoGeral));
+  const pinturaTeto = keys.map(k=>Math.round(monthMap[k].pinturaTeto));
+  const outrosServicos = keys.map(k=>Math.round(monthMap[k].outrosServicos));
+  const totalGeral = manutencaoGeral.map((v,i)=> (v||0)+(pinturaTeto[i]||0)+(outrosServicos[i]||0));
+  const totalPeriodo = sumArr(totalGeral);
+  const totMG = sumArr(manutencaoGeral), totPT = sumArr(pinturaTeto), totOS = sumArr(outrosServicos);
+  const composicao = [
+    { nome:"Manutenção Geral", valor:totMG, pct: totalPeriodo? Math.round(totMG/totalPeriodo*100):0 },
+    { nome:"Pintura do Teto", valor:totPT, pct: totalPeriodo? Math.round(totPT/totalPeriodo*100):0 },
+    { nome:"Outros Serviços", valor:totOS, pct: totalPeriodo? Math.round(totOS/totalPeriodo*100):0 }
+  ];
 
-  m.topCaminhoesValor = Object.entries(placaMap).sort((a,b)=>b[1].valor-a[1].valor).slice(0,10)
+  const topCaminhoesValor = Object.entries(placaMap).sort((a,b)=>b[1].valor-a[1].valor).slice(0,10)
     .map(([placa,d])=>({ placa, valor:Math.round(d.valor), qtd:d.qtd }));
-  m.topCaminhoesFrequencia = Object.entries(placaMap).sort((a,b)=>b[1].qtd-a[1].qtd).slice(0,10)
+  const topCaminhoesFrequencia = Object.entries(placaMap).sort((a,b)=>b[1].qtd-a[1].qtd).slice(0,10)
     .map(([placa,d])=>({ placa, qtd:d.qtd, valor:Math.round(d.valor) }));
-  m.porLocal = Object.entries(localMap).sort((a,b)=>b[1].valor-a[1].valor)
+  const porLocal = Object.entries(localMap).sort((a,b)=>b[1].valor-a[1].valor)
     .map(([local,d])=>({ local, valor:Math.round(d.valor), qtd:d.qtd }));
-  m.pendentes = { qtd:pendQtd, valor:Math.round(pendValor) };
+
+  return { lancamentos, labels, manutencaoGeral, pinturaTeto, outrosServicos, totalGeral, totalPeriodo, composicao,
+    topCaminhoesValor, topCaminhoesFrequencia, porLocal, pendentes:{ qtd:pendQtd, valor:Math.round(pendValor) } };
+}
+
+// Recalcula DATA.manutencao a partir de TODOS os lançamentos. Só entra em ação depois do primeiro
+// lançamento (avulso ou por importação de planilha); até lá (ou se todos forem excluídos de novo),
+// os valores originais do data.js continuam valendo.
+function deriveManutencao(){
+  const m = DATA.manutencao;
+  if(!Array.isArray(m.lancamentos)) m.lancamentos = [];
+  if(m.lancamentos.length === 0){
+    m.labels = [...MANUTENCAO_BASELINE_AGREGADOS.labels];
+    m.manutencaoGeral = [...MANUTENCAO_BASELINE_AGREGADOS.manutencaoGeral];
+    m.pinturaTeto = [...MANUTENCAO_BASELINE_AGREGADOS.pinturaTeto];
+    m.outrosServicos = [...MANUTENCAO_BASELINE_AGREGADOS.outrosServicos];
+    m.totalGeral = [...MANUTENCAO_BASELINE_AGREGADOS.totalGeral];
+    m.totalPeriodo = MANUTENCAO_BASELINE_AGREGADOS.totalPeriodo;
+    m.composicao = MANUTENCAO_BASELINE_AGREGADOS.composicao.map(c=>({ ...c }));
+    m.topCaminhoesValor = [];
+    m.topCaminhoesFrequencia = [];
+    m.porLocal = [];
+    m.pendentes = { qtd:0, valor:0 };
+    return;
+  }
+  Object.assign(m, computarManutencaoStats(m.lancamentos));
 }
 
 // Número da semana ISO 8601 (segunda a domingo) de uma data "YYYY-MM-DD" — usado pra agrupar
@@ -623,9 +675,55 @@ const DIESEL_BASELINE_AGREGADOS = {
   topCaminhoes: DATA.diesel.topCaminhoes.map(t=>({ ...t })), topCaminhoesTotalPct: DATA.diesel.topCaminhoesTotalPct
 };
 
-// Recalcula os totais de Diesel a partir dos abastecimentos individuais — mesma lógica de
-// deriveManutencao(). Só entra em ação depois do primeiro lançamento (avulso ou importação); até lá
-// (ou se todos forem excluídos de novo), os valores originais do data.js continuam valendo.
+// Calcula os totais de Diesel (mensal, semanal, top caminhões) a partir de uma LISTA de
+// abastecimentos — função pura, não mexe em DATA.diesel. Usada tanto pra recalcular o estado real
+// (deriveDiesel, com TODOS os lançamentos) quanto pra gerar a "visão filtrada" quando o usuário
+// escolhe um ano específico no filtro da página (ver renderers.diesel).
+function computarDieselStats(lancamentos){
+  const monthMap = {}, weekMap = {}, placaMap = {};
+  let totalGeral = 0, litrosGeral = 0;
+  lancamentos.forEach(r=>{
+    const ym = r.d.slice(0,7);
+    monthMap[ym] = (monthMap[ym]||0) + r.v;
+    const wk = isoWeekLabel(r.d);
+    weekMap[wk] = (weekMap[wk]||0) + r.v;
+    if(r.placa && r.placa.trim()){
+      const p = r.placa.trim();
+      placaMap[p] = (placaMap[p]||0) + r.v;
+    }
+    totalGeral += r.v;
+    litrosGeral += (r.litros||0);
+  });
+
+  const monthKeys = Object.keys(monthMap).sort();
+  const mensalLabels = monthKeys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
+  const mensal = monthKeys.map(k=>Math.round(monthMap[k]));
+
+  const weekKeys = Object.keys(weekMap).sort((a,b)=>{
+    const [wa,ya] = a.slice(1).split("/"), [wb,yb] = b.slice(1).split("/");
+    return (ya.padStart(2,"0")+wa.padStart(2,"0")).localeCompare(yb.padStart(2,"0")+wb.padStart(2,"0"));
+  });
+  const semanalLabels = weekKeys;
+  const semanal_x1000 = weekKeys.map(k=>Math.round(weekMap[k]/1000));
+  const mediaSemanal = weekKeys.length ? Math.round(weekKeys.reduce((s,k)=>s+weekMap[k],0)/weekKeys.length) : 0;
+
+  const placasSorted = Object.entries(placaMap).sort((a,b)=>b[1]-a[1]);
+  const top10 = placasSorted.slice(0,10);
+  const top10Sum = top10.reduce((s,[,v])=>s+v,0);
+  const topCaminhoes = top10.map(([placa,valor])=>({ placa, valor:Math.round(valor), pct: totalGeral ? +(valor/totalGeral*100).toFixed(2) : 0 }));
+  const topCaminhoesTotalPct = totalGeral ? Math.round(top10Sum/totalGeral*100) : 0;
+
+  return {
+    lancamentos, mensalLabels, mensal,
+    totalPeriodo: Math.round(totalGeral), totalLitrosPeriodo: Math.round(litrosGeral),
+    custoMedioLitro: litrosGeral ? +(totalGeral/litrosGeral).toFixed(2) : null,
+    mediaSemanal, semanalLabels, semanal_x1000, topCaminhoes, topCaminhoesTotalPct
+  };
+}
+
+// Recalcula DATA.diesel a partir de TODOS os abastecimentos. Só entra em ação depois do primeiro
+// lançamento (avulso ou importação); até lá (ou se todos forem excluídos de novo), os valores
+// originais do data.js continuam valendo.
 function deriveDiesel(){
   const d = DATA.diesel;
   if(!Array.isArray(d.lancamentos)) d.lancamentos = [];
@@ -645,44 +743,10 @@ function deriveDiesel(){
     return;
   }
 
-  const monthMap = {}, weekMap = {}, placaMap = {};
-  let totalGeral = 0, litrosGeral = 0, totalGeral2026 = 0, litros2026 = 0;
-  d.lancamentos.forEach(r=>{
-    const ym = r.d.slice(0,7);
-    monthMap[ym] = (monthMap[ym]||0) + r.v;
-    const wk = isoWeekLabel(r.d);
-    weekMap[wk] = (weekMap[wk]||0) + r.v;
-    if(r.placa && r.placa.trim()){
-      const p = r.placa.trim();
-      placaMap[p] = (placaMap[p]||0) + r.v;
-    }
-    totalGeral += r.v;
-    litrosGeral += (r.litros||0);
-    if(r.d.startsWith("2026")){ totalGeral2026 += r.v; litros2026 += (r.litros||0); }
-  });
-
-  const monthKeys = Object.keys(monthMap).sort();
-  d.mensalLabels = monthKeys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
-  d.mensal = monthKeys.map(k=>Math.round(monthMap[k]));
-  d.totalPeriodo = Math.round(totalGeral);
-  d.totalLitrosPeriodo = Math.round(litrosGeral);
-  d.custoMedioLitro = litrosGeral ? +(totalGeral/litrosGeral).toFixed(2) : null;
-  d.totalAno2026 = Math.round(totalGeral2026);
-  d.totalLitrosAno2026 = Math.round(litros2026);
-
-  const weekKeys = Object.keys(weekMap).sort((a,b)=>{
-    const [wa,ya] = a.slice(1).split("/"), [wb,yb] = b.slice(1).split("/");
-    return (ya.padStart(2,"0")+wa.padStart(2,"0")).localeCompare(yb.padStart(2,"0")+wb.padStart(2,"0"));
-  });
-  d.semanalLabels = weekKeys;
-  d.semanal_x1000 = weekKeys.map(k=>Math.round(weekMap[k]/1000));
-  d.mediaSemanal = weekKeys.length ? Math.round(weekKeys.reduce((s,k)=>s+weekMap[k],0)/weekKeys.length) : 0;
-
-  const placasSorted = Object.entries(placaMap).sort((a,b)=>b[1]-a[1]);
-  const top10 = placasSorted.slice(0,10);
-  const top10Sum = top10.reduce((s,[,v])=>s+v,0);
-  d.topCaminhoes = top10.map(([placa,valor])=>({ placa, valor:Math.round(valor), pct: totalGeral ? +(valor/totalGeral*100).toFixed(2) : 0 }));
-  d.topCaminhoesTotalPct = totalGeral ? Math.round(top10Sum/totalGeral*100) : 0;
+  Object.assign(d, computarDieselStats(d.lancamentos));
+  const lanc2026 = d.lancamentos.filter(r=>r.d.startsWith("2026"));
+  d.totalAno2026 = Math.round(lanc2026.reduce((s,r)=>s+r.v,0));
+  d.totalLitrosAno2026 = Math.round(lanc2026.reduce((s,r)=>s+(r.litros||0),0));
 }
 
 // Histórico de lançamentos feitos por aqui (feedback visual + permite excluir um lançamento errado).
@@ -865,11 +929,14 @@ initCharts.overview = () => {
 
 /* -------------------- MANUTENÇÃO DE CARRETA -------------------- */
 renderers.manutencao = () => {
-  const m = DATA.manutencao;
+  const filtro = FILTRO_ANO.manutencao;
+  const m = manutencaoView = (filtro === "todos" || DATA.manutencao.lancamentos.length === 0)
+    ? DATA.manutencao
+    : computarManutencaoStats(DATA.manutencao.lancamentos.filter(r=>r.d.startsWith(filtro)));
   const ultimo = m.totalGeral[m.totalGeral.length-1];
   const penult = m.totalGeral[m.totalGeral.length-2];
   return `
-    <div class="page-head"><h2>Manutenção de Carreta</h2><p>Custo em R$ por tipo de serviço, ${m.labels[0]} a ${m.labels[m.labels.length-1]}</p></div>
+    <div class="page-head"><h2>Manutenção de Carreta</h2><p>Custo em R$ por tipo de serviço, ${m.labels[0]} a ${m.labels[m.labels.length-1]}</p>${montarFiltroAno("manutencao", DATA.manutencao.lancamentos)}</div>
     <div class="kpi-grid">
       <div class="kpi"><div class="lbl">Total do período</div><div class="val">${fmtBRL(m.totalPeriodo)}</div></div>
       <div class="kpi"><div class="lbl">Manutenção geral</div><div class="val">${m.composicao[0].pct}%</div>${deltaBadge(0)}</div>
@@ -940,7 +1007,7 @@ renderers.manutencao = () => {
   `;
 };
 initCharts.manutencao = () => {
-  const m = DATA.manutencao;
+  const m = manutencaoView || DATA.manutencao;
   mkChart("ch-manut-mensal", {
     type:"bar",
     data:{ labels:m.labels, datasets:[
@@ -966,10 +1033,13 @@ initCharts.manutencao = () => {
 
 /* -------------------- DIESEL -------------------- */
 renderers.diesel = () => {
-  const d = DATA.diesel;
+  const filtro = FILTRO_ANO.diesel;
+  const d = dieselView = (filtro === "todos" || DATA.diesel.lancamentos.length === 0)
+    ? DATA.diesel
+    : computarDieselStats(DATA.diesel.lancamentos.filter(r=>r.d.startsWith(filtro)));
   const maiorMesIdx = d.mensal.indexOf(Math.max(...d.mensal));
   return `
-    <div class="page-head"><h2>Diesel</h2><p>Custo de abastecimento — ${d.mensalLabels[0]} a ${d.mensalLabels[d.mensalLabels.length-1]}</p></div>
+    <div class="page-head"><h2>Diesel</h2><p>Custo de abastecimento — ${d.mensalLabels[0]} a ${d.mensalLabels[d.mensalLabels.length-1]}</p>${montarFiltroAno("diesel", DATA.diesel.lancamentos)}</div>
     <div class="kpi-grid">
       <div class="kpi"><div class="lbl">Total do período</div><div class="val">${fmtBRL(d.totalPeriodo)}</div></div>
       <div class="kpi"><div class="lbl">Litros abastecidos</div><div class="val">${d.totalLitrosPeriodo!=null ? fmtNum(d.totalLitrosPeriodo)+"L" : "—"}</div></div>
@@ -1001,7 +1071,7 @@ renderers.diesel = () => {
   `;
 };
 initCharts.diesel = () => {
-  const d = DATA.diesel;
+  const d = dieselView || DATA.diesel;
   mkChart("ch-diesel-mensal", {
     type:"bar",
     data:{ labels:d.mensalLabels, datasets:[{ data:d.mensal, backgroundColor:d.mensal.map(v=>v===Math.max(...d.mensal)?COLORS.redDark:COLORS.red), borderRadius:5 }]},
@@ -1149,12 +1219,15 @@ initCharts.horaextra = () => {
 
 /* -------------------- COMPRAS DE PEÇAS -------------------- */
 renderers.compras = () => {
-  const c = DATA.compras;
+  const filtro = FILTRO_ANO.compras;
+  const c = comprasView = (filtro === "todos" || DATA.compras.comprasLancamentos.length === 0)
+    ? DATA.compras
+    : computarComprasStats(DATA.compras.comprasLancamentos.filter(r=>r.d.startsWith(filtro)));
   const recentes = [...c.comprasLancamentos].sort((a,b)=> b.d.localeCompare(a.d)).slice(0,12);
   return `
-    <div class="page-head"><h2>Compras de Peças</h2><p>Custo mensal, por categoria e por local — calculado a partir de ${fmtNum(c.comprasLancamentos.length)} lançamentos individuais</p></div>
+    <div class="page-head"><h2>Compras de Peças</h2><p>Custo mensal, por categoria e por local — calculado a partir de ${fmtNum(c.comprasLancamentos.length)} lançamentos individuais</p>${montarFiltroAno("compras", DATA.compras.comprasLancamentos)}</div>
     <div class="kpi-grid">
-      <div class="kpi"><div class="lbl">Total 2026</div><div class="val">${fmtBRL(c.totalAno2026)}</div></div>
+      <div class="kpi"><div class="lbl">Total do período</div><div class="val">${fmtBRL(c.totalPeriodo)}</div></div>
       <div class="kpi"><div class="lbl">Top 10 veículos</div><div class="val">${c.top10CaminhoesPct}%</div><div class="delta flat">do custo total</div></div>
       <div class="kpi"><div class="lbl">Maior mês</div><div class="val">${fmtBRL(Math.max(...c.mensal))}</div><div class="delta flat">${c.mensalLabels[c.mensal.indexOf(Math.max(...c.mensal))]}</div></div>
       <div class="kpi"><div class="lbl">Top 10 locais</div><div class="val">${fmtBRL(c.topLocaisTotal)}</div></div>
@@ -1192,7 +1265,7 @@ renderers.compras = () => {
   `;
 };
 initCharts.compras = () => {
-  const c = DATA.compras;
+  const c = comprasView || DATA.compras;
   mkChart("ch-compras-mensal", {
     type:"bar",
     data:{ labels:c.mensalLabels, datasets:[{ data:c.mensal, backgroundColor:COLORS.ink, borderRadius:5 }]},
