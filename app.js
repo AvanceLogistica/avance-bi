@@ -1561,9 +1561,21 @@ window.toggleSub = (btn, showId, hideId) => {
 
 // Converte data do Excel (Date object, já que lemos com cellDates:true) para "YYYY-MM-DD" local, sem shift de fuso.
 function excelDateToISO(d){
-  if(!(d instanceof Date) || isNaN(d)) return null;
-  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,"0"), day = String(d.getDate()).padStart(2,"0");
-  return `${y}-${m}-${day}`;
+  if(d instanceof Date && !isNaN(d)){
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,"0"), day = String(d.getDate()).padStart(2,"0");
+    return `${y}-${m}-${day}`;
+  }
+  // Algumas linhas trazem a data como texto "DD/MM/AAAA" ou "DD-MM-AAAA" em vez de data de verdade
+  // (comum quando a célula foi digitada/colada manualmente na planilha) — aceita os dois formatos.
+  if(typeof d === "string"){
+    const m = d.trim().match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+    if(m){
+      let [, dd, mm, yyyy] = m;
+      if(yyyy.length === 2) yyyy = (Number(yyyy) < 50 ? "20" : "19") + yyyy;
+      return `${yyyy}-${mm.padStart(2,"0")}-${dd.padStart(2,"0")}`;
+    }
+  }
+  return null;
 }
 
 window.importComprasXlsx = async () => {
