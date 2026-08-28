@@ -638,13 +638,15 @@ function deriveDiesel(){
     d.semanal_x1000 = [...DIESEL_BASELINE_AGREGADOS.semanal_x1000];
     d.topCaminhoes = DIESEL_BASELINE_AGREGADOS.topCaminhoes.map(t=>({ ...t }));
     d.topCaminhoesTotalPct = DIESEL_BASELINE_AGREGADOS.topCaminhoesTotalPct;
+    d.totalPeriodo = DIESEL_BASELINE_AGREGADOS.totalAno2026;
+    d.totalLitrosPeriodo = null;
     d.totalLitrosAno2026 = null;
     d.custoMedioLitro = null;
     return;
   }
 
   const monthMap = {}, weekMap = {}, placaMap = {};
-  let totalGeral = 0, totalGeral2026 = 0, litros2026 = 0;
+  let totalGeral = 0, litrosGeral = 0, totalGeral2026 = 0, litros2026 = 0;
   d.lancamentos.forEach(r=>{
     const ym = r.d.slice(0,7);
     monthMap[ym] = (monthMap[ym]||0) + r.v;
@@ -655,15 +657,18 @@ function deriveDiesel(){
       placaMap[p] = (placaMap[p]||0) + r.v;
     }
     totalGeral += r.v;
+    litrosGeral += (r.litros||0);
     if(r.d.startsWith("2026")){ totalGeral2026 += r.v; litros2026 += (r.litros||0); }
   });
 
   const monthKeys = Object.keys(monthMap).sort();
   d.mensalLabels = monthKeys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
   d.mensal = monthKeys.map(k=>Math.round(monthMap[k]));
+  d.totalPeriodo = Math.round(totalGeral);
+  d.totalLitrosPeriodo = Math.round(litrosGeral);
+  d.custoMedioLitro = litrosGeral ? +(totalGeral/litrosGeral).toFixed(2) : null;
   d.totalAno2026 = Math.round(totalGeral2026);
   d.totalLitrosAno2026 = Math.round(litros2026);
-  d.custoMedioLitro = litros2026 ? +(totalGeral2026/litros2026).toFixed(2) : null;
 
   const weekKeys = Object.keys(weekMap).sort((a,b)=>{
     const [wa,ya] = a.slice(1).split("/"), [wb,yb] = b.slice(1).split("/");
@@ -966,11 +971,11 @@ renderers.diesel = () => {
   return `
     <div class="page-head"><h2>Diesel</h2><p>Custo de abastecimento — ${d.mensalLabels[0]} a ${d.mensalLabels[d.mensalLabels.length-1]}</p></div>
     <div class="kpi-grid">
-      <div class="kpi"><div class="lbl">Total 2026</div><div class="val">${fmtBRL(d.totalAno2026)}</div></div>
-      <div class="kpi"><div class="lbl">Litros abastecidos (2026)</div><div class="val">${d.totalLitrosAno2026!=null ? fmtNum(d.totalLitrosAno2026)+"L" : "—"}</div></div>
+      <div class="kpi"><div class="lbl">Total do período</div><div class="val">${fmtBRL(d.totalPeriodo)}</div></div>
+      <div class="kpi"><div class="lbl">Litros abastecidos</div><div class="val">${d.totalLitrosPeriodo!=null ? fmtNum(d.totalLitrosPeriodo)+"L" : "—"}</div></div>
       <div class="kpi"><div class="lbl">Custo médio por litro</div><div class="val">${d.custoMedioLitro!=null ? fmtBRL2(d.custoMedioLitro) : "—"}</div></div>
       <div class="kpi"><div class="lbl">Média semanal</div><div class="val">${fmtMil(d.mediaSemanal)}</div></div>
-      <div class="kpi"><div class="lbl">Top 10 caminhões</div><div class="val">${d.topCaminhoesTotalPct}%</div><div class="delta flat">do custo total 2026</div></div>
+      <div class="kpi"><div class="lbl">Top 10 caminhões</div><div class="val">${d.topCaminhoesTotalPct}%</div><div class="delta flat">do custo total do período</div></div>
       <div class="kpi"><div class="lbl">Maior mês</div><div class="val">${fmtBRL(Math.max(...d.mensal))}</div><div class="delta flat">${d.mensalLabels[maiorMesIdx]}</div></div>
     </div>
     <div class="panel" style="margin-bottom:16px;">
