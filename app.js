@@ -1448,9 +1448,9 @@ const ENTRY_FORMS = {
     <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
       <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
       <div class="hint" style="margin-bottom:10px;">
-        Colunas esperadas: DATA DO SERVIÇO, LOCAL, NF'S, O.S, FROTA, PLACA, VALOR R$, SERVIÇO, STATUS
-        — a mesma estrutura do seu relatório semanal de manutenção de carreta.<br>
-        <b>Importar substitui todo o histórico de Manutenção de Carreta do sistema pelo conteúdo da planilha</b>
+        Lê só a aba <b>"Matriz"</b> da planilha (as outras abas são ignoradas). Colunas esperadas nela:
+        DATA DO SERVIÇO, LOCAL, NF'S, O.S, FROTA, PLACA, VALOR R$, SERVIÇO, STATUS.<br>
+        <b>Importar substitui todo o histórico de Manutenção de Carreta do sistema pelo conteúdo da aba Matriz</b>
         (os totais mensais do dashboard passam a vir só dos lançamentos importados).
       </div>
       <input type="file" id="em-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
@@ -1688,57 +1688,61 @@ window.importManutencaoXlsx = async () => {
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type:"array", cellDates:true });
 
-    // Relatórios semanais costumam vir com uma aba por semana/mês — processa TODAS as abas que
-    // tiverem a coluna "Data do Serviço", não só a primeira encontrada.
-    const novos = [];
-    let ignoradas = 0;
-    let achouCabecalhoEmAlgumaAba = false;
-    for(const name of wb.SheetNames){
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:null });
-      let headerRow = null, sheetRows = null;
-      for(let i=0;i<Math.min(rows.length,15);i++){
-        const r = rows[i];
-        if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="DATA DO SERVIÇO")){
-          headerRow = r; sheetRows = rows.slice(i+1); break;
-        }
-      }
-      if(!headerRow) continue; // essa aba não é no formato esperado — pula pra próxima
-
-      achouCabecalhoEmAlgumaAba = true;
-      const idx = {};
-      headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
-      const col = (colName) => idx[colName];
-      const cData = col("DATA DO SERVIÇO"), cLocal = col("LOCAL"), cNf = col("NF'S") ?? col("NF"),
-            cOs = col("O.S") ?? col("O.S."), cFrota = col("FROTA"), cPlaca = col("PLACA"),
-            cValor = col("VALOR R$") ?? col("VALOR"), cServico = col("SERVIÇO"), cStatus = col("STATUS");
-      if(cData==null || cValor==null) continue; // aba sem as colunas essenciais — pula
-
-      sheetRows.forEach(r=>{
-        if(!r) return;
-        const dataRaw = r[cData], valorRaw = r[cValor];
-        if(dataRaw == null || valorRaw == null || valorRaw === "") { ignoradas++; return; }
-        const iso = excelDateToISO(dataRaw);
-        if(!iso){ ignoradas++; return; }
-        const valor = parseValorBRL(valorRaw);
-        if(isNaN(valor)){ ignoradas++; return; }
-        novos.push({
-          id: localId(),
-          d: iso,
-          placa: (cPlaca!=null ? (r[cPlaca]||"").toString().trim() : ""),
-          local: (cLocal!=null ? (r[cLocal]||"").toString().trim() : "") || "Não informado",
-          nf: (cNf!=null ? (r[cNf]||"").toString().trim() : ""),
-          os: (cOs!=null ? (r[cOs]||"").toString().trim() : ""),
-          frota: (cFrota!=null ? (r[cFrota]||"").toString().trim() : ""),
-          servico: (cServico!=null ? (r[cServico]||"").toString().trim() : "") || "Outros Serviços",
-          status: (cStatus!=null ? (r[cStatus]||"").toString().trim() : ""),
-          v: valor
-        });
-      });
-    }
-    if(!achouCabecalhoEmAlgumaAba){
-      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'Data do Serviço') em nenhuma aba. Confira se é a mesma estrutura do seu relatório semanal.";
+    // O relatório vem com várias abas (semanas soltas, rascunhos etc.), mas só a aba "Matriz" é a
+    // consolidada que deve ser importada — as outras são ignoradas de propósito.
+    const nomeAbaAlvo = wb.SheetNames.find(n=>n.trim().toUpperCase()==="MATRIZ");
+    if(!nomeAbaAlvo){
+      statusEl.textContent = `⚠ Não encontrei uma aba chamada "Matriz" nesta planilha. Abas encontradas: ${wb.SheetNames.join(", ")}.`;
       return;
     }
+
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nomeAbaAlvo], { header:1, defval:null });
+    let headerRow = null, sheetRows = null;
+    for(let i=0;i<Math.min(rows.length,30);i++){
+      const r = rows[i];
+      if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="DATA DO SERVIÇO")){
+        headerRow = r; sheetRows = rows.slice(i+1); break;
+      }
+    }
+    if(!headerRow){
+      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'Data do Serviço') na aba Matriz. Confira se é a mesma estrutura do seu relatório semanal.";
+      return;
+    }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (colName) => idx[colName];
+    const cData = col("DATA DO SERVIÇO"), cLocal = col("LOCAL"), cNf = col("NF'S") ?? col("NF"),
+          cOs = col("O.S") ?? col("O.S."), cFrota = col("FROTA"), cPlaca = col("PLACA"),
+          cValor = col("VALOR R$") ?? col("VALOR"), cServico = col("SERVIÇO"), cStatus = col("STATUS");
+    if(cData==null || cValor==null){
+      statusEl.textContent = "⚠ Faltam colunas essenciais (DATA DO SERVIÇO ou VALOR R$) na aba Matriz. Confira o cabeçalho da planilha.";
+      return;
+    }
+
+    const novos = [];
+    let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const dataRaw = r[cData], valorRaw = r[cValor];
+      if(dataRaw == null || valorRaw == null || valorRaw === "") { ignoradas++; return; }
+      const iso = excelDateToISO(dataRaw);
+      if(!iso){ ignoradas++; return; }
+      const valor = parseValorBRL(valorRaw);
+      if(isNaN(valor)){ ignoradas++; return; }
+      novos.push({
+        id: localId(),
+        d: iso,
+        placa: (cPlaca!=null ? (r[cPlaca]||"").toString().trim() : ""),
+        local: (cLocal!=null ? (r[cLocal]||"").toString().trim() : "") || "Não informado",
+        nf: (cNf!=null ? (r[cNf]||"").toString().trim() : ""),
+        os: (cOs!=null ? (r[cOs]||"").toString().trim() : ""),
+        frota: (cFrota!=null ? (r[cFrota]||"").toString().trim() : ""),
+        servico: (cServico!=null ? (r[cServico]||"").toString().trim() : "") || "Outros Serviços",
+        status: (cStatus!=null ? (r[cStatus]||"").toString().trim() : ""),
+        v: valor
+      });
+    });
 
     if(novos.length === 0){
       statusEl.textContent = "⚠ Nenhum lançamento válido encontrado na planilha.";
