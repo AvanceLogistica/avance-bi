@@ -59,7 +59,11 @@ const DATA = {
       { placa:"GCV0268", valor:58334.70, pct:3.69 },
       { placa:"GCV3D75", valor:57179.50, pct:3.27 }
     ],
-    topCaminhoesTotalPct: 41
+    topCaminhoesTotalPct: 41,
+    // Lançamentos individuais de abastecimento (data, placa, litros, valor) importados da planilha
+    // ou lançados avulsos — assim que existir pelo menos um, os totais acima passam a ser
+    // recalculados a partir daqui (ver deriveDiesel em app.js).
+    lancamentos: []
   },
 
   /* ---------------------------------------------------------------------

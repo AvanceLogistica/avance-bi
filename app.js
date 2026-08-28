@@ -109,13 +109,14 @@ function applyEventosDiarios(rows){
 async function loadFromSupabase(){
   if(!sb) return false;
   try{
-    const [compras, contas, series, diarios, acoes, manutLanc] = await Promise.all([
+    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc] = await Promise.all([
       sbFetchAll("compras_lancamentos"),
       sbFetchAll("contas_pagar"),
       sbFetchAll("series_periodo"),
       sbFetchAll("eventos_diarios"),
       sbFetchAll("acidentes_acoes"),
-      sbFetchAll("manutencao_lancamentos")
+      sbFetchAll("manutencao_lancamentos"),
+      sbFetchAll("diesel_abastecimentos")
     ]);
 
     if(!compras.length && !contas.length && !series.length) return false; // banco ainda vazio
@@ -139,9 +140,17 @@ async function loadFromSupabase(){
         frota:r.frota||"", servico:r.servico||"", status:r.status||"", v:Number(r.valor)
       }));
     }
+    if(dieselLanc.length){
+      DATA.diesel.lancamentos = dieselLanc.map(r=>({
+        id:r.id, d:r.data, placa:r.placa||"", km:r.km||null, litros:Number(r.litros)||0,
+        valorUnit:r.valor_unitario!=null?Number(r.valor_unitario):null, motorista:r.motorista||"",
+        posto:r.posto||"", status:r.status||"", v:Number(r.valor)
+      }));
+    }
 
     deriveCompras();
     deriveManutencao();
+    deriveDiesel();
     return true;
   }catch(e){
     console.warn("Falha ao carregar do Supabase, mantendo dados locais:", e);
@@ -171,6 +180,12 @@ async function migrarParaSupabase(onProgress){
     say(`Enviando ${fmtNum(DATA.manutencao.lancamentos.length)} lançamentos de Manutenção de Carreta...`);
     const manutRows = DATA.manutencao.lancamentos.map(r=>({ data:r.d, placa:r.placa, local:r.local, nf:r.nf, os:r.os, frota:r.frota, servico:r.servico, status:r.status, valor:r.v }));
     await sbBulkInsert("manutencao_lancamentos", manutRows);
+  }
+
+  if(DATA.diesel.lancamentos.length){
+    say(`Enviando ${fmtNum(DATA.diesel.lancamentos.length)} abastecimentos de Diesel...`);
+    const dieselRows = DATA.diesel.lancamentos.map(r=>({ data:r.d, placa:r.placa, km:r.km, litros:r.litros, valor_unitario:r.valorUnit, valor:r.v, motorista:r.motorista, posto:r.posto, status:r.status }));
+    await sbBulkInsert("diesel_abastecimentos", dieselRows);
   }
 
   say("Enviando séries mensais (Manutenção, Diesel, Folha, Hora Extra, Atestados, Infrações, Acidentes)...");
@@ -330,7 +345,7 @@ function getByPath(path){
 }
 // Funções de recálculo referenciáveis por nome (um descritor salvo em localStorage não pode
 // guardar uma função direto, só o nome dela).
-const RECOMPUTE_FN = { recomputeDiesel, recomputeManutencao, recomputeFolha, recomputeHoraExtraCusto, recomputeHoraExtraQtd, recomputeInfracoes, deriveCompras, deriveManutencao };
+const RECOMPUTE_FN = { recomputeDiesel, recomputeManutencao, recomputeFolha, recomputeHoraExtraCusto, recomputeHoraExtraQtd, recomputeInfracoes, deriveCompras, deriveManutencao, deriveDiesel };
 
 // Monta um DESCRITOR (objeto simples, serializável) de "desfazer" para um lançamento por período
 // (Diesel, Manutenção, Folha, Atestados, Infrações). Guarda o estado de ANTES do upsertPeriod: se o
@@ -397,6 +412,7 @@ async function executarUndo(d){
     if(i>=0) arr.splice(i,1);
     if(d.containerPath === "compras.comprasLancamentos") deriveCompras();
     else if(d.containerPath === "manutencao.lancamentos") deriveManutencao();
+    else if(d.containerPath === "diesel.lancamentos") deriveDiesel();
     if(sb && d.sbTable && d.sbId) await sb.from(d.sbTable).delete().eq("id", d.sbId);
   } else if(d.kind === "folhaAnual"){
     updateFolhaAnual(d.anterior25, d.anterior26);
@@ -413,6 +429,13 @@ async function executarUndo(d){
     if(sb){
       await sb.from("manutencao_lancamentos").delete().not("id","is",null);
       if(d.anteriores.length) await sbBulkInsert("manutencao_lancamentos", d.anteriores.map(r=>({ data:r.d, placa:r.placa, local:r.local, nf:r.nf, os:r.os, frota:r.frota, servico:r.servico, status:r.status, valor:r.v })));
+    }
+  } else if(d.kind === "bulkImportDiesel"){
+    DATA.diesel.lancamentos = d.anteriores;
+    deriveDiesel();
+    if(sb){
+      await sb.from("diesel_abastecimentos").delete().not("id","is",null);
+      if(d.anteriores.length) await sbBulkInsert("diesel_abastecimentos", d.anteriores.map(r=>({ data:r.d, placa:r.placa, km:r.km, litros:r.litros, valor_unitario:r.valorUnit, valor:r.v, motorista:r.motorista, posto:r.posto, status:r.status })));
     }
   }
 }
@@ -577,6 +600,84 @@ function deriveManutencao(){
   m.porLocal = Object.entries(localMap).sort((a,b)=>b[1].valor-a[1].valor)
     .map(([local,d])=>({ local, valor:Math.round(d.valor), qtd:d.qtd }));
   m.pendentes = { qtd:pendQtd, valor:Math.round(pendValor) };
+}
+
+// Número da semana ISO 8601 (segunda a domingo) de uma data "YYYY-MM-DD" — usado pra agrupar
+// abastecimentos de Diesel por semana, no mesmo estilo "S37/25" do mensal "jul/25".
+function isoWeekLabel(iso){
+  const d = new Date(iso + "T00:00:00");
+  const target = new Date(d.valueOf());
+  const dayNr = (d.getDay() + 6) % 7;
+  target.setDate(target.getDate() - dayNr + 3);
+  const firstThursday = new Date(target.getFullYear(), 0, 4);
+  const diff = target - firstThursday;
+  const week = 1 + Math.round(diff / (7*24*60*60*1000));
+  return `S${week}/${String(target.getFullYear()).slice(2)}`;
+}
+
+// Snapshot dos totais de Diesel como vieram do data.js — mesma ideia do MANUTENCAO_BASELINE_AGREGADOS.
+const DIESEL_BASELINE_AGREGADOS = {
+  mensalLabels: [...DATA.diesel.mensalLabels], mensal: [...DATA.diesel.mensal],
+  totalAno2026: DATA.diesel.totalAno2026, mediaSemanal: DATA.diesel.mediaSemanal,
+  semanalLabels: [...DATA.diesel.semanalLabels], semanal_x1000: [...DATA.diesel.semanal_x1000],
+  topCaminhoes: DATA.diesel.topCaminhoes.map(t=>({ ...t })), topCaminhoesTotalPct: DATA.diesel.topCaminhoesTotalPct
+};
+
+// Recalcula os totais de Diesel a partir dos abastecimentos individuais — mesma lógica de
+// deriveManutencao(). Só entra em ação depois do primeiro lançamento (avulso ou importação); até lá
+// (ou se todos forem excluídos de novo), os valores originais do data.js continuam valendo.
+function deriveDiesel(){
+  const d = DATA.diesel;
+  if(!Array.isArray(d.lancamentos)) d.lancamentos = [];
+  if(d.lancamentos.length === 0){
+    d.mensalLabels = [...DIESEL_BASELINE_AGREGADOS.mensalLabels];
+    d.mensal = [...DIESEL_BASELINE_AGREGADOS.mensal];
+    d.totalAno2026 = DIESEL_BASELINE_AGREGADOS.totalAno2026;
+    d.mediaSemanal = DIESEL_BASELINE_AGREGADOS.mediaSemanal;
+    d.semanalLabels = [...DIESEL_BASELINE_AGREGADOS.semanalLabels];
+    d.semanal_x1000 = [...DIESEL_BASELINE_AGREGADOS.semanal_x1000];
+    d.topCaminhoes = DIESEL_BASELINE_AGREGADOS.topCaminhoes.map(t=>({ ...t }));
+    d.topCaminhoesTotalPct = DIESEL_BASELINE_AGREGADOS.topCaminhoesTotalPct;
+    d.totalLitrosAno2026 = null;
+    d.custoMedioLitro = null;
+    return;
+  }
+
+  const monthMap = {}, weekMap = {}, placaMap = {};
+  let totalGeral = 0, totalGeral2026 = 0, litros2026 = 0;
+  d.lancamentos.forEach(r=>{
+    const ym = r.d.slice(0,7);
+    monthMap[ym] = (monthMap[ym]||0) + r.v;
+    const wk = isoWeekLabel(r.d);
+    weekMap[wk] = (weekMap[wk]||0) + r.v;
+    if(r.placa && r.placa.trim()){
+      const p = r.placa.trim();
+      placaMap[p] = (placaMap[p]||0) + r.v;
+    }
+    totalGeral += r.v;
+    if(r.d.startsWith("2026")){ totalGeral2026 += r.v; litros2026 += (r.litros||0); }
+  });
+
+  const monthKeys = Object.keys(monthMap).sort();
+  d.mensalLabels = monthKeys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
+  d.mensal = monthKeys.map(k=>Math.round(monthMap[k]));
+  d.totalAno2026 = Math.round(totalGeral2026);
+  d.totalLitrosAno2026 = Math.round(litros2026);
+  d.custoMedioLitro = litros2026 ? +(totalGeral2026/litros2026).toFixed(2) : null;
+
+  const weekKeys = Object.keys(weekMap).sort((a,b)=>{
+    const [wa,ya] = a.slice(1).split("/"), [wb,yb] = b.slice(1).split("/");
+    return (ya.padStart(2,"0")+wa.padStart(2,"0")).localeCompare(yb.padStart(2,"0")+wb.padStart(2,"0"));
+  });
+  d.semanalLabels = weekKeys;
+  d.semanal_x1000 = weekKeys.map(k=>Math.round(weekMap[k]/1000));
+  d.mediaSemanal = weekKeys.length ? Math.round(weekKeys.reduce((s,k)=>s+weekMap[k],0)/weekKeys.length) : 0;
+
+  const placasSorted = Object.entries(placaMap).sort((a,b)=>b[1]-a[1]);
+  const top10 = placasSorted.slice(0,10);
+  const top10Sum = top10.reduce((s,[,v])=>s+v,0);
+  d.topCaminhoes = top10.map(([placa,valor])=>({ placa, valor:Math.round(valor), pct: totalGeral ? +(valor/totalGeral*100).toFixed(2) : 0 }));
+  d.topCaminhoesTotalPct = totalGeral ? Math.round(top10Sum/totalGeral*100) : 0;
 }
 
 // Histórico de lançamentos feitos por aqui (feedback visual + permite excluir um lançamento errado).
@@ -861,25 +962,28 @@ initCharts.manutencao = () => {
 /* -------------------- DIESEL -------------------- */
 renderers.diesel = () => {
   const d = DATA.diesel;
+  const maiorMesIdx = d.mensal.indexOf(Math.max(...d.mensal));
   return `
-    <div class="page-head"><h2>Diesel</h2><p>Custo de abastecimento — jul/25 a jun/26</p></div>
+    <div class="page-head"><h2>Diesel</h2><p>Custo de abastecimento — ${d.mensalLabels[0]} a ${d.mensalLabels[d.mensalLabels.length-1]}</p></div>
     <div class="kpi-grid">
       <div class="kpi"><div class="lbl">Total 2026</div><div class="val">${fmtBRL(d.totalAno2026)}</div></div>
+      <div class="kpi"><div class="lbl">Litros abastecidos (2026)</div><div class="val">${d.totalLitrosAno2026!=null ? fmtNum(d.totalLitrosAno2026)+"L" : "—"}</div></div>
+      <div class="kpi"><div class="lbl">Custo médio por litro</div><div class="val">${d.custoMedioLitro!=null ? fmtBRL2(d.custoMedioLitro) : "—"}</div></div>
       <div class="kpi"><div class="lbl">Média semanal</div><div class="val">${fmtMil(d.mediaSemanal)}</div></div>
       <div class="kpi"><div class="lbl">Top 10 caminhões</div><div class="val">${d.topCaminhoesTotalPct}%</div><div class="delta flat">do custo total 2026</div></div>
-      <div class="kpi"><div class="lbl">Maior mês</div><div class="val">${fmtBRL(Math.max(...d.mensal))}</div><div class="delta flat">mar/26</div></div>
+      <div class="kpi"><div class="lbl">Maior mês</div><div class="val">${fmtBRL(Math.max(...d.mensal))}</div><div class="delta flat">${d.mensalLabels[maiorMesIdx]}</div></div>
     </div>
     <div class="panel" style="margin-bottom:16px;">
-      <h3>Custo mensal (jul/25–jun/26)</h3>
+      <h3>Custo mensal (${d.mensalLabels[0]}–${d.mensalLabels[d.mensalLabels.length-1]})</h3>
       <div class="chart-wrap" style="height:280px;"><canvas id="ch-diesel-mensal"></canvas></div>
     </div>
     <div class="grid-2">
       <div class="panel">
-        <h3>Custo semanal 2026 (R$ mil)</h3>
+        <h3>Custo semanal (R$ mil)</h3>
         <div class="chart-wrap" style="height:260px;"><canvas id="ch-diesel-semanal"></canvas></div>
       </div>
       <div class="panel">
-        <h3>10 maiores caminhões (2026)</h3>
+        <h3>10 maiores caminhões</h3>
         <div class="hint">Representam ${d.topCaminhoesTotalPct}% do custo total</div>
         <table>
           <thead><tr><th>#</th><th>Placa</th><th class="num">Valor</th><th class="num">%</th></tr></thead>
@@ -1495,21 +1599,27 @@ const ENTRY_FORMS = {
     <button class="entry-submit" onclick="submitCompra()">Adicionar compra</button>
   `,
   diesel: () => `
-    <div class="tabs" style="margin-top:12px;">
-      <button class="sub-tab-btn active" data-sub="mensal" onclick="toggleSub(this,'diesel-mensal','diesel-semanal')">Mensal</button>
-      <button class="sub-tab-btn" data-sub="semanal" onclick="toggleSub(this,'diesel-semanal','diesel-mensal')">Semanal</button>
+    <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
+      <div class="hint" style="margin-bottom:10px;">
+        Lê só a aba <b>"Abastecimento"</b> da planilha (a aba "Controle de Recebimento" é ignorada — essa
+        é por caminhão, aquela é o total comprado do fornecedor). Colunas esperadas: DATA, PLACA, KM,
+        LITROS, VALOR UNITÁRIO, VALOR POR VEÍCULO, MOTORISTA, POSTO, STATUS.<br>
+        <b>Importar substitui todo o histórico de Diesel do sistema pelo conteúdo da aba Abastecimento.</b>
+      </div>
+      <input type="file" id="ed-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="importDieselXlsx()">Importar e substituir</button>
+      <div id="ed-import-status" class="hint" style="margin-top:10px;"></div>
     </div>
-    <div id="diesel-mensal" style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
-      <label>Mês (ex: jul/26)<input type="text" id="ed-mes" list="dl-diesel-meses" placeholder="jul/26"></label>
-      <datalist id="dl-diesel-meses">${DATA.diesel.mensalLabels.map(l=>`<option value="${l}">`).join("")}</datalist>
-      <label>Valor (R$)<input type="number" id="ed-valor" step="0.01" placeholder="0,00"></label>
+    <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+    <div class="hint" style="margin-bottom:4px;">Ou lance um abastecimento avulso manualmente:</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+      <label>Data<input type="date" id="ed-data" value="${new Date().toISOString().slice(0,10)}"></label>
+      <label>Placa<input type="text" id="ed-placa" placeholder="Ex: GCV3D93"></label>
+      <label>Litros<input type="number" id="ed-litros" step="0.01" placeholder="Ex: 150"></label>
+      <label>Valor unitário (R$/L)<input type="number" id="ed-valorunit" step="0.01" placeholder="Ex: 5,55"></label>
     </div>
-    <div id="diesel-semanal" style="display:none; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
-      <label>Semana (ex: S25)<input type="text" id="ed-semana" list="dl-diesel-semanas" placeholder="S25"></label>
-      <datalist id="dl-diesel-semanas">${DATA.diesel.semanalLabels.map(l=>`<option value="${l}">`).join("")}</datalist>
-      <label>Valor (R$ mil)<input type="number" id="ed-valorsem" step="0.1" placeholder="Ex: 62"></label>
-    </div>
-    <button class="entry-submit" onclick="submitDiesel()">Adicionar</button>
+    <button class="entry-submit" onclick="submitDiesel()">Adicionar abastecimento</button>
   `,
   manutencao: () => `
     <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
@@ -1861,6 +1971,116 @@ window.importManutencaoXlsx = async () => {
   }
 };
 
+window.importDieselXlsx = async () => {
+  const fileInput = document.getElementById("ed-import-file");
+  const statusEl = document.getElementById("ed-import-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada (confira se xlsx.full.min.js está na pasta)."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+
+    // Só a aba "Abastecimento" (por caminhão) é importada — "Controle de Recebimento" (compra do
+    // fornecedor, sem placa) fica de fora de propósito.
+    const nomeAbaAlvo = wb.SheetNames.find(n=>n.trim().toUpperCase()==="ABASTECIMENTO");
+    if(!nomeAbaAlvo){
+      statusEl.textContent = `⚠ Não encontrei uma aba chamada "Abastecimento" nesta planilha. Abas encontradas: ${wb.SheetNames.join(", ")}.`;
+      return;
+    }
+
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nomeAbaAlvo], { header:1, defval:null });
+    let headerRow = null, sheetRows = null;
+    for(let i=0;i<Math.min(rows.length,30);i++){
+      const r = rows[i];
+      if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="PLACA")){
+        headerRow = r; sheetRows = rows.slice(i+1); break;
+      }
+    }
+    if(!headerRow){
+      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'Placa') na aba Abastecimento. Confira se é a mesma estrutura do seu relatório.";
+      return;
+    }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (colName) => idx[colName];
+    const cData = col("DATA"), cPlaca = col("PLACA"), cKm = col("KM"), cLitros = col("LITROS"),
+          cValorUnit = col("VALOR UNITÁRIO"), cValor = col("VALOR POR VEÍCULO") ?? col("VALOR"),
+          cMotorista = col("MOTORISTA"), cPosto = col("POSTO"), cStatus = col("STATUS");
+    if(cData==null || cPlaca==null || cLitros==null){
+      statusEl.textContent = "⚠ Faltam colunas essenciais (DATA, PLACA ou LITROS) na aba Abastecimento. Confira o cabeçalho da planilha.";
+      return;
+    }
+
+    const novos = [];
+    let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const dataRaw = r[cData], litrosRaw = r[cLitros];
+      if(dataRaw == null || litrosRaw == null || litrosRaw === "") { ignoradas++; return; }
+      const iso = excelDateToISO(dataRaw);
+      if(!iso){ ignoradas++; return; }
+      const litros = parseValorBRL(litrosRaw);
+      if(isNaN(litros)){ ignoradas++; return; }
+      const valorUnit = cValorUnit!=null ? parseValorBRL(r[cValorUnit]) : NaN;
+      let valor = cValor!=null ? parseValorBRL(r[cValor]) : NaN;
+      if(isNaN(valor) && !isNaN(valorUnit)) valor = litros * valorUnit; // fallback: calcula se a coluna de total estiver vazia
+      if(isNaN(valor)){ ignoradas++; return; }
+      novos.push({
+        id: localId(),
+        d: iso,
+        placa: (r[cPlaca]||"").toString().trim(),
+        km: (cKm!=null && r[cKm]!=null) ? r[cKm] : null,
+        litros,
+        valorUnit: isNaN(valorUnit) ? null : valorUnit,
+        motorista: (cMotorista!=null ? (r[cMotorista]||"").toString().trim() : ""),
+        posto: (cPosto!=null ? (r[cPosto]||"").toString().trim() : ""),
+        status: (cStatus!=null ? (r[cStatus]||"").toString().trim() : ""),
+        v: valor
+      });
+    });
+
+    if(novos.length === 0){
+      statusEl.textContent = "⚠ Nenhum lançamento válido encontrado na planilha.";
+      return;
+    }
+
+    const anteriores = DATA.diesel.lancamentos;
+    DATA.diesel.lancamentos = novos;
+    deriveDiesel();
+    logEntry("Diesel (importação)", `${novos.length} abastecimentos importados de "${file.name}"`, { kind:"bulkImportDiesel", anteriores });
+    renderSessionLog();
+
+    const datas = novos.map(r=>r.d).sort();
+    let statusMsg = `✓ <b>${fmtNum(novos.length)}</b> abastecimentos importados (${datas[0].split("-").reverse().join("/")} a ${datas[datas.length-1].split("-").reverse().join("/")}), total ${fmtBRL(novos.reduce((s,r)=>s+r.v,0))}.` +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem data ou litros válidos foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
+
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "diesel") navigate("diesel");
+
+    if(sb){
+      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
+      const { error: delError } = await sb.from("diesel_abastecimentos").delete().not("id","is",null);
+      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      try{
+        await sbBulkInsert("diesel_abastecimentos", novos.map(r=>({ data:r.d, placa:r.placa, km:r.km, litros:r.litros, valor_unitario:r.valorUnit, valor:r.v, motorista:r.motorista, posto:r.posto, status:r.status })));
+        statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+        toast(`✓ ${novos.length} abastecimentos importados (salvo no banco)`);
+      }catch(e){
+        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+      }
+    } else {
+      toast(`✓ ${novos.length} abastecimentos importados`);
+    }
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message;
+  }
+};
+
 window.submitContaPagar = async () => {
   const prestador = document.getElementById("ecp-prestador").value.trim();
   const cnpj = document.getElementById("ecp-cnpj").value.trim();
@@ -1926,30 +2146,29 @@ window.submitCompra = async () => {
 };
 
 window.submitDiesel = async () => {
-  const mensalOn = document.getElementById("diesel-mensal").style.display !== "none";
-  let sbRow = null;
-  if(mensalOn){
-    const label = document.getElementById("ed-mes").value.trim();
-    const v = parseFloat(document.getElementById("ed-valor").value);
-    if(!label || isNaN(v)){ toast("Preencha mês e valor."); return; }
-    sbRow = { modulo:"diesel_mensal", campo:"mensal", label, valor:v };
-    const undo = prepararDesfazerPeriodo("diesel", "mensalLabels", label, ["mensal"], "recomputeDiesel", "series_periodo", [sbRow]);
-    upsertPeriod(DATA.diesel, "mensalLabels", label, { mensal:v });
-    recomputeDiesel();
-    logEntry("Diesel (mensal)", `${label} · ${fmtBRL(v)}`, undo);
-  } else {
-    const label = document.getElementById("ed-semana").value.trim();
-    const v = parseFloat(document.getElementById("ed-valorsem").value);
-    if(!label || isNaN(v)){ toast("Preencha semana e valor."); return; }
-    sbRow = { modulo:"diesel_semanal", campo:"semanal_x1000", label, valor:v };
-    const undo = prepararDesfazerPeriodo("diesel", "semanalLabels", label, ["semanal_x1000"], "recomputeDiesel", "series_periodo", [sbRow]);
-    upsertPeriod(DATA.diesel, "semanalLabels", label, { semanal_x1000:v });
-    recomputeDiesel();
-    logEntry("Diesel (semanal)", `${label} · ${v}K`, undo);
-  }
+  const d = document.getElementById("ed-data").value;
+  const litros = parseFloat(document.getElementById("ed-litros").value);
+  const valorUnit = parseFloat(document.getElementById("ed-valorunit").value);
+  if(!d || isNaN(litros) || isNaN(valorUnit)){ toast("Preencha data, litros e valor unitário."); return; }
+  const placa = document.getElementById("ed-placa").value.trim();
+  const v = +(litros * valorUnit).toFixed(2);
+  const registro = { id: localId(), d, placa, km:null, litros, valorUnit, motorista:"", posto:"", status:"", v };
+  DATA.diesel.lancamentos.push(registro);
+  deriveDiesel();
+  const undoDescr = prepararDesfazerArrayById("diesel.lancamentos", registro.id, "diesel_abastecimentos");
+  logEntry("Diesel", `${d.split("-").reverse().join("/")} · ${placa || "sem placa"} · ${litros}L · ${fmtBRL2(v)}`, undoDescr);
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "diesel") navigate("diesel");
-  await gravarSeriePeriodo(sbRow, "Diesel");
+
+  if(sb){
+    const { data, error } = await sb.from("diesel_abastecimentos").insert({ data:d, placa, litros, valor_unitario:valorUnit, valor:v }).select().single();
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+    registro.id = data.id;
+    undoDescr.itemId = data.id;
+    undoDescr.sbId = data.id;
+    salvarSessionLogLocal();
+  }
+  toast("Abastecimento adicionado ✓" + (sb ? " (salvo no banco)" : ""));
 };
 
 window.submitManutencao = async () => {
@@ -2175,6 +2394,7 @@ function updateSyncPill(){
 (async function initApp(){
   deriveCompras(); // garante que os dados locais (data.js) já estão prontos como base/fallback
   deriveManutencao();
+  deriveDiesel();
   const carregouDoBanco = await loadFromSupabase();
   SUPABASE_SINCRONIZADO = carregouDoBanco;
   carregarSessionLogLocal();
