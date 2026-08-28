@@ -517,6 +517,21 @@ function recomputeInfracoes(){
   inf.totalAno2026 = Math.round(sumIf(inf.labels, inf.ocorrencias, l=>l.includes("/26")));
 }
 
+// Distingue placa de caminhão de verdade (sempre tem número, ex: "ATP-3089") de centro de custo
+// usado na mesma coluna em algumas planilhas de Compras (ex: "ESTOQUE", "PORTO", "MANUTENÇÃO") —
+// esses últimos nunca têm dígito, então ficam de fora dos rankings por caminhão sem precisar manter
+// uma lista fixa de valores conhecidos.
+function pareceCaminhao(placa){
+  return /\d/.test(placa||"");
+}
+// A mesma placa aparece escrita de formas diferentes na planilha ("GCV 3B63" / "GCV-3B63" /
+// "GCV3B63"), o que divide o gasto do mesmo caminhão em entradas separadas no ranking — normaliza
+// removendo espaço/traço. Só mexe em texto que já parece placa; centro de custo fica como veio.
+function normalizarPlaca(placa){
+  const p = (placa||"").toString().trim();
+  return pareceCaminhao(p) ? p.toUpperCase().replace(/[\s-]+/g,"") : p;
+}
+
 // Calcula os totais mensais + rankings do módulo Compras a partir de uma LISTA de lançamentos —
 // função pura, não mexe em DATA.compras. Usada tanto pra recalcular o estado real (deriveCompras,
 // com TODOS os lançamentos) quanto pra gerar a "visão filtrada" quando o usuário escolhe um ano
@@ -530,7 +545,7 @@ function computarComprasStats(lancamentos){
     if(r.l) localMap[r.l] = (localMap[r.l]||0) + r.v;
     const cat = r.c || "Sem categoria";
     catMap[cat] = (catMap[cat]||0) + r.v;
-    if(r.p && r.p.trim()) placaMap[r.p.trim()] = (placaMap[r.p.trim()]||0) + r.v;
+    if(r.p && r.p.trim() && pareceCaminhao(r.p)) placaMap[r.p.trim()] = (placaMap[r.p.trim()]||0) + r.v;
     totalGeral += r.v;
   });
   const keys = Object.keys(monthMap).sort();
@@ -1657,8 +1672,9 @@ const ENTRY_FORMS = {
         Lê a aba <b>"Tabela"</b> da planilha (se não encontrar, procura em qualquer aba). Colunas esperadas:
         CAMINHÃO, COMPRADOR, APROVADOR, DATA DA COMPRA, DATA DO VENC., LOCAL DA COMPRA, PEÇA COMPRADAS,
         CATEGORIA, NF, QTDE, VALOR UNIT., TOTAL, ANO, MÊS, SEMANA, TIPO DE MANUTENÇÃO — a mesma estrutura
-        da sua planilha de controle de compras. Linhas com placa "MANUTENÇÃO" são ignoradas (pertencem ao
-        módulo de Manutenção de Carreta).<br>
+        da sua planilha de controle de compras. Todas as linhas entram nos totais, mesmo quando
+        "CAMINHÃO" é um centro de custo (ESTOQUE, PORTO, MANUTENÇÃO etc.) em vez de placa — essas só
+        ficam de fora do ranking "Top 10 caminhões".<br>
         <b>Importar substitui todo o histórico de Compras de Peças do sistema pelo conteúdo da planilha.</b>
       </div>
       <input type="file" id="ec-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
@@ -1880,19 +1896,19 @@ window.importComprasXlsx = async () => {
     }
 
     const novos = [];
-    let manutCount = 0, manutSoma = 0, ignoradas = 0;
+    let ignoradas = 0;
     sheetRows.forEach(r=>{
       if(!r) return;
       const dataRaw = r[cData], total = r[cTotal];
       if(dataRaw == null || total == null || total === "") { ignoradas++; return; }
       const iso = excelDateToISO(dataRaw);
       if(!iso){ ignoradas++; return; }
-      const placa = (r[cCam]||"").toString().trim();
+      const placa = normalizarPlaca(r[cCam]);
       const valor = parseValorBRL(total);
       if(isNaN(valor)){ ignoradas++; return; }
-      if(placa.toUpperCase() === "MANUTENÇÃO" || placa.toUpperCase() === "MANUTENCAO"){
-        manutCount++; manutSoma += valor; return; // não faz parte de Compras de Peças
-      }
+      // Coluna "CAMINHÃO" mistura placa de verdade com centro de custo (ESTOQUE, ESCRITÓRIO,
+      // PORTO, MANUTENÇÃO etc.) — entra tudo nos totais/categorias, só não entra no ranking de
+      // Top 10 caminhões (ver pareceCaminhao() em computarComprasStats).
       novos.push({
         d: iso,
         p: placa,
@@ -1915,8 +1931,9 @@ window.importComprasXlsx = async () => {
     renderSessionLog();
 
     const datas = novos.map(r=>r.d).sort();
+    const semPlacaVeiculo = novos.filter(r=>!pareceCaminhao(r.p)).length;
     let statusMsg = `✓ <b>${fmtNum(novos.length)}</b> lançamentos importados (${datas[0].split("-").reverse().join("/")} a ${datas[datas.length-1].split("-").reverse().join("/")}), total ${fmtBRL(novos.reduce((s,r)=>s+r.v,0))}.` +
-      (manutCount>0 ? `<br>${manutCount} linhas com placa "MANUTENÇÃO" (${fmtBRL(manutSoma)}) foram ignoradas — pertencem ao módulo de Manutenção de Carreta, não a Compras de Peças.` : "") +
+      (semPlacaVeiculo>0 ? `<br>${semPlacaVeiculo} linha(s) com "CAMINHÃO" preenchido como centro de custo (ex: ESTOQUE, PORTO, MANUTENÇÃO) entram nos totais mas ficam de fora do ranking Top 10 caminhões.` : "") +
       (ignoradas>0 ? `<br>${ignoradas} linha(s) sem data ou valor válido foram ignoradas.` : "");
     statusEl.innerHTML = statusMsg;
 
@@ -2206,7 +2223,7 @@ window.submitCompra = async () => {
   const d = document.getElementById("ec-data").value;
   const v = parseFloat(document.getElementById("ec-valor").value);
   if(!d || isNaN(v)){ toast("Preencha data e valor."); return; }
-  const placa = document.getElementById("ec-placa").value.trim();
+  const placa = normalizarPlaca(document.getElementById("ec-placa").value);
   const local = document.getElementById("ec-local").value.trim()||"Não informado";
   const categoria = document.getElementById("ec-categoria").value;
   const item = document.getElementById("ec-item").value.trim()||"—";
