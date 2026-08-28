@@ -1688,58 +1688,57 @@ window.importManutencaoXlsx = async () => {
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type:"array", cellDates:true });
 
-    // Procura, em qualquer aba, a linha de cabeçalho que contenha "DATA DO SERVIÇO"
-    let headerRow = null, sheetRows = null;
+    // Relatórios semanais costumam vir com uma aba por semana/mês — processa TODAS as abas que
+    // tiverem a coluna "Data do Serviço", não só a primeira encontrada.
+    const novos = [];
+    let ignoradas = 0;
+    let achouCabecalhoEmAlgumaAba = false;
     for(const name of wb.SheetNames){
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:null });
+      let headerRow = null, sheetRows = null;
       for(let i=0;i<Math.min(rows.length,15);i++){
         const r = rows[i];
         if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="DATA DO SERVIÇO")){
           headerRow = r; sheetRows = rows.slice(i+1); break;
         }
       }
-      if(headerRow) break;
-    }
-    if(!headerRow){
-      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'Data do Serviço'). Confira se é a mesma estrutura do seu relatório semanal.";
-      return;
-    }
+      if(!headerRow) continue; // essa aba não é no formato esperado — pula pra próxima
 
-    const idx = {};
-    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
-    const col = (name) => idx[name];
-    const cData = col("DATA DO SERVIÇO"), cLocal = col("LOCAL"), cNf = col("NF'S") ?? col("NF"),
-          cOs = col("O.S") ?? col("O.S."), cFrota = col("FROTA"), cPlaca = col("PLACA"),
-          cValor = col("VALOR R$") ?? col("VALOR"), cServico = col("SERVIÇO"), cStatus = col("STATUS");
+      achouCabecalhoEmAlgumaAba = true;
+      const idx = {};
+      headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+      const col = (colName) => idx[colName];
+      const cData = col("DATA DO SERVIÇO"), cLocal = col("LOCAL"), cNf = col("NF'S") ?? col("NF"),
+            cOs = col("O.S") ?? col("O.S."), cFrota = col("FROTA"), cPlaca = col("PLACA"),
+            cValor = col("VALOR R$") ?? col("VALOR"), cServico = col("SERVIÇO"), cStatus = col("STATUS");
+      if(cData==null || cValor==null) continue; // aba sem as colunas essenciais — pula
 
-    if(cData==null || cValor==null){
-      statusEl.textContent = "⚠ Faltam colunas essenciais (DATA DO SERVIÇO ou VALOR R$). Confira o cabeçalho da planilha.";
-      return;
-    }
-
-    const novos = [];
-    let ignoradas = 0;
-    sheetRows.forEach(r=>{
-      if(!r) return;
-      const dataRaw = r[cData], valorRaw = r[cValor];
-      if(dataRaw == null || valorRaw == null || valorRaw === "") { ignoradas++; return; }
-      const iso = excelDateToISO(dataRaw);
-      if(!iso){ ignoradas++; return; }
-      const valor = parseValorBRL(valorRaw);
-      if(isNaN(valor)){ ignoradas++; return; }
-      novos.push({
-        id: localId(),
-        d: iso,
-        placa: (cPlaca!=null ? (r[cPlaca]||"").toString().trim() : ""),
-        local: (cLocal!=null ? (r[cLocal]||"").toString().trim() : "") || "Não informado",
-        nf: (cNf!=null ? (r[cNf]||"").toString().trim() : ""),
-        os: (cOs!=null ? (r[cOs]||"").toString().trim() : ""),
-        frota: (cFrota!=null ? (r[cFrota]||"").toString().trim() : ""),
-        servico: (cServico!=null ? (r[cServico]||"").toString().trim() : "") || "Outros Serviços",
-        status: (cStatus!=null ? (r[cStatus]||"").toString().trim() : ""),
-        v: valor
+      sheetRows.forEach(r=>{
+        if(!r) return;
+        const dataRaw = r[cData], valorRaw = r[cValor];
+        if(dataRaw == null || valorRaw == null || valorRaw === "") { ignoradas++; return; }
+        const iso = excelDateToISO(dataRaw);
+        if(!iso){ ignoradas++; return; }
+        const valor = parseValorBRL(valorRaw);
+        if(isNaN(valor)){ ignoradas++; return; }
+        novos.push({
+          id: localId(),
+          d: iso,
+          placa: (cPlaca!=null ? (r[cPlaca]||"").toString().trim() : ""),
+          local: (cLocal!=null ? (r[cLocal]||"").toString().trim() : "") || "Não informado",
+          nf: (cNf!=null ? (r[cNf]||"").toString().trim() : ""),
+          os: (cOs!=null ? (r[cOs]||"").toString().trim() : ""),
+          frota: (cFrota!=null ? (r[cFrota]||"").toString().trim() : ""),
+          servico: (cServico!=null ? (r[cServico]||"").toString().trim() : "") || "Outros Serviços",
+          status: (cStatus!=null ? (r[cStatus]||"").toString().trim() : ""),
+          v: valor
+        });
       });
-    });
+    }
+    if(!achouCabecalhoEmAlgumaAba){
+      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'Data do Serviço') em nenhuma aba. Confira se é a mesma estrutura do seu relatório semanal.";
+      return;
+    }
 
     if(novos.length === 0){
       statusEl.textContent = "⚠ Nenhum lançamento válido encontrado na planilha.";
