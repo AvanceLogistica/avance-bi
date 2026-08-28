@@ -1654,9 +1654,11 @@ const ENTRY_FORMS = {
     <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
       <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
       <div class="hint" style="margin-bottom:10px;">
-        Colunas esperadas: CAMINHÃO, COMPRADOR, APROVADOR, DATA DA COMPRA, DATA DO VENC., LOCAL DA COMPRA,
-        PEÇA COMPRADAS, CATEGORIA, NF, QTDE, VALOR UNIT., TOTAL, ANO, MÊS, SEMANA, TIPO DE MANUTENÇÃO
-        — a mesma estrutura da sua planilha de controle de compras.<br>
+        Lê a aba <b>"Tabela"</b> da planilha (se não encontrar, procura em qualquer aba). Colunas esperadas:
+        CAMINHÃO, COMPRADOR, APROVADOR, DATA DA COMPRA, DATA DO VENC., LOCAL DA COMPRA, PEÇA COMPRADAS,
+        CATEGORIA, NF, QTDE, VALOR UNIT., TOTAL, ANO, MÊS, SEMANA, TIPO DE MANUTENÇÃO — a mesma estrutura
+        da sua planilha de controle de compras. Linhas com placa "MANUTENÇÃO" são ignoradas (pertencem ao
+        módulo de Manutenção de Carreta).<br>
         <b>Importar substitui todo o histórico de Compras de Peças do sistema pelo conteúdo da planilha.</b>
       </div>
       <input type="file" id="ec-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
@@ -1845,9 +1847,13 @@ window.importComprasXlsx = async () => {
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type:"array", cellDates:true });
 
-    // Procura, em qualquer aba, a linha de cabeçalho que contenha "CAMINHÃO"
+    // Só a aba "Tabela" é importada — mira o nome específico em vez de confiar na ordem das abas
+    // (mesma lógica usada em Manutenção/Diesel). Se não achar "Tabela", cai pra busca antiga por
+    // qualquer aba que comece com "CAMINHÃO" na primeira coluna, pra não quebrar planilhas antigas.
     let headerRow = null, sheetRows = null;
-    for(const name of wb.SheetNames){
+    const nomeAbaTabela = wb.SheetNames.find(n=>n.trim().toUpperCase()==="TABELA");
+    const sheetsParaBuscar = nomeAbaTabela ? [nomeAbaTabela] : wb.SheetNames;
+    for(const name of sheetsParaBuscar){
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:null });
       for(let i=0;i<Math.min(rows.length,15);i++){
         const r = rows[i];
@@ -1858,7 +1864,7 @@ window.importComprasXlsx = async () => {
       if(headerRow) break;
     }
     if(!headerRow){
-      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'CAMINHÃO'). Confira se é a mesma estrutura da planilha de controle.";
+      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'CAMINHÃO') na aba Tabela. Confira se é a mesma estrutura da planilha de controle.";
       return;
     }
 
@@ -1882,7 +1888,7 @@ window.importComprasXlsx = async () => {
       const iso = excelDateToISO(dataRaw);
       if(!iso){ ignoradas++; return; }
       const placa = (r[cCam]||"").toString().trim();
-      const valor = parseFloat(total);
+      const valor = parseValorBRL(total);
       if(isNaN(valor)){ ignoradas++; return; }
       if(placa.toUpperCase() === "MANUTENÇÃO" || placa.toUpperCase() === "MANUTENCAO"){
         manutCount++; manutSoma += valor; return; // não faz parte de Compras de Peças
