@@ -2672,7 +2672,11 @@ const DATA = {
       labels: ["01/jun","02/jun","03/jun","04/jun","05/jun","08/jun","09/jun","10/jun","11/jun","12/jun","15/jun","16/jun","17/jun"],
       turno1: [2,6,3,10,2,3,3,3,3,2,3,4,1],
       turno2: [0,1,0,0,0,0,0,0,0,0,2,0,0]
-    }
+    },
+    // Ocorrências individuais (data, motorista, placa, turno, hora, tipo, observações) importadas da
+    // planilha "Lista de Infrações" (aba Matriz) ou lançadas avulsas — assim que existir pelo menos
+    // uma, todos os campos acima passam a ser recalculados a partir daqui (ver deriveInfracoes em app.js).
+    lancamentos: []
   },
 
   /* ---------------------------------------------------------------------

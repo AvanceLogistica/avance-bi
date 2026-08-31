@@ -109,17 +109,18 @@ function applyEventosDiarios(rows){
 async function loadFromSupabase(){
   if(!sb) return false;
   try{
-    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc] = await Promise.all([
+    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc] = await Promise.all([
       sbFetchAll("compras_lancamentos"),
       sbFetchAll("contas_pagar"),
       sbFetchAll("series_periodo"),
       sbFetchAll("eventos_diarios"),
       sbFetchAll("acidentes_acoes"),
       sbFetchAll("manutencao_lancamentos"),
-      sbFetchAll("diesel_abastecimentos")
+      sbFetchAll("diesel_abastecimentos"),
+      sbFetchAll("infracoes_lancamentos")
     ]);
 
-    if(!compras.length && !contas.length && !series.length) return false; // banco ainda vazio
+    if(!compras.length && !contas.length && !series.length && !infLanc.length) return false; // banco ainda vazio
 
     if(compras.length){
       DATA.compras.comprasLancamentos = compras.map(r=>({ id:r.id, d:r.data, p:r.placa||"", l:r.local||"", c:r.categoria||"", i:r.item||"", v:Number(r.valor) }));
@@ -147,10 +148,17 @@ async function loadFromSupabase(){
         posto:r.posto||"", status:r.status||"", v:Number(r.valor)
       }));
     }
+    if(infLanc.length){
+      DATA.infracoes.lancamentos = infLanc.map(r=>({
+        id:r.id, d:r.data, motorista:r.motorista||"", placa:r.placa||"", turno:r.turno||"",
+        hora:r.hora||"", ocorrencia:r.ocorrencia||"", observacoes:r.observacoes||""
+      }));
+    }
 
     deriveCompras();
     deriveManutencao();
     deriveDiesel();
+    deriveInfracoes();
     return true;
   }catch(e){
     console.warn("Falha ao carregar do Supabase, mantendo dados locais:", e);
@@ -186,6 +194,12 @@ async function migrarParaSupabase(onProgress){
     say(`Enviando ${fmtNum(DATA.diesel.lancamentos.length)} abastecimentos de Diesel...`);
     const dieselRows = DATA.diesel.lancamentos.map(r=>({ data:r.d, placa:r.placa, km:r.km, litros:r.litros, valor_unitario:r.valorUnit, valor:r.v, motorista:r.motorista, posto:r.posto, status:r.status }));
     await sbBulkInsert("diesel_abastecimentos", dieselRows);
+  }
+
+  if(DATA.infracoes.lancamentos.length){
+    say(`Enviando ${fmtNum(DATA.infracoes.lancamentos.length)} ocorrências de Infrações...`);
+    const infRows = DATA.infracoes.lancamentos.map(r=>({ data:r.d, motorista:r.motorista, placa:r.placa, turno:r.turno, hora:r.hora||null, ocorrencia:r.ocorrencia, observacoes:r.observacoes||null }));
+    await sbBulkInsert("infracoes_lancamentos", infRows);
   }
 
   say("Enviando séries mensais (Manutenção, Diesel, Folha, Hora Extra, Atestados, Infrações, Acidentes)...");
@@ -323,10 +337,10 @@ document.getElementById("lastUpdate").textContent = DATA.meta.lastUpdate;
    uma "visão filtrada" via computarXStats(lancamentos do ano) e guarda em xView,
    que tanto renderers.x quanto initCharts.x leem — sem mexer no DATA.x real.
    ============================================================================ */
-const FILTRO_ANO = { diesel:"todos", manutencao:"todos", compras:"todos" };
+const FILTRO_ANO = { diesel:"todos", manutencao:"todos", compras:"todos", infracoes:"todos" };
 // Última "visão" (filtrada ou não) montada pelo renderers.x de cada módulo — initCharts.x lê daqui
 // em vez de DATA.x direto, pra ficar em sincronia com o filtro de ano sem precisar mudar navigate().
-let dieselView = null, manutencaoView = null, comprasView = null;
+let dieselView = null, manutencaoView = null, comprasView = null, infracoesView = null;
 window.setFiltroAno = (modulo, ano) => {
   FILTRO_ANO[modulo] = ano;
   navigate(modulo);
@@ -370,7 +384,7 @@ function getByPath(path){
 }
 // Funções de recálculo referenciáveis por nome (um descritor salvo em localStorage não pode
 // guardar uma função direto, só o nome dela).
-const RECOMPUTE_FN = { recomputeDiesel, recomputeManutencao, recomputeFolha, recomputeHoraExtraCusto, recomputeHoraExtraQtd, recomputeInfracoes, deriveCompras, deriveManutencao, deriveDiesel };
+const RECOMPUTE_FN = { recomputeDiesel, recomputeManutencao, recomputeFolha, recomputeHoraExtraCusto, recomputeHoraExtraQtd, recomputeInfracoes, deriveCompras, deriveManutencao, deriveDiesel, deriveInfracoes };
 
 // Monta um DESCRITOR (objeto simples, serializável) de "desfazer" para um lançamento por período
 // (Diesel, Manutenção, Folha, Atestados, Infrações). Guarda o estado de ANTES do upsertPeriod: se o
@@ -438,6 +452,7 @@ async function executarUndo(d){
     if(d.containerPath === "compras.comprasLancamentos") deriveCompras();
     else if(d.containerPath === "manutencao.lancamentos") deriveManutencao();
     else if(d.containerPath === "diesel.lancamentos") deriveDiesel();
+    else if(d.containerPath === "infracoes.lancamentos") deriveInfracoes();
     if(sb && d.sbTable && d.sbId) await sb.from(d.sbTable).delete().eq("id", d.sbId);
   } else if(d.kind === "folhaAnual"){
     updateFolhaAnual(d.anterior25, d.anterior26);
@@ -461,6 +476,13 @@ async function executarUndo(d){
     if(sb){
       await sb.from("diesel_abastecimentos").delete().not("id","is",null);
       if(d.anteriores.length) await sbBulkInsert("diesel_abastecimentos", d.anteriores.map(r=>({ data:r.d, placa:r.placa, km:r.km, litros:r.litros, valor_unitario:r.valorUnit, valor:r.v, motorista:r.motorista, posto:r.posto, status:r.status })));
+    }
+  } else if(d.kind === "bulkImportInfracoes"){
+    DATA.infracoes.lancamentos = d.anteriores;
+    deriveInfracoes();
+    if(sb){
+      await sb.from("infracoes_lancamentos").delete().not("id","is",null);
+      if(d.anteriores.length) await sbBulkInsert("infracoes_lancamentos", d.anteriores.map(r=>({ data:r.d, motorista:r.motorista, placa:r.placa, turno:r.turno, hora:r.hora||null, ocorrencia:r.ocorrencia, observacoes:r.observacoes||null })));
     }
   }
 }
@@ -515,6 +537,88 @@ function recomputeHoraExtraQtd(){
 function recomputeInfracoes(){
   const inf = DATA.infracoes;
   inf.totalAno2026 = Math.round(sumIf(inf.labels, inf.ocorrencias, l=>l.includes("/26")));
+}
+
+// Snapshot das Infrações como vieram do data.js — mesma ideia do DIESEL_BASELINE_AGREGADOS, usado
+// como fallback enquanto nenhuma planilha/lançamento avulso for importado.
+const INFRACOES_BASELINE_AGREGADOS = {
+  labels: [...DATA.infracoes.labels], ocorrencias: [...DATA.infracoes.ocorrencias],
+  totalAno2026: DATA.infracoes.totalAno2026, usoCelular2026: DATA.infracoes.usoCelular2026,
+  porTurno: { ...DATA.infracoes.porTurno }, porTipo: DATA.infracoes.porTipo.map(t=>({ ...t })),
+  topMotoristas: DATA.infracoes.topMotoristas.map(t=>({ ...t })), topPlacas: DATA.infracoes.topPlacas.map(t=>({ ...t })),
+  diario: { labels:[...DATA.infracoes.diario.labels], turno1:[...DATA.infracoes.diario.turno1], turno2:[...DATA.infracoes.diario.turno2] }
+};
+
+// Calcula os totais de Infrações (mensal, por turno, por tipo, rankings, diário) a partir de uma
+// LISTA de ocorrências — função pura, não mexe em DATA.infracoes. Usada tanto pra recalcular o
+// estado real (deriveInfracoes, com TODAS as ocorrências) quanto pra gerar a "visão filtrada"
+// quando o usuário escolhe um ano específico no filtro da página (ver renderers.infracoes).
+function computarInfracoesStats(lancamentos){
+  const monthMap = {}, tipoMap = {}, motoristaMap = {}, placaMap = {}, dayMap = {};
+  const turno = { turno1:0, turno2:0 };
+  let usoCelular = 0;
+  lancamentos.forEach(r=>{
+    const ym = r.d.slice(0,7);
+    monthMap[ym] = (monthMap[ym]||0) + 1;
+
+    if(r.turno === "1") turno.turno1++;
+    else if(r.turno === "2") turno.turno2++;
+
+    const tipo = r.ocorrencia || "Outros";
+    tipoMap[tipo] = (tipoMap[tipo]||0) + 1;
+
+    if(r.motorista) motoristaMap[r.motorista] = (motoristaMap[r.motorista]||0) + 1;
+    if(r.placa) placaMap[r.placa] = (placaMap[r.placa]||0) + 1;
+
+    if(!dayMap[r.d]) dayMap[r.d] = { turno1:0, turno2:0 };
+    if(r.turno === "1") dayMap[r.d].turno1++;
+    else if(r.turno === "2") dayMap[r.d].turno2++;
+
+    if((r.observacoes||"").toUpperCase().includes("USO DE CELULAR")) usoCelular++;
+  });
+
+  const monthKeys = Object.keys(monthMap).sort();
+  const labels = monthKeys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
+  const ocorrencias = monthKeys.map(k=>monthMap[k]);
+
+  const porTipo = Object.entries(tipoMap).sort((a,b)=>b[1]-a[1]).map(([tipo,valor])=>({ tipo, valor }));
+  const topMotoristas = Object.entries(motoristaMap).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([nome,total])=>({ nome, total }));
+  const topPlacas = Object.entries(placaMap).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([placa,total])=>({ placa, total }));
+
+  const dayKeys = Object.keys(dayMap).sort();
+  const diario = {
+    labels: dayKeys.map(k=>{ const [,mm,dd] = k.split("-"); return `${dd}/${MONTH_ABBR[parseInt(mm,10)-1]}`; }),
+    turno1: dayKeys.map(k=>dayMap[k].turno1),
+    turno2: dayKeys.map(k=>dayMap[k].turno2)
+  };
+
+  return { lancamentos, labels, ocorrencias, totalPeriodo: lancamentos.length, usoCelular, porTurno: turno, porTipo, topMotoristas, topPlacas, diario };
+}
+
+// Recalcula DATA.infracoes a partir de TODAS as ocorrências. Só entra em ação depois do primeiro
+// lançamento (avulso ou por importação de planilha); até lá (ou se todas forem excluídas de novo),
+// os valores originais do data.js continuam valendo.
+function deriveInfracoes(){
+  const inf = DATA.infracoes;
+  if(!Array.isArray(inf.lancamentos)) inf.lancamentos = [];
+  if(inf.lancamentos.length === 0){
+    inf.labels = [...INFRACOES_BASELINE_AGREGADOS.labels];
+    inf.ocorrencias = [...INFRACOES_BASELINE_AGREGADOS.ocorrencias];
+    inf.totalAno2026 = INFRACOES_BASELINE_AGREGADOS.totalAno2026;
+    inf.usoCelular2026 = INFRACOES_BASELINE_AGREGADOS.usoCelular2026;
+    inf.totalPeriodo = INFRACOES_BASELINE_AGREGADOS.totalAno2026;
+    inf.usoCelular = INFRACOES_BASELINE_AGREGADOS.usoCelular2026;
+    inf.porTurno = { ...INFRACOES_BASELINE_AGREGADOS.porTurno };
+    inf.porTipo = INFRACOES_BASELINE_AGREGADOS.porTipo.map(t=>({ ...t }));
+    inf.topMotoristas = INFRACOES_BASELINE_AGREGADOS.topMotoristas.map(t=>({ ...t }));
+    inf.topPlacas = INFRACOES_BASELINE_AGREGADOS.topPlacas.map(t=>({ ...t }));
+    inf.diario = { labels:[...INFRACOES_BASELINE_AGREGADOS.diario.labels], turno1:[...INFRACOES_BASELINE_AGREGADOS.diario.turno1], turno2:[...INFRACOES_BASELINE_AGREGADOS.diario.turno2] };
+    return;
+  }
+  Object.assign(inf, computarInfracoesStats(inf.lancamentos));
+  const lanc2026 = inf.lancamentos.filter(r=>r.d.startsWith("2026"));
+  inf.totalAno2026 = lanc2026.length;
+  inf.usoCelular2026 = lanc2026.filter(r=>(r.observacoes||"").toUpperCase().includes("USO DE CELULAR")).length;
 }
 
 // Distingue placa de caminhão de verdade (sempre tem número, ex: "ATP-3089") de centro de custo
@@ -1347,13 +1451,17 @@ initCharts.atestados = () => {
 
 /* -------------------- INFRAÇÕES -------------------- */
 renderers.infracoes = () => {
-  const inf = DATA.infracoes;
+  const filtro = FILTRO_ANO.infracoes;
+  const inf = infracoesView = (filtro === "todos" || DATA.infracoes.lancamentos.length === 0)
+    ? DATA.infracoes
+    : computarInfracoesStats(DATA.infracoes.lancamentos.filter(r=>r.d.startsWith(filtro)));
+  const totalTurnos = inf.porTurno.turno1 + inf.porTurno.turno2;
   return `
-    <div class="page-head"><h2>Infrações</h2><p>Ocorrências, tipos, turnos e motoristas — nov/25 a jun/26</p></div>
+    <div class="page-head"><h2>Infrações</h2><p>Ocorrências, tipos, turnos e motoristas${inf.labels.length ? ` — ${inf.labels[0]} a ${inf.labels[inf.labels.length-1]}` : ""}</p>${montarFiltroAno("infracoes", DATA.infracoes.lancamentos)}</div>
     <div class="kpi-grid">
-      <div class="kpi"><div class="lbl">Total 2026</div><div class="val">${fmtNum(inf.totalAno2026)}</div></div>
-      <div class="kpi"><div class="lbl">Uso de celular</div><div class="val">${inf.usoCelular2026}</div><div class="delta up">ocorrências em 2026</div></div>
-      <div class="kpi"><div class="lbl">1º Turno</div><div class="val">${inf.porTurno.turno1}</div><div class="delta flat">${((inf.porTurno.turno1/(inf.porTurno.turno1+inf.porTurno.turno2))*100).toFixed(0)}% do total</div></div>
+      <div class="kpi"><div class="lbl">Total do período</div><div class="val">${fmtNum(inf.totalPeriodo)}</div></div>
+      <div class="kpi"><div class="lbl">Uso de celular</div><div class="val">${fmtNum(inf.usoCelular)}</div><div class="delta up">ocorrências no período</div></div>
+      <div class="kpi"><div class="lbl">1º Turno</div><div class="val">${inf.porTurno.turno1}</div><div class="delta flat">${totalTurnos ? ((inf.porTurno.turno1/totalTurnos)*100).toFixed(0) : 0}% do total</div></div>
       <div class="kpi"><div class="lbl">2º Turno</div><div class="val">${inf.porTurno.turno2}</div></div>
     </div>
     <div class="grid-2">
@@ -1368,14 +1476,14 @@ renderers.infracoes = () => {
     </div>
     <div class="grid-2">
       <div class="panel">
-        <h3>10 motoristas com mais infrações (2026)</h3>
+        <h3>10 motoristas com mais infrações</h3>
         <table>
           <thead><tr><th>#</th><th>Motorista</th><th class="num">Total</th></tr></thead>
           <tbody>${inf.topMotoristas.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.nome}</td><td class="num"><b>${t.total}</b></td></tr>`).join("")}</tbody>
         </table>
       </div>
       <div class="panel">
-        <h3>10 placas com mais infrações (2026)</h3>
+        <h3>10 placas com mais infrações</h3>
         <table>
           <thead><tr><th>#</th><th>Placa</th><th class="num">Total</th></tr></thead>
           <tbody>${inf.topPlacas.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.placa}</td><td class="num"><b>${t.total}</b></td></tr>`).join("")}</tbody>
@@ -1390,7 +1498,7 @@ renderers.infracoes = () => {
   `;
 };
 initCharts.infracoes = () => {
-  const inf = DATA.infracoes;
+  const inf = infracoesView || DATA.infracoes;
   mkChart("ch-inf-mensal", {
     type:"line",
     data:{ labels:inf.labels, datasets:[{ data:inf.ocorrencias, borderColor:COLORS.red, backgroundColor:COLORS.red+"1A", fill:true, tension:.3, pointRadius:3, pointBackgroundColor:COLORS.red }]},
@@ -1583,7 +1691,7 @@ const ENTRY_MODULES = [
   { key:"folha", ic:"💰", label:"Folha (Benefícios+Salário)", desc:"VT/VR, 40% adicional e salário — mensal" },
   { key:"horaextra", ic:"⏱️", label:"Hora Extra", desc:"Custo (R$) ou quantidade (horas) — mensal" },
   { key:"atestados", ic:"🩺", label:"Atestados", desc:"Ocorrências — mensal" },
-  { key:"infracoes", ic:"🚨", label:"Infrações", desc:"Ocorrências mensais ou detalhe diário por turno" },
+  { key:"infracoes", ic:"🚨", label:"Infrações", desc:"Importação de planilha ou lançamento avulso por ocorrência" },
   { key:"acidentes", ic:"⚠️", label:"Acidentes & Incidentes", desc:"Ocorrências mensais ou registro de problema/ação" }
 ];
 
@@ -1591,6 +1699,7 @@ const CATEGORIAS_COMPRAS = ["💡 ELÉTRICA","🧱 ESTRUTURA / CABINE","🚛 SUS
 const MANUTENCAO_SERVICOS = ["Manutenção Geral","Pintura do Teto","Outros Serviços"];
 const TIPOS_SERVICO = ["Manutenção e Reparação","Frete / Transporte","Consultoria","Jurídico","Contábil","TI / Software","Limpeza","Segurança","Combustível","Locação de Equipamento","Outros"];
 const FORMAS_PAGAMENTO = ["Boleto","PIX","Transferência (TED/DOC)","Cartão","Dinheiro"];
+const TIPOS_OCORRENCIA = ["Direção distraída","Não Uso do Cinto de Segurança","Excesso de Velocidade","Curva Brusca","Frenagem Brusca","Outros"];
 
 renderers.entrada = () => `
   <div class="page-head"><h2>Entrada de Dados</h2><p>Escolha a categoria, informe o período e o valor. Os gráficos e KPIs recalculam na hora.</p></div>
@@ -1786,22 +1895,32 @@ const ENTRY_FORMS = {
     <button class="entry-submit" onclick="submitAtestado()">Adicionar / atualizar mês</button>
   `,
   infracoes: () => `
-    <div class="tabs" style="margin-top:12px;">
-      <button class="sub-tab-btn active" data-sub="mensal" onclick="toggleSub(this,'inf-mensal','inf-diario')">Mensal</button>
-      <button class="sub-tab-btn" data-sub="diario" onclick="toggleSub(this,'inf-diario','inf-mensal')">Diário</button>
+    <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
+      <div class="hint" style="margin-bottom:10px;">
+        Lê só a aba <b>"Matriz"</b> da planilha (as outras abas são ignoradas). Colunas esperadas nela:
+        DATA, MOTORISTA, PLACA, TURNO, HORA, OCORRÊNCIA, OBSERVAÇÕES DO MONITORAMENTO (a coluna MÊS é
+        ignorada — o mês de cada ocorrência é calculado a partir da própria data).<br>
+        <b>Importar substitui todo o histórico de Infrações do sistema pelo conteúdo da aba Matriz.</b>
+      </div>
+      <input type="file" id="ei-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="importInfracoesXlsx()">Importar e substituir</button>
+      <div id="ei-import-status" class="hint" style="margin-top:10px;"></div>
     </div>
-    <div id="inf-mensal" style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
-      <label>Mês (ex: jul/26)<input type="text" id="ei-mes" list="dl-inf-meses" placeholder="jul/26"></label>
-      <datalist id="dl-inf-meses">${DATA.infracoes.labels.map(l=>`<option value="${l}">`).join("")}</datalist>
-      <label>Ocorrências<input type="number" id="ei-valor" step="1" placeholder="Ex: 30"></label>
+    <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+    <div class="hint" style="margin-bottom:4px;">Ou lance uma ocorrência avulsa manualmente:</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+      <label>Data<input type="date" id="ei-data" value="${new Date().toISOString().slice(0,10)}"></label>
+      <label>Hora<input type="time" id="ei-hora"></label>
+      <label>Motorista<input type="text" id="ei-motorista" list="dl-inf-motoristas" placeholder="Ex: LEANDRO DA SILVA MARINHO"></label>
+      <datalist id="dl-inf-motoristas">${[...new Set(DATA.infracoes.lancamentos.map(r=>r.motorista))].sort().map(l=>`<option value="${l}">`).join("")}</datalist>
+      <label>Placa<input type="text" id="ei-placa" placeholder="Ex: GCV-0274"></label>
+      <label>Turno<select id="ei-turno"><option value="1">1º Turno</option><option value="2">2º Turno</option></select></label>
+      <label style="grid-column:1/-1;">Ocorrência<input type="text" id="ei-ocorrencia" list="dl-inf-ocorrencias" placeholder="Ex: Direção distraída"></label>
+      <datalist id="dl-inf-ocorrencias">${TIPOS_OCORRENCIA.map(t=>`<option value="${t}">`).join("")}</datalist>
+      <label style="grid-column:1/-1;">Observações do Monitoramento (opcional)<input type="text" id="ei-obs" placeholder="Ex: Uso de Celular"></label>
     </div>
-    <div id="inf-diario" style="display:none; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
-      <label>Data (ex: 18/jun)<input type="text" id="ei-data" placeholder="18/jun"></label>
-      <div></div>
-      <label>1º Turno<input type="number" id="ei-turno1" step="1" placeholder="0"></label>
-      <label>2º Turno<input type="number" id="ei-turno2" step="1" placeholder="0"></label>
-    </div>
-    <button class="entry-submit" onclick="submitInfracao()">Adicionar</button>
+    <button class="entry-submit" onclick="submitInfracao()">Adicionar ocorrência</button>
   `,
   acidentes: () => `
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
@@ -1849,6 +1968,21 @@ function excelDateToISO(d){
     }
   }
   return null;
+}
+
+// Converte hora do Excel (Date "1899-12-30 HH:MM" já que lemos com cellDates:true, fração do dia
+// em número, ou texto "HH:MM"/"HH;MM" — esse último apareceu em algumas linhas digitadas na mão) para "HH:MM".
+function excelTimeToHHMM(v){
+  if(v == null || v === "") return "";
+  if(v instanceof Date && !isNaN(v)){
+    return String(v.getHours()).padStart(2,"0") + ":" + String(v.getMinutes()).padStart(2,"0");
+  }
+  if(typeof v === "number"){
+    const totalMin = Math.round(v * 24 * 60);
+    return String(Math.floor(totalMin/60) % 24).padStart(2,"0") + ":" + String(totalMin % 60).padStart(2,"0");
+  }
+  const m = String(v).trim().match(/^(\d{1,2})[:;h](\d{2})/);
+  return m ? (m[1].padStart(2,"0") + ":" + m[2]) : String(v).trim();
 }
 
 window.importComprasXlsx = async () => {
@@ -2182,6 +2316,108 @@ window.importDieselXlsx = async () => {
   }
 };
 
+window.importInfracoesXlsx = async () => {
+  const fileInput = document.getElementById("ei-import-file");
+  const statusEl = document.getElementById("ei-import-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada (confira se xlsx.full.min.js está na pasta)."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+
+    // Só a aba "Matriz" é importada — mesma convenção usada em Manutenção de Carreta.
+    const nomeAbaAlvo = wb.SheetNames.find(n=>n.trim().toUpperCase()==="MATRIZ");
+    if(!nomeAbaAlvo){
+      statusEl.textContent = `⚠ Não encontrei uma aba chamada "Matriz" nesta planilha. Abas encontradas: ${wb.SheetNames.join(", ")}.`;
+      return;
+    }
+
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nomeAbaAlvo], { header:1, defval:null });
+    let headerRow = null, sheetRows = null;
+    for(let i=0;i<Math.min(rows.length,30);i++){
+      const r = rows[i];
+      if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="MOTORISTA")){
+        headerRow = r; sheetRows = rows.slice(i+1); break;
+      }
+    }
+    if(!headerRow){
+      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'Motorista') na aba Matriz. Confira se é a mesma estrutura do seu relatório.";
+      return;
+    }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (name) => idx[name];
+    const cData = col("DATA"), cMotorista = col("MOTORISTA"), cPlaca = col("PLACA"), cTurno = col("TURNO"),
+          cHora = col("HORA"), cOcorrencia = col("OCORRÊNCIA") ?? col("OCORRENCIA"),
+          cObs = col("OBSERVAÇÕES DO MONITORAMENTO") ?? col("OBSERVACOES DO MONITORAMENTO");
+    if(cData==null || cMotorista==null || cOcorrencia==null){
+      statusEl.textContent = "⚠ Faltam colunas essenciais (DATA, MOTORISTA ou OCORRÊNCIA) na aba Matriz. Confira o cabeçalho da planilha.";
+      return;
+    }
+
+    const novos = [];
+    let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const dataRaw = r[cData], ocorrenciaRaw = r[cOcorrencia];
+      if(dataRaw == null || ocorrenciaRaw == null || String(ocorrenciaRaw).trim()===""){ ignoradas++; return; }
+      const iso = excelDateToISO(dataRaw);
+      if(!iso){ ignoradas++; return; }
+      const turnoMatch = cTurno!=null ? String(r[cTurno]||"").match(/(\d)/) : null;
+      novos.push({
+        id: localId(),
+        d: iso,
+        motorista: (cMotorista!=null ? (r[cMotorista]||"").toString().trim() : ""),
+        placa: (cPlaca!=null ? (r[cPlaca]||"").toString().trim() : ""),
+        turno: turnoMatch ? turnoMatch[1] : "",
+        hora: cHora!=null ? excelTimeToHHMM(r[cHora]) : "",
+        ocorrencia: String(ocorrenciaRaw).trim(),
+        observacoes: (cObs!=null && r[cObs]!=null) ? String(r[cObs]).trim() : ""
+      });
+    });
+
+    if(novos.length === 0){
+      statusEl.textContent = "⚠ Nenhuma ocorrência válida encontrada na planilha.";
+      return;
+    }
+
+    const anteriores = DATA.infracoes.lancamentos;
+    DATA.infracoes.lancamentos = novos;
+    deriveInfracoes();
+    logEntry("Infrações (importação)", `${novos.length} ocorrências importadas de "${file.name}"`, { kind:"bulkImportInfracoes", anteriores });
+    renderSessionLog();
+
+    const datas = novos.map(r=>r.d).sort();
+    let statusMsg = `✓ <b>${fmtNum(novos.length)}</b> ocorrências importadas (${datas[0].split("-").reverse().join("/")} a ${datas[datas.length-1].split("-").reverse().join("/")}).` +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem data ou ocorrência válida foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
+
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
+
+    if(sb){
+      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
+      const { error: delError } = await sb.from("infracoes_lancamentos").delete().not("id","is",null);
+      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      try{
+        await sbBulkInsert("infracoes_lancamentos", novos.map(r=>({ data:r.d, motorista:r.motorista, placa:r.placa, turno:r.turno, hora:r.hora||null, ocorrencia:r.ocorrencia, observacoes:r.observacoes||null })));
+        statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+        toast(`✓ ${novos.length} ocorrências importadas (salvo no banco)`);
+      }catch(e){
+        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+      }
+    } else {
+      toast(`✓ ${novos.length} ocorrências importadas`);
+    }
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message;
+  }
+};
+
 window.submitContaPagar = async () => {
   const prestador = document.getElementById("ecp-prestador").value.trim();
   const cnpj = document.getElementById("ecp-cnpj").value.trim();
@@ -2377,38 +2613,32 @@ window.submitAtestado = async () => {
 };
 
 window.submitInfracao = async () => {
-  const mensalOn = document.getElementById("inf-mensal").style.display !== "none";
-  if(mensalOn){
-    const label = document.getElementById("ei-mes").value.trim();
-    const v = parseInt(document.getElementById("ei-valor").value);
-    if(!label || isNaN(v)){ toast("Preencha mês e ocorrências."); return; }
-    const sbRow = { modulo:"infracoes", campo:"ocorrencias", label, valor:v };
-    const undo = prepararDesfazerPeriodo("infracoes", "labels", label, ["ocorrencias"], "recomputeInfracoes", "series_periodo", [sbRow]);
-    upsertPeriod(DATA.infracoes, "labels", label, { ocorrencias:v });
-    recomputeInfracoes();
-    logEntry("Infrações (mensal)", `${label} · ${v} ocorrência(s)`, undo);
-    renderSessionLog();
-    if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
-    await gravarSeriePeriodo({ modulo:"infracoes", campo:"ocorrencias", label, valor:v }, "Infrações");
-  } else {
-    const label = document.getElementById("ei-data").value.trim();
-    const t1 = parseInt(document.getElementById("ei-turno1").value) || 0;
-    const t2 = parseInt(document.getElementById("ei-turno2").value) || 0;
-    if(!label){ toast("Informe a data."); return; }
-    const sbRows = [
-      { modulo:"infracoes_diario", campo:"turno1", label, valor:t1 },
-      { modulo:"infracoes_diario", campo:"turno2", label, valor:t2 }
-    ];
-    const undo = prepararDesfazerPeriodo("infracoes.diario", "labels", label, ["turno1","turno2"], null, "eventos_diarios", sbRows);
-    upsertPeriod(DATA.infracoes.diario, "labels", label, { turno1:t1, turno2:t2 });
-    logEntry("Infrações (diário)", `${label} · T1:${t1} T2:${t2}`, undo);
-    renderSessionLog();
-    if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
-    await gravarEventosDiarios([
-      { modulo:"infracoes_diario", campo:"turno1", label, valor:t1 },
-      { modulo:"infracoes_diario", campo:"turno2", label, valor:t2 }
-    ], "Infrações");
+  const d = document.getElementById("ei-data").value;
+  if(!d){ toast("Preencha a data."); return; }
+  const hora = document.getElementById("ei-hora").value || "";
+  const motorista = document.getElementById("ei-motorista").value.trim();
+  const placa = document.getElementById("ei-placa").value.trim();
+  const turno = document.getElementById("ei-turno").value;
+  const ocorrencia = document.getElementById("ei-ocorrencia").value.trim();
+  const observacoes = document.getElementById("ei-obs").value.trim();
+  if(!motorista || !ocorrencia){ toast("Preencha ao menos motorista e ocorrência."); return; }
+  const registro = { id: localId(), d, motorista, placa, turno, hora, ocorrencia, observacoes };
+  DATA.infracoes.lancamentos.push(registro);
+  deriveInfracoes();
+  const undoDescr = prepararDesfazerArrayById("infracoes.lancamentos", registro.id, "infracoes_lancamentos");
+  logEntry("Infrações", `${d.split("-").reverse().join("/")} · ${motorista} · ${ocorrencia}`, undoDescr);
+  renderSessionLog();
+  if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
+
+  if(sb){
+    const { data, error } = await sb.from("infracoes_lancamentos").insert({ data:d, motorista, placa, turno, hora: hora||null, ocorrencia, observacoes: observacoes||null }).select().single();
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+    registro.id = data.id;
+    undoDescr.itemId = data.id;
+    undoDescr.sbId = data.id;
+    salvarSessionLogLocal();
   }
+  toast("Ocorrência adicionada ✓" + (sb ? " (salvo no banco)" : ""));
 };
 
 window.submitAcidenteMes = async () => {
@@ -2496,6 +2726,7 @@ function updateSyncPill(){
   deriveCompras(); // garante que os dados locais (data.js) já estão prontos como base/fallback
   deriveManutencao();
   deriveDiesel();
+  deriveInfracoes();
   const carregouDoBanco = await loadFromSupabase();
   SUPABASE_SINCRONIZADO = carregouDoBanco;
   carregarSessionLogLocal();
