@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
 <title>Avance | Painel de Gestão</title>
 <script src="chart.min.js"></script>
 <script src="chartjs-plugin-datalabels.min.js"></script>
@@ -23,8 +24,10 @@
   --amber:#E1971F;
   --sidebar-w:250px;
   font-variant-numeric: tabular-nums;
+  color-scheme: light only; /* impede o navegador (ex: Chrome Android) de forçar tema escuro no celular */
 }
 *{box-sizing:border-box; margin:0; padding:0;}
+html{ background:var(--paper); }
 body{
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   background:var(--paper);
