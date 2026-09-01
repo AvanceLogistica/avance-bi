@@ -109,7 +109,7 @@ function applyEventosDiarios(rows){
 async function loadFromSupabase(){
   if(!sb) return false;
   try{
-    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc] = await Promise.all([
+    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc] = await Promise.all([
       sbFetchAll("compras_lancamentos"),
       sbFetchAll("contas_pagar"),
       sbFetchAll("series_periodo"),
@@ -117,10 +117,11 @@ async function loadFromSupabase(){
       sbFetchAll("acidentes_acoes"),
       sbFetchAll("manutencao_lancamentos"),
       sbFetchAll("diesel_abastecimentos"),
-      sbFetchAll("infracoes_lancamentos")
+      sbFetchAll("infracoes_lancamentos"),
+      sbFetchAll("entregas_lancamentos")
     ]);
 
-    if(!compras.length && !contas.length && !series.length && !infLanc.length) return false; // banco ainda vazio
+    if(!compras.length && !contas.length && !series.length && !infLanc.length && !entLanc.length) return false; // banco ainda vazio
 
     if(compras.length){
       DATA.compras.comprasLancamentos = compras.map(r=>({ id:r.id, d:r.data, p:r.placa||"", l:r.local||"", c:r.categoria||"", i:r.item||"", v:Number(r.valor) }));
@@ -154,11 +155,18 @@ async function loadFromSupabase(){
         hora:r.hora||"", ocorrencia:r.ocorrencia||"", observacoes:r.observacoes||""
       }));
     }
+    if(entLanc.length){
+      DATA.entregas.lancamentos = entLanc.map(r=>({
+        id:r.id, d:r.data, servico:r.servico||"", transportadora:r.transportadora||"", cliente:r.cliente||"",
+        motorista:r.motorista||"", carro:r.carro||"", qnt:Number(r.qnt)||1, v:Number(r.valor), observacao:r.observacao||""
+      }));
+    }
 
     deriveCompras();
     deriveManutencao();
     deriveDiesel();
     deriveInfracoes();
+    deriveEntregas();
     return true;
   }catch(e){
     console.warn("Falha ao carregar do Supabase, mantendo dados locais:", e);
@@ -200,6 +208,12 @@ async function migrarParaSupabase(onProgress){
     say(`Enviando ${fmtNum(DATA.infracoes.lancamentos.length)} ocorrências de Infrações...`);
     const infRows = DATA.infracoes.lancamentos.map(r=>({ data:r.d, motorista:r.motorista, placa:r.placa, turno:r.turno, hora:r.hora||null, ocorrencia:r.ocorrencia, observacoes:r.observacoes||null }));
     await sbBulkInsert("infracoes_lancamentos", infRows);
+  }
+
+  if(DATA.entregas.lancamentos.length){
+    say(`Enviando ${fmtNum(DATA.entregas.lancamentos.length)} operações de Entregas...`);
+    const entRows = DATA.entregas.lancamentos.map(r=>({ data:r.d, servico:r.servico, transportadora:r.transportadora, cliente:r.cliente, motorista:r.motorista, carro:r.carro, qnt:r.qnt, valor:r.v, observacao:r.observacao||null }));
+    await sbBulkInsert("entregas_lancamentos", entRows);
   }
 
   say("Enviando séries mensais (Manutenção, Diesel, Folha, Hora Extra, Atestados, Infrações, Acidentes)...");
@@ -285,11 +299,12 @@ function deltaBadge(pct, invert){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar"];
+const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar"];
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
+  entregas: ["Entregas","Coletas e entregas — receita, viagens e ranking por motorista, cliente e transportadora"],
   manutencao: ["Manutenção de Carreta","Custos de manutenção geral, pintura e outros serviços"],
   diesel: ["Diesel","Custo de abastecimento mensal, semanal e por veículo"],
   folha: ["Folha · Benefícios + Salário","Evolução de VT/VR, adicional 40% e salário"],
@@ -337,10 +352,10 @@ document.getElementById("lastUpdate").textContent = DATA.meta.lastUpdate;
    uma "visão filtrada" via computarXStats(lancamentos do ano) e guarda em xView,
    que tanto renderers.x quanto initCharts.x leem — sem mexer no DATA.x real.
    ============================================================================ */
-const FILTRO_ANO = { diesel:"todos", manutencao:"todos", compras:"todos", infracoes:"todos" };
+const FILTRO_ANO = { diesel:"todos", manutencao:"todos", compras:"todos", infracoes:"todos", entregas:"todos" };
 // Última "visão" (filtrada ou não) montada pelo renderers.x de cada módulo — initCharts.x lê daqui
 // em vez de DATA.x direto, pra ficar em sincronia com o filtro de ano sem precisar mudar navigate().
-let dieselView = null, manutencaoView = null, comprasView = null, infracoesView = null;
+let dieselView = null, manutencaoView = null, comprasView = null, infracoesView = null, entregasView = null;
 window.setFiltroAno = (modulo, ano) => {
   FILTRO_ANO[modulo] = ano;
   navigate(modulo);
@@ -384,7 +399,7 @@ function getByPath(path){
 }
 // Funções de recálculo referenciáveis por nome (um descritor salvo em localStorage não pode
 // guardar uma função direto, só o nome dela).
-const RECOMPUTE_FN = { recomputeDiesel, recomputeManutencao, recomputeFolha, recomputeHoraExtraCusto, recomputeHoraExtraQtd, recomputeInfracoes, deriveCompras, deriveManutencao, deriveDiesel, deriveInfracoes };
+const RECOMPUTE_FN = { recomputeDiesel, recomputeManutencao, recomputeFolha, recomputeHoraExtraCusto, recomputeHoraExtraQtd, recomputeInfracoes, deriveCompras, deriveManutencao, deriveDiesel, deriveInfracoes, deriveEntregas };
 
 // Monta um DESCRITOR (objeto simples, serializável) de "desfazer" para um lançamento por período
 // (Diesel, Manutenção, Folha, Atestados, Infrações). Guarda o estado de ANTES do upsertPeriod: se o
@@ -453,6 +468,7 @@ async function executarUndo(d){
     else if(d.containerPath === "manutencao.lancamentos") deriveManutencao();
     else if(d.containerPath === "diesel.lancamentos") deriveDiesel();
     else if(d.containerPath === "infracoes.lancamentos") deriveInfracoes();
+    else if(d.containerPath === "entregas.lancamentos") deriveEntregas();
     if(sb && d.sbTable && d.sbId) await sb.from(d.sbTable).delete().eq("id", d.sbId);
   } else if(d.kind === "folhaAnual"){
     updateFolhaAnual(d.anterior25, d.anterior26);
@@ -483,6 +499,13 @@ async function executarUndo(d){
     if(sb){
       await sb.from("infracoes_lancamentos").delete().not("id","is",null);
       if(d.anteriores.length) await sbBulkInsert("infracoes_lancamentos", d.anteriores.map(r=>({ data:r.d, motorista:r.motorista, placa:r.placa, turno:r.turno, hora:r.hora||null, ocorrencia:r.ocorrencia, observacoes:r.observacoes||null })));
+    }
+  } else if(d.kind === "bulkImportEntregas"){
+    DATA.entregas.lancamentos = d.anteriores;
+    deriveEntregas();
+    if(sb){
+      await sb.from("entregas_lancamentos").delete().not("id","is",null);
+      if(d.anteriores.length) await sbBulkInsert("entregas_lancamentos", d.anteriores.map(r=>({ data:r.d, servico:r.servico, transportadora:r.transportadora, cliente:r.cliente, motorista:r.motorista, carro:r.carro, qnt:r.qnt, valor:r.v, observacao:r.observacao||null })));
     }
   }
 }
@@ -619,6 +642,65 @@ function deriveInfracoes(){
   const lanc2026 = inf.lancamentos.filter(r=>r.d.startsWith("2026"));
   inf.totalAno2026 = lanc2026.length;
   inf.usoCelular2026 = lanc2026.filter(r=>(r.observacoes||"").toUpperCase().includes("USO DE CELULAR")).length;
+}
+
+// Calcula os totais de Entregas (mensal, quinzenal, por tipo de serviço, rankings) a partir de uma
+// LISTA de operações — função pura, não mexe em DATA.entregas. Usada tanto pra recalcular o estado
+// real (deriveEntregas, com TODAS as operações) quanto pra gerar a "visão filtrada" quando o usuário
+// escolhe um ano específico no filtro da página (ver renderers.entregas).
+function computarEntregasStats(lancamentos){
+  const monthMap = {}, quinzenaMap = {}, tipoMap = {}, motoristaMap = {}, clienteMap = {}, transpMap = {};
+  let totalValor = 0, totalQtd = 0;
+  lancamentos.forEach(r=>{
+    const ym = r.d.slice(0,7);
+    monthMap[ym] = (monthMap[ym]||0) + r.v;
+
+    const dia = parseInt(r.d.slice(8,10),10);
+    const qk = ym + "-" + (dia<=15 ? "Q1" : "Q2");
+    quinzenaMap[qk] = (quinzenaMap[qk]||0) + r.qnt;
+
+    const tipo = r.servico || "(Em branco)";
+    tipoMap[tipo] = (tipoMap[tipo]||0) + r.v;
+
+    if(r.motorista) motoristaMap[r.motorista] = (motoristaMap[r.motorista]||0) + r.qnt;
+    if(r.cliente){
+      if(!clienteMap[r.cliente]) clienteMap[r.cliente] = { valor:0, qtd:0 };
+      clienteMap[r.cliente].valor += r.v;
+      clienteMap[r.cliente].qtd += r.qnt;
+    }
+    if(r.transportadora) transpMap[r.transportadora] = (transpMap[r.transportadora]||0) + r.v;
+
+    totalValor += r.v;
+    totalQtd += r.qnt;
+  });
+
+  const monthKeys = Object.keys(monthMap).sort();
+  const mensalLabels = monthKeys.map(k=>{ const [y,mm] = k.split("-"); return MONTH_ABBR[parseInt(mm,10)-1] + "/" + y.slice(2); });
+  const mensalValor = monthKeys.map(k=>Math.round(monthMap[k]));
+
+  const quinzenaKeys = Object.keys(quinzenaMap).sort();
+  const quinzenaLabels = quinzenaKeys.map(k=>{ const [y,mm,q] = k.split("-"); return `${q} ${MONTH_ABBR[parseInt(mm,10)-1]}`; });
+  const quinzenaQtd = quinzenaKeys.map(k=>quinzenaMap[k]);
+
+  const porTipo = Object.entries(tipoMap).sort((a,b)=>b[1]-a[1]).map(([tipo,valor])=>({ tipo, valor:Math.round(valor), pct: totalValor ? +(valor/totalValor*100).toFixed(2) : 0 }));
+  const porMotorista = Object.entries(motoristaMap).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([nome,viagens])=>({ nome, viagens }));
+  const porCliente = Object.entries(clienteMap).sort((a,b)=>b[1].valor-a[1].valor).slice(0,10)
+    .map(([cliente,d])=>({ cliente, valor:Math.round(d.valor), qtd:d.qtd, pct: totalValor ? +(d.valor/totalValor*100).toFixed(2) : 0 }));
+  const porTransportadora = Object.entries(transpMap).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([transportadora,valor])=>({ transportadora, valor:Math.round(valor) }));
+
+  return {
+    lancamentos, mensalLabels, mensalValor, quinzenaLabels, quinzenaQtd, porTipo, porMotorista, porCliente, porTransportadora,
+    totalReceitas: Math.round(totalValor), totalViagens: totalQtd, ticketMedio: totalQtd ? +(totalValor/totalQtd).toFixed(2) : 0
+  };
+}
+
+// Recalcula DATA.entregas a partir de TODAS as operações. Módulo sem baseline agregada (não existia
+// antes) — enquanto não houver nenhum lançamento, computarEntregasStats([]) já devolve tudo zerado/
+// vazio, e o renderer mostra o estado vazio.
+function deriveEntregas(){
+  const e = DATA.entregas;
+  if(!Array.isArray(e.lancamentos)) e.lancamentos = [];
+  Object.assign(e, computarEntregasStats(e.lancamentos));
 }
 
 // Distingue placa de caminhão de verdade (sempre tem número, ex: "ATP-3089") de centro de custo
@@ -941,12 +1023,14 @@ const initCharts = {};
 /* -------------------- OVERVIEW -------------------- */
 renderers.overview = () => {
   const m = DATA.manutencao, d = DATA.diesel, f = DATA.folha, he = DATA.horaExtraCusto,
-        c = DATA.compras, at = DATA.atestados, inf = DATA.infracoes, ac = DATA.acidentes, cp = DATA.contasPagar;
+        c = DATA.compras, at = DATA.atestados, inf = DATA.infracoes, ac = DATA.acidentes, cp = DATA.contasPagar, eg = DATA.entregas;
 
   const cpPendente = sumArr(cp.lancamentos.filter(i=>i.status!=="Pago").map(i=>i.valor));
   const cpVencidas = cp.lancamentos.filter(i=>statusConta(i)==="Vencido").length;
 
   const cards = [
+    { page:"entregas", ic:"🚚", label:"Entregas", big: eg.lancamentos.length ? fmtBRL(eg.totalReceitas) : "—",
+      foot: eg.lancamentos.length ? `${fmtNum(eg.totalViagens)} viagens · ticket médio ${fmtBRL2(eg.ticketMedio)}` : "Nenhuma operação importada ainda", id:"spk-entregas" },
     { page:"manutencao", ic:"🔩", label:"Manutenção de Carreta", big:fmtBRL(m.totalPeriodo), foot:"Total acumulado dez/25–jun/26", id:"spk-manutencao" },
     { page:"diesel", ic:"⛽", label:"Diesel (2026)", big:fmtBRL(d.totalAno2026), foot:"Média semanal " + fmtMil(d.mediaSemanal), id:"spk-diesel" },
     { page:"folha", ic:"💰", label:"Folha · Salário (2026)", big:f.totalSalario2026_M.toFixed(3).replace(".",",") + " Mi", foot:`+${f.crescimentoPct}% vs. 2025 (5 meses)`, id:"spk-folha" },
@@ -1015,6 +1099,7 @@ initCharts.overview = () => {
     options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}, tooltip:{enabled:false}},
       scales:{ x:{display:false}, y:{display:false} } }
   });
+  spark("spk-entregas", DATA.entregas.mensalValor, COLORS.amber);
   spark("spk-manutencao", DATA.manutencao.totalGeral, COLORS.red);
   spark("spk-diesel", DATA.diesel.mensal, COLORS.red);
   spark("spk-folha", DATA.folha.total.filter(v=>v!==null), COLORS.red);
@@ -1530,6 +1615,100 @@ initCharts.infracoes = () => {
   });
 };
 
+/* -------------------- ENTREGAS -------------------- */
+renderers.entregas = () => {
+  const filtro = FILTRO_ANO.entregas;
+  const e = entregasView = (filtro === "todos" || DATA.entregas.lancamentos.length === 0)
+    ? DATA.entregas
+    : computarEntregasStats(DATA.entregas.lancamentos.filter(r=>r.d.startsWith(filtro)));
+  const vazio = DATA.entregas.lancamentos.length === 0;
+  return `
+    <div class="page-head">
+      <h2>Entregas</h2>
+      <p>Coletas e entregas — receita, viagens e ranking por motorista, cliente e transportadora${e.mensalLabels.length ? ` — ${e.mensalLabels[0]} a ${e.mensalLabels[e.mensalLabels.length-1]}` : ""}</p>
+      ${montarFiltroAno("entregas", DATA.entregas.lancamentos)}
+    </div>
+    ${vazio ? `
+    <div class="panel">
+      <div class="empty-state" style="padding:24px;"><div class="glyph">🚚</div><p>Nenhuma entrega importada ainda. Vá em <b>Entrada de Dados → Entregas</b> pra importar a planilha ou lançar uma operação avulsa.</p></div>
+    </div>` : `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Total de Receitas</div><div class="val">${fmtBRL(e.totalReceitas)}</div></div>
+      <div class="kpi"><div class="lbl">Soma de Viagens</div><div class="val">${fmtNum(e.totalViagens)}</div></div>
+      <div class="kpi"><div class="lbl">Ticket Médio</div><div class="val">${fmtBRL2(e.ticketMedio)}</div></div>
+    </div>
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Demonstrativo em Valor R$ (mensal)</h3>
+        <div class="chart-wrap" style="height:260px;"><canvas id="ch-ent-mensal"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Tipo de Serviço</h3>
+        <div class="hint">% sobre o valor total</div>
+        <div class="chart-wrap" style="height:260px;"><canvas id="ch-ent-tipo"></canvas></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Demonstrativo em Quantidade (por quinzena)</h3>
+      <div class="chart-wrap" style="height:260px;"><canvas id="ch-ent-quinzena"></canvas></div>
+    </div>
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Viagens por Motorista</h3>
+        <table>
+          <thead><tr><th>#</th><th>Motorista</th><th class="num">Viagens</th></tr></thead>
+          <tbody>${e.porMotorista.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.nome}</td><td class="num"><b>${fmtNum(t.viagens)}</b></td></tr>`).join("")}</tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h3>Valor por Transportadora</h3>
+        <table>
+          <thead><tr><th>#</th><th>Transportadora</th><th class="num">Valor</th></tr></thead>
+          <tbody>${e.porTransportadora.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.transportadora}</td><td class="num"><b>${fmtBRL2(t.valor)}</b></td></tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Top 10 clientes</h3>
+      <table>
+        <thead><tr><th>#</th><th>Cliente</th><th class="num">Faturamento</th><th class="num">Operações</th><th class="num">% Part.</th></tr></thead>
+        <tbody>${e.porCliente.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.cliente}</td><td class="num">${fmtBRL2(t.valor)}</td><td class="num">${fmtNum(t.qtd)}</td><td class="num">${t.pct.toFixed(2)}%</td></tr>`).join("")}</tbody>
+      </table>
+    </div>
+    `}
+  `;
+};
+initCharts.entregas = () => {
+  const e = entregasView || DATA.entregas;
+  if(!e.mensalLabels || e.mensalLabels.length === 0) return; // nada pra desenhar antes da 1ª importação/lançamento
+  mkChart("ch-ent-mensal", {
+    type:"bar",
+    data:{ labels:e.mensalLabels, datasets:[{ data:e.mensalValor, backgroundColor:COLORS.amber, borderRadius:5 }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
+        datalabels:{ display:true, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } },
+      layout:{ padding:{ top:18 } },
+      scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}} } }
+  });
+  const totalTipo = sumArr(e.porTipo.map(t=>t.valor));
+  mkChart("ch-ent-tipo", {
+    type:"doughnut",
+    data:{ labels:e.porTipo.map(t=>t.tipo), datasets:[{ data:e.porTipo.map(t=>t.valor),
+      backgroundColor:[COLORS.amber, COLORS.red, "#B9BCC6", COLORS.green], borderWidth:2, borderColor:"#fff" }]},
+    options:{ responsive:true, maintainAspectRatio:false, cutout:"60%",
+      plugins:{legend:{position:"bottom", labels:{boxWidth:10, font:{size:10}, usePointStyle:true, pointStyle:"circle"}},
+        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]/totalTipo > 0.02, color:"#fff", font:{size:10, weight:700},
+          formatter:(v)=> totalTipo? (v/totalTipo*100).toFixed(2)+"%" : "" } } }
+  });
+  mkChart("ch-ent-quinzena", {
+    type:"bar",
+    data:{ labels:e.quinzenaLabels, datasets:[{ data:e.quinzenaQtd, backgroundColor:COLORS.redDark, borderRadius:4 }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
+        datalabels:{ display:true, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:9, weight:700}, formatter:fmtLabelNum } },
+      layout:{ padding:{ top:16 } },
+      scales:{ y:{grid:{color:COLORS.grid}}, x:{grid:{display:false}, ticks:{maxRotation:60, minRotation:60}} } }
+  });
+};
+
 /* -------------------- ACIDENTES -------------------- */
 renderers.acidentes = () => {
   const ac = DATA.acidentes;
@@ -1685,6 +1864,7 @@ window.rodarMigracaoSupabase = async () => {
 /* -------------------- ENTRADA DE DADOS -------------------- */
 const ENTRY_MODULES = [
   { key:"contaspagar", ic:"💵", label:"Contas a Pagar", desc:"Prestador de serviço, CNPJ, valor, forma de pagamento e vencimento" },
+  { key:"entregas", ic:"🚚", label:"Entregas", desc:"Importação de planilha ou lançamento avulso por operação" },
   { key:"compras", ic:"🧰", label:"Compras de Peças", desc:"Lançamento diário — data, local/fornecedor, categoria e valor" },
   { key:"diesel", ic:"⛽", label:"Diesel", desc:"Custo mensal ou semanal" },
   { key:"manutencao", ic:"🔩", label:"Manutenção de Carreta", desc:"Custo mensal por tipo de serviço" },
@@ -1700,6 +1880,7 @@ const MANUTENCAO_SERVICOS = ["Manutenção Geral","Pintura do Teto","Outros Serv
 const TIPOS_SERVICO = ["Manutenção e Reparação","Frete / Transporte","Consultoria","Jurídico","Contábil","TI / Software","Limpeza","Segurança","Combustível","Locação de Equipamento","Outros"];
 const FORMAS_PAGAMENTO = ["Boleto","PIX","Transferência (TED/DOC)","Cartão","Dinheiro"];
 const TIPOS_OCORRENCIA = ["Direção distraída","Não Uso do Cinto de Segurança","Excesso de Velocidade","Curva Brusca","Frenagem Brusca","Outros"];
+const TIPOS_SERVICO_ENTREGA = ["ENTREGA","COLETA","DESCARGA"];
 
 renderers.entrada = () => `
   <div class="page-head"><h2>Entrada de Dados</h2><p>Escolha a categoria, informe o período e o valor. Os gráficos e KPIs recalculam na hora.</p></div>
@@ -1759,6 +1940,37 @@ function renderSessionLog(){
 }
 
 const ENTRY_FORMS = {
+  entregas: () => `
+    <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
+      <div class="hint" style="margin-bottom:10px;">
+        Lê só a aba <b>"MATRIZ"</b> da planilha (as outras abas são ignoradas). Colunas esperadas nela:
+        DATA, SERVIÇO, TRANSPORTADORA, CLIENTE, MOTORISTA, CARRO, QNT, VALOR, OBSERVAÇÃO (ANO e MÊS são
+        ignoradas — calculadas a partir da própria data).<br>
+        <b>Importar substitui todo o histórico de Entregas do sistema pelo conteúdo da aba MATRIZ.</b>
+      </div>
+      <input type="file" id="eg-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="importEntregasXlsx()">Importar e substituir</button>
+      <div id="eg-import-status" class="hint" style="margin-top:10px;"></div>
+    </div>
+    <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+    <div class="hint" style="margin-bottom:4px;">Ou lance uma operação avulsa manualmente:</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+      <label>Data<input type="date" id="eg-data" value="${new Date().toISOString().slice(0,10)}"></label>
+      <label>Serviço<select id="eg-servico">${TIPOS_SERVICO_ENTREGA.map(t=>`<option>${t}</option>`).join("")}</select></label>
+      <label>Transportadora<input type="text" id="eg-transportadora" list="dl-eg-transp" placeholder="Ex: SUZANO"></label>
+      <datalist id="dl-eg-transp">${[...new Set(DATA.entregas.lancamentos.map(r=>r.transportadora))].sort().map(l=>`<option value="${l}">`).join("")}</datalist>
+      <label>Cliente<input type="text" id="eg-cliente" list="dl-eg-clientes" placeholder="Ex: AMAZON INDUSTRIA"></label>
+      <datalist id="dl-eg-clientes">${[...new Set(DATA.entregas.lancamentos.map(r=>r.cliente))].sort().map(l=>`<option value="${l}">`).join("")}</datalist>
+      <label>Motorista<input type="text" id="eg-motorista" list="dl-eg-motoristas" placeholder="Ex: TOME"></label>
+      <datalist id="dl-eg-motoristas">${[...new Set(DATA.entregas.lancamentos.map(r=>r.motorista))].sort().map(l=>`<option value="${l}">`).join("")}</datalist>
+      <label>Carro / Placa<input type="text" id="eg-carro" placeholder="Ex: GCV3B63"></label>
+      <label>Qtde<input type="number" id="eg-qnt" step="1" value="1" placeholder="1"></label>
+      <label>Valor (R$)<input type="number" id="eg-valor" step="0.01" placeholder="0,00"></label>
+      <label style="grid-column:1/-1;">Observação (opcional)<input type="text" id="eg-obs" placeholder="Ex: RETIRADA DE CARRETA"></label>
+    </div>
+    <button class="entry-submit" onclick="submitEntrega()">Adicionar operação</button>
+  `,
   contaspagar: () => `
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
       <label style="grid-column:1/-1;">Prestador de Serviço<input type="text" id="ecp-prestador" list="dl-prestadores" placeholder="Ex: MANUTENÇÃO E REPARAÇÃO CB MECA"></label>
@@ -2418,6 +2630,113 @@ window.importInfracoesXlsx = async () => {
   }
 };
 
+window.importEntregasXlsx = async () => {
+  const fileInput = document.getElementById("eg-import-file");
+  const statusEl = document.getElementById("eg-import-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada (confira se xlsx.full.min.js está na pasta)."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+
+    // Só a aba "MATRIZ" é importada — mesma convenção usada em Manutenção/Infrações.
+    const nomeAbaAlvo = wb.SheetNames.find(n=>n.trim().toUpperCase()==="MATRIZ");
+    if(!nomeAbaAlvo){
+      statusEl.textContent = `⚠ Não encontrei uma aba chamada "MATRIZ" nesta planilha. Abas encontradas: ${wb.SheetNames.join(", ")}.`;
+      return;
+    }
+
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nomeAbaAlvo], { header:1, defval:null });
+    let headerRow = null, sheetRows = null;
+    for(let i=0;i<Math.min(rows.length,30);i++){
+      const r = rows[i];
+      if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="CLIENTE") && r.some(c=>c!=null && String(c).trim().toUpperCase()==="TRANSPORTADORA")){
+        headerRow = r; sheetRows = rows.slice(i+1); break;
+      }
+    }
+    if(!headerRow){
+      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava colunas 'Cliente' e 'Transportadora') na aba MATRIZ. Confira se é a mesma estrutura do seu relatório.";
+      return;
+    }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (name) => idx[name];
+    const cData = col("DATA"), cServico = col("SERVIÇO") ?? col("SERVICO"), cTransp = col("TRANSPORTADORA"),
+          cCliente = col("CLIENTE"), cMotorista = col("MOTORISTA"), cCarro = col("CARRO"), cQnt = col("QNT"),
+          cValor = col("VALOR"), cObs = col("OBSERVAÇÃO") ?? col("OBSERVACAO");
+    if(cData==null || cValor==null){
+      statusEl.textContent = "⚠ Faltam colunas essenciais (DATA ou VALOR) na aba MATRIZ. Confira o cabeçalho da planilha.";
+      return;
+    }
+
+    const novos = [];
+    let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const dataRaw = r[cData], valorRaw = r[cValor];
+      if(dataRaw == null || valorRaw == null || valorRaw === ""){ ignoradas++; return; }
+      const iso = excelDateToISO(dataRaw);
+      if(!iso){ ignoradas++; return; }
+      const valor = parseValorBRL(valorRaw);
+      if(isNaN(valor)){ ignoradas++; return; }
+      const qntRaw = cQnt!=null ? r[cQnt] : null;
+      const qnt = (qntRaw!=null && qntRaw!=="") ? (parseInt(qntRaw,10) || 1) : 1;
+      novos.push({
+        id: localId(),
+        d: iso,
+        servico: (cServico!=null && r[cServico]!=null && String(r[cServico]).trim()!=="") ? String(r[cServico]).trim().toUpperCase() : "(Em branco)",
+        transportadora: (cTransp!=null ? (r[cTransp]||"").toString().trim() : ""),
+        cliente: (cCliente!=null ? (r[cCliente]||"").toString().trim() : ""),
+        motorista: (cMotorista!=null ? (r[cMotorista]||"").toString().trim() : ""),
+        carro: (cCarro!=null ? (r[cCarro]||"").toString().trim() : ""),
+        qnt,
+        v: valor,
+        observacao: (cObs!=null && r[cObs]!=null) ? String(r[cObs]).trim() : ""
+      });
+    });
+
+    if(novos.length === 0){
+      statusEl.textContent = "⚠ Nenhuma operação válida encontrada na planilha.";
+      return;
+    }
+
+    const anteriores = DATA.entregas.lancamentos;
+    DATA.entregas.lancamentos = novos;
+    deriveEntregas();
+    logEntry("Entregas (importação)", `${novos.length} operações importadas de "${file.name}"`, { kind:"bulkImportEntregas", anteriores });
+    renderSessionLog();
+
+    const datas = novos.map(r=>r.d).sort();
+    let statusMsg = `✓ <b>${fmtNum(novos.length)}</b> operações importadas (${datas[0].split("-").reverse().join("/")} a ${datas[datas.length-1].split("-").reverse().join("/")}), total ${fmtBRL(novos.reduce((s,r)=>s+r.v,0))}.` +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem data ou valor válido foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
+
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "entregas") navigate("entregas");
+
+    if(sb){
+      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
+      const { error: delError } = await sb.from("entregas_lancamentos").delete().not("id","is",null);
+      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      try{
+        await sbBulkInsert("entregas_lancamentos", novos.map(r=>({ data:r.d, servico:r.servico, transportadora:r.transportadora, cliente:r.cliente, motorista:r.motorista, carro:r.carro, qnt:r.qnt, valor:r.v, observacao:r.observacao||null })));
+        statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+        toast(`✓ ${novos.length} operações importadas (salvo no banco)`);
+      }catch(e){
+        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+      }
+    } else {
+      toast(`✓ ${novos.length} operações importadas`);
+    }
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message;
+  }
+};
+
 window.submitContaPagar = async () => {
   const prestador = document.getElementById("ecp-prestador").value.trim();
   const cnpj = document.getElementById("ecp-cnpj").value.trim();
@@ -2532,6 +2851,36 @@ window.submitManutencao = async () => {
     salvarSessionLogLocal();
   }
   toast("Lançamento de manutenção adicionado ✓" + (sb ? " (salvo no banco)" : ""));
+};
+
+window.submitEntrega = async () => {
+  const d = document.getElementById("eg-data").value;
+  const v = parseFloat(document.getElementById("eg-valor").value);
+  if(!d || isNaN(v)){ toast("Preencha data e valor."); return; }
+  const servico = document.getElementById("eg-servico").value;
+  const transportadora = document.getElementById("eg-transportadora").value.trim();
+  const cliente = document.getElementById("eg-cliente").value.trim();
+  const motorista = document.getElementById("eg-motorista").value.trim();
+  const carro = document.getElementById("eg-carro").value.trim();
+  const qnt = parseInt(document.getElementById("eg-qnt").value) || 1;
+  const observacao = document.getElementById("eg-obs").value.trim();
+  const registro = { id: localId(), d, servico, transportadora, cliente, motorista, carro, qnt, v, observacao };
+  DATA.entregas.lancamentos.push(registro);
+  deriveEntregas();
+  const undoDescr = prepararDesfazerArrayById("entregas.lancamentos", registro.id, "entregas_lancamentos");
+  logEntry("Entregas", `${d.split("-").reverse().join("/")} · ${servico} · ${cliente || "sem cliente"} · ${fmtBRL2(v)}`, undoDescr);
+  renderSessionLog();
+  if(document.querySelector('nav.menu button.active')?.dataset.page === "entregas") navigate("entregas");
+
+  if(sb){
+    const { data, error } = await sb.from("entregas_lancamentos").insert({ data:d, servico, transportadora, cliente, motorista, carro, qnt, valor:v, observacao: observacao||null }).select().single();
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+    registro.id = data.id;
+    undoDescr.itemId = data.id;
+    undoDescr.sbId = data.id;
+    salvarSessionLogLocal();
+  }
+  toast("Operação adicionada ✓" + (sb ? " (salvo no banco)" : ""));
 };
 
 window.submitFolha = async () => {
@@ -2727,6 +3076,7 @@ function updateSyncPill(){
   deriveManutencao();
   deriveDiesel();
   deriveInfracoes();
+  deriveEntregas();
   const carregouDoBanco = await loadFromSupabase();
   SUPABASE_SINCRONIZADO = carregouDoBanco;
   carregarSessionLogLocal();

@@ -2690,7 +2690,19 @@ const DATA = {
   },
 
   /* ---------------------------------------------------------------------
-     10. CONTAS A PAGAR - PRESTADORES DE SERVIÇO
+     10. ENTREGAS - COLETAS E ENTREGAS
+     Módulo 100% transacional (sem baseline agregada) — só existe conteúdo depois de
+     importar a planilha "Demonstrativo de Entregas" (aba MATRIZ) ou lançar uma operação
+     avulsa. Cada lançamento: data, serviço (ENTREGA/COLETA/DESCARGA/"(Em branco)"),
+     transportadora, cliente, motorista, carro (placa), qnt, valor, observação.
+     Ver computarEntregasStats/deriveEntregas em app.js.
+  --------------------------------------------------------------------- */
+  entregas: {
+    lancamentos: []
+  },
+
+  /* ---------------------------------------------------------------------
+     11. CONTAS A PAGAR - PRESTADORES DE SERVIÇO
      Cada item: prestador, cnpj, tipoServico, valor, formaPagamento,
      dataEmissao, dataVencimento, numeroDocumento, status ("Pendente"/"Pago"),
      dataPagamento (preenchida quando status vira "Pago").
