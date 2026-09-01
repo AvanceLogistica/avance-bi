@@ -3077,9 +3077,17 @@ function updateSyncPill(){
   deriveDiesel();
   deriveInfracoes();
   deriveEntregas();
+  carregarSessionLogLocal();
+  navigate("overview"); // mostra algo na tela já, com os dados locais/baseline, sem esperar o Supabase
+  // loadFromSupabase() é assíncrono e pode demorar (rede lenta no celular, por exemplo). Nesse meio
+  // tempo o usuário pode já ter navegado pra outra página, importado uma planilha etc. — navegar de
+  // volta pra "overview" incondicionalmente aqui apagaria (visualmente) o que ele estava vendo/fazendo.
+  // Em vez disso, só re-renderiza a página em que ele estiver quando o carregamento terminar (pra
+  // refletir os dados reais do banco), e pula esse re-render se for "entrada" pra não resetar um
+  // formulário ou seleção de arquivo em andamento.
   const carregouDoBanco = await loadFromSupabase();
   SUPABASE_SINCRONIZADO = carregouDoBanco;
-  carregarSessionLogLocal();
   updateSyncPill();
-  navigate("overview");
+  const activePage = document.querySelector('nav.menu button.active')?.dataset.page || "overview";
+  if(activePage !== "entrada") navigate(activePage);
 })();
