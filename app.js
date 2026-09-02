@@ -557,6 +557,20 @@ function recomputeManutencao(){
 
 function recomputeFolha(){
   const f = DATA.folha;
+  // f.labels só cresce por upsertPeriod (usado tanto pelo lançamento manual quanto pelo
+  // carregamento do banco via série_periodo) — um mês novo entra sempre no FIM do array, não na
+  // posição cronológica certa. Isso é inofensivo lançamento a lançamento, mas depois de recarregar
+  // do banco (onde as linhas voltam fora de ordem) deixa o array inteiro embaralhado. Reordena tudo
+  // aqui sempre, antes de qualquer cálculo — assim os gráficos nunca veem uma ordem errada.
+  const parseLabel = (l) => { const b = l.indexOf("/"); return { ano:Number("20"+l.slice(b+1,b+3)), mes:MONTH_ABBR.indexOf(l.slice(0,b)) }; };
+  const ordem = f.labels.map((_,i)=>i).sort((a,b)=>{
+    const A = parseLabel(f.labels[a]), B = parseLabel(f.labels[b]);
+    return (A.ano - B.ano) || (A.mes - B.mes);
+  });
+  f.labels = ordem.map(i=>f.labels[i]);
+  f.vtVr = ordem.map(i=>f.vtVr[i]);
+  f.ad40 = ordem.map(i=>f.ad40[i]);
+  f.salario = ordem.map(i=>f.salario[i]);
   // "Total de Salário" (linha do mês) = 40% Adicional + Salário (VT+VR é benefício e não entra nesse total)
   f.total = f.labels.map((_,i)=> (f.ad40[i]||0)+(f.salario[i]||0));
 }
@@ -1486,17 +1500,17 @@ renderers.folha = () => {
       <div class="kpi"><div class="lbl">${comparacao.ano} vs ${comparacao.anoAnterior} (${comparacao.mesesFechados} ${comparacao.mesesFechados===1?"mês":"meses"})</div><div class="val">${comparacao.crescimentoPct>=0?"+":""}${comparacao.crescimentoPct}%</div>${deltaBadge(comparacao.crescimentoPct, true)}</div>` : ""}
     </div>
 
-    <div class="grid-2">
-      <div class="panel">
-        <h3>Composição mensal do custo (R$)</h3>
-        <div class="hint">VT+VR, 40% adicional e salário — linha preta: total (sem VT+VR)${FILTRO_FOLHA.categoria!=="todos" ? ` · mostrando só "${categoriaLabel[FILTRO_FOLHA.categoria]}"` : ""}</div>
-        <div class="chart-wrap" style="height:320px;"><canvas id="ch-folha"></canvas></div>
-      </div>
-      <div class="panel">
-        <h3>% de Representação no Período</h3>
-        <div class="hint">Cada categoria sobre o custo total (VT+VR + 40% + Salário) nos filtros acima</div>
-        <div class="chart-wrap" style="height:220px;"><canvas id="ch-folha-comp"></canvas></div>
-        <table style="margin-top:12px;">
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Composição mensal do custo (R$)</h3>
+      <div class="hint">VT+VR, 40% adicional e salário — linha preta: custo total do mês (com VT+VR)${FILTRO_FOLHA.categoria!=="todos" ? ` · mostrando só "${categoriaLabel[FILTRO_FOLHA.categoria]}"` : ""}. Passe o mouse sobre uma coluna pra ver os valores.</div>
+      <div class="chart-wrap" style="height:400px;"><canvas id="ch-folha"></canvas></div>
+    </div>
+    <div class="panel">
+      <h3>% de Representação no Período</h3>
+      <div class="hint">Cada categoria sobre o custo total (VT+VR + 40% + Salário) nos filtros acima</div>
+      <div style="display:flex; flex-wrap:wrap; gap:28px; align-items:center; margin-top:8px;">
+        <div class="chart-wrap" style="height:260px; flex:1 1 260px; max-width:340px;"><canvas id="ch-folha-comp"></canvas></div>
+        <table style="flex:2 1 320px;">
           <thead><tr><th>Categoria</th><th class="num">Valor</th><th class="num">%</th></tr></thead>
           <tbody>${composicao.map(c=>`<tr><td>${c.nome}</td><td class="num">${fmtBRL2(c.valor)}</td><td class="num">${c.pct.toFixed(1)}%</td></tr>`).join("")}</tbody>
         </table>
@@ -1510,30 +1524,45 @@ initCharts.folha = () => {
   const labels = idxAno.map(i=>f.labels[i]);
   const categoriaCores = { vtVr:"#F0B9C0", ad40:COLORS.red, salario:COLORS.ink };
   const categoriaNomes = { vtVr:"VT+VR", ad40:"40% Adicional", salario:"Salário" };
+  // Com muitos meses na tela (visão "Todos" os anos) o rótulo de cada barra/ponto vira uma pilha
+  // ilegível de números um em cima do outro — só mostra os valores fixos quando dá pra ler (~1 ano
+  // e meio); do contrário, o valor ainda aparece passando o mouse (tooltip).
+  const mostrarRotulos = labels.length <= 18;
 
   if(FILTRO_FOLHA.categoria === "todos"){
+    // A linha precisa acompanhar o TOPO DE VERDADE da barra empilhada (VT+VR + 40% + Salário) —
+    // usar só "Total" (que por convenção exclui VT+VR, ver recomputeFolha) faria a linha cair NO
+    // MEIO da barra em vários meses, com o rótulo escrito por cima da cor escura da barra e
+    // ilegível. Aqui, "Custo Total" é só dessa linha/rótulo — os KPIs continuam usando f.total.
+    const custoTotalComBeneficio = idxAno.map(i=>{
+      const vt=f.vtVr[i], ad=f.ad40[i], sal=f.salario[i];
+      return (vt==null && ad==null && sal==null) ? null : (vt||0)+(ad||0)+(sal||0);
+    });
     mkChart("ch-folha", {
       data:{ labels, datasets:[
         { type:"bar", label:"VT+VR", data:idxAno.map(i=>f.vtVr[i]), backgroundColor:"#F0B9C0", stack:"a", borderRadius:2, datalabels:{display:false} },
         { type:"bar", label:"40% Adicional", data:idxAno.map(i=>f.ad40[i]), backgroundColor:COLORS.red, stack:"a", borderRadius:2, datalabels:{display:false} },
         { type:"bar", label:"Salário", data:idxAno.map(i=>f.salario[i]), backgroundColor:COLORS.ink, stack:"a", borderRadius:2, datalabels:{display:false} },
-        { type:"line", label:"Total", data:idxAno.map(i=>f.total[i]), borderColor:"#000", borderWidth:2, pointRadius:2, tension:.25,
-          datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]!=null, align:"top", offset:6, color:COLORS.ink, font:{size:9, weight:700}, formatter:fmtLabelBRL } }
+        { type:"line", label:"Custo Total", data:custoTotalComBeneficio, borderColor:"#000", borderWidth:2, pointRadius:3, pointBackgroundColor:"#000", tension:.25, clip:false,
+          datalabels:{ display:(ctx)=>mostrarRotulos && ctx.dataset.data[ctx.dataIndex]!=null, align:"top", offset:6, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } }
       ]},
       options:{ responsive:true, maintainAspectRatio:false,
-        plugins:{legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}}},
-        layout:{ padding:{ top:16 } },
-        scales:{ x:{stacked:true, grid:{display:false}, ticks:{maxRotation:60, minRotation:60}}, y:{stacked:true, grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}} } }
+        plugins:{legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
+          tooltip:{ callbacks:{ label:(ctx)=> `${ctx.dataset.label}: ${fmtBRL2(ctx.parsed.y)}` } }},
+        layout:{ padding:{ top:34 } },
+        scales:{ x:{stacked:true, grid:{display:false}, ticks:{maxRotation:60, minRotation:60}},
+          y:{stacked:true, grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}, suggestedMax: Math.max(0, ...custoTotalComBeneficio.map(v=>v||0))*1.12 } } }
     });
   } else {
     const campo = FILTRO_FOLHA.categoria;
     mkChart("ch-folha", {
       type:"bar",
-      data:{ labels, datasets:[{ label:categoriaNomes[campo], data:idxAno.map(i=>f[campo][i]), backgroundColor:categoriaCores[campo], borderRadius:3 }]},
+      data:{ labels, datasets:[{ label:categoriaNomes[campo], data:idxAno.map(i=>f[campo][i]), backgroundColor:categoriaCores[campo], borderRadius:3, clip:false }]},
       options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
-          datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]!=null, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:9, weight:700}, formatter:fmtLabelBRL } },
-        layout:{ padding:{ top:16 } },
-        scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}, ticks:{maxRotation:60, minRotation:60}} } }
+          tooltip:{ callbacks:{ label:(ctx)=> `${ctx.dataset.label}: ${fmtBRL2(ctx.parsed.y)}` } },
+          datalabels:{ display:(ctx)=>mostrarRotulos && ctx.dataset.data[ctx.dataIndex]!=null, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } },
+        layout:{ padding:{ top:24 } },
+        scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}, suggestedMax: Math.max(0, ...idxAno.map(i=>f[campo][i]||0))*1.12 }, x:{grid:{display:false}, ticks:{maxRotation:60, minRotation:60}} } }
     });
   }
 
