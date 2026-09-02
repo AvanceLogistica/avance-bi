@@ -481,8 +481,20 @@ async function executarUndo(d){
     else if(d.containerPath === "infracoes.lancamentos") deriveInfracoes();
     else if(d.containerPath === "entregas.lancamentos") deriveEntregas();
     if(sb && d.sbTable && d.sbId) await sb.from(d.sbTable).delete().eq("id", d.sbId);
-  } else if(d.kind === "folhaAnual"){
-    updateFolhaAnual(d.anterior25, d.anterior26);
+  } else if(d.kind === "bulkImportFolha"){
+    Object.assign(DATA.folha, d.anteriores);
+    recomputeFolha();
+    if(sb){
+      await sb.from("series_periodo").delete().eq("modulo","folha");
+      const rows = [];
+      d.anteriores.labels.forEach((label,i)=>{
+        ["vtVr","ad40","salario"].forEach(campo=>{
+          const v = d.anteriores[campo][i];
+          if(v!=null) rows.push({ modulo:"folha", campo, label, valor:v });
+        });
+      });
+      if(rows.length) await sbBulkInsert("series_periodo", rows);
+    }
   } else if(d.kind === "bulkImportCompras"){
     DATA.compras.comprasLancamentos = d.anteriores;
     deriveCompras();
@@ -547,16 +559,65 @@ function recomputeFolha(){
   const f = DATA.folha;
   // "Total de Salário" (linha do mês) = 40% Adicional + Salário (VT+VR é benefício e não entra nesse total)
   f.total = f.labels.map((_,i)=> (f.ad40[i]||0)+(f.salario[i]||0));
-  // Os KPIs anuais (totalSalario2025_M / 2026_M) vêm de um fechamento à parte do RH — não são
-  // a soma simples dos meses do gráfico, então só são atualizados se você digitar o valor novo
-  // no formulário (campo "Total anual"), nunca recalculados sozinhos aqui.
 }
-function updateFolhaAnual(ano2025_M, ano2026_M){
-  const f = DATA.folha;
-  if(ano2025_M != null && !isNaN(ano2025_M)) f.totalSalario2025_M = ano2025_M;
-  if(ano2026_M != null && !isNaN(ano2026_M)) f.totalSalario2026_M = ano2026_M;
-  f.diferenca_M = +(f.totalSalario2026_M - f.totalSalario2025_M).toFixed(3);
-  f.crescimentoPct = f.totalSalario2025_M ? Math.round((f.totalSalario2026_M-f.totalSalario2025_M)/f.totalSalario2025_M*100) : null;
+
+/* ============================================================================
+   FOLHA — filtros (Ano, Mês, Categoria) e resumos anuais
+   ----------------------------------------------------------------------------
+   Os totais anuais e o crescimento ano a ano NÃO são mais digitados à mão (como
+   era antes) — vêm sempre somados da própria série mensal, pra nunca ficar
+   desatualizado depois de uma importação nova.
+   ============================================================================ */
+const FILTRO_FOLHA = { ano:"todos", mes:"todos", categoria:"todos" };
+window.setFiltroFolha = (campo, valor) => {
+  FILTRO_FOLHA[campo] = valor;
+  navigate("folha");
+};
+// Índices de DATA.folha.labels que batem com os filtros de Ano/Mês (a Categoria não filtra a série,
+// só troca qual valor aparece nos KPIs/gráfico — ver renderers.folha).
+function filtrarFolhaIndices(filtros){
+  return DATA.folha.labels.map((_,i)=>i).filter(i=>{
+    const label = DATA.folha.labels[i];
+    const barra = label.indexOf("/");
+    const ano = "20" + label.slice(barra+1, barra+3);
+    const mesNum = MONTH_ABBR.indexOf(label.slice(0,barra)) + 1;
+    if(filtros.ano !== "todos" && ano !== filtros.ano) return false;
+    if(filtros.mes !== "todos" && String(mesNum) !== filtros.mes) return false;
+    return true;
+  });
+}
+// Soma um campo (vtVr/ad40/salario) de DATA.folha só nos meses "fechados" (com valor preenchido)
+// de um ano específico — usado pros totais anuais e pra comparação ano a ano.
+function somaFolhaAno(campo, ano){
+  let soma = 0, meses = 0;
+  DATA.folha.labels.forEach((label,i)=>{
+    if(!label.endsWith("/"+ano.slice(2))) return;
+    if(DATA.folha.salario[i] == null) return; // mês ainda não fechado
+    soma += DATA.folha[campo][i] || 0;
+    meses++;
+  });
+  return { soma, meses };
+}
+// Compara o total de Ad.40%+Salário do ano mais recente com dados fechados contra o mesmo número
+// de meses do ano anterior (jan-jul/26 vs jan-jul/25, por ex.) — período igual, não ano fechado
+// inteiro vs parcial.
+function compararFolhaAnoAnterior(anoRef){
+  const anos = [...new Set(DATA.folha.labels.map(l=>"20"+l.slice(-2)))].sort();
+  const anoAtual = anoRef && anos.includes(anoRef) ? anoRef : anos[anos.length-1];
+  if(!anoAtual) return null;
+  const atualAd = somaFolhaAno("ad40", anoAtual), atualSal = somaFolhaAno("salario", anoAtual);
+  const totalAtual = atualAd.soma + atualSal.soma, mesesFechados = atualSal.meses;
+  if(mesesFechados === 0) return { ano:anoAtual, totalAtual:0, mesesFechados:0, comparavel:false };
+  const anoAnterior = String(Number(anoAtual)-1);
+  if(!anos.includes(anoAnterior)) return { ano:anoAtual, totalAtual, mesesFechados, comparavel:false };
+  let totalAnterior = 0;
+  for(let m=1; m<=mesesFechados; m++){
+    const label = MONTH_ABBR[m-1] + "/" + anoAnterior.slice(2);
+    const idx = DATA.folha.labels.indexOf(label);
+    if(idx !== -1) totalAnterior += (DATA.folha.ad40[idx]||0) + (DATA.folha.salario[idx]||0);
+  }
+  const crescimentoPct = totalAnterior ? Math.round((totalAtual-totalAnterior)/totalAnterior*100) : null;
+  return { ano:anoAtual, anoAnterior, totalAtual, totalAnterior, mesesFechados, crescimentoPct, comparavel: totalAnterior>0 };
 }
 
 function recomputeDiesel(){
@@ -1109,13 +1170,15 @@ renderers.overview = () => {
 
   const cpPendente = sumArr(cp.lancamentos.filter(i=>i.status!=="Pago").map(i=>i.valor));
   const cpVencidas = cp.lancamentos.filter(i=>statusConta(i)==="Vencido").length;
+  const folhaComp = compararFolhaAnoAnterior();
 
   const cards = [
     { page:"entregas", ic:"🚚", label:"Entregas", big: eg.lancamentos.length ? fmtBRL(eg.totalReceitas) : "—",
       foot: eg.lancamentos.length ? `${fmtNum(eg.totalViagens)} viagens · ticket médio ${fmtBRL2(eg.ticketMedio)}` : "Nenhuma operação importada ainda", id:"spk-entregas" },
     { page:"manutencao", ic:"🔩", label:"Manutenção de Carreta", big:fmtBRL(m.totalPeriodo), foot:"Total acumulado dez/25–jun/26", id:"spk-manutencao" },
     { page:"diesel", ic:"⛽", label:"Diesel (2026)", big:fmtBRL(d.totalAno2026), foot:"Média semanal " + fmtMil(d.mediaSemanal), id:"spk-diesel" },
-    { page:"folha", ic:"💰", label:"Folha · Salário (2026)", big:f.totalSalario2026_M.toFixed(3).replace(".",",") + " Mi", foot:`+${f.crescimentoPct}% vs. 2025 (5 meses)`, id:"spk-folha" },
+    { page:"folha", ic:"💰", label:`Folha · Salário${folhaComp ? ` (${folhaComp.ano})` : ""}`, big: folhaComp ? fmtBRL(folhaComp.totalAtual) : "—",
+      foot: (folhaComp && folhaComp.comparavel) ? `${folhaComp.crescimentoPct>=0?"+":""}${folhaComp.crescimentoPct}% vs. ${folhaComp.anoAnterior} (${folhaComp.mesesFechados} ${folhaComp.mesesFechados===1?"mês":"meses"})` : "Sem dados suficientes pra comparar", id:"spk-folha" },
     { page:"horaextra", ic:"⏱️", label:"Hora Extra (jan–jun/26)", big:fmtBRL(he.janJun2026), foot:`+${he.crescimentoPct}% vs. mesmo período 2025`, id:"spk-he" },
     { page:"compras", ic:"🧰", label:"Compras de Peças (2026)", big:fmtBRL(c.totalAno2026), foot:`Top 10 veículos = ${c.top10CaminhoesPct}%`, id:"spk-compras" },
     { page:"atestados", ic:"🩺", label:"Atestados (mai/26)", big:fmtNum(at.ocorrencias[at.ocorrencias.length-1]), foot:"Ocorrências no último mês fechado", id:"spk-atestados" },
@@ -1163,7 +1226,7 @@ renderers.overview = () => {
       <table>
         <thead><tr><th>Área</th><th>Indicador</th><th class="num">Situação</th></tr></thead>
         <tbody>
-          <tr><td>Folha</td><td>Crescimento de salário 2025→2026</td><td class="num"><span class="badge red">+${f.crescimentoPct}%</span></td></tr>
+          ${folhaComp && folhaComp.comparavel ? `<tr><td>Folha</td><td>Crescimento de salário ${folhaComp.anoAnterior}→${folhaComp.ano} (${folhaComp.mesesFechados} ${folhaComp.mesesFechados===1?"mês":"meses"})</td><td class="num"><span class="badge red">${folhaComp.crescimentoPct>=0?"+":""}${folhaComp.crescimentoPct}%</span></td></tr>` : ""}
           <tr><td>Hora Extra</td><td>Custo jan–jun 2026 vs 2025</td><td class="num"><span class="badge red">+${he.crescimentoPct}%</span></td></tr>
           <tr><td>Infrações</td><td>Não uso de cinto de segurança</td><td class="num"><span class="badge red">235 ocorrências</span></td></tr>
           <tr><td>Manutenção</td><td>Concentração em manutenção geral</td><td class="num"><span class="badge amber">96% do custo</span></td></tr>
@@ -1377,36 +1440,116 @@ initCharts.diesel = () => {
 /* -------------------- FOLHA -------------------- */
 renderers.folha = () => {
   const f = DATA.folha;
+  const anosDisponiveis = [...new Set(f.labels.map(l=>"20"+l.slice(-2)))].sort();
+  const categoriaLabel = { todos:"Todos", vtVr:"VT + VR", ad40:"40% Adicional", salario:"Salário" };
+  const opt = (valor,label,atual) => `<option value="${valor}" ${atual===valor?"selected":""}>${label}</option>`;
+
+  const idxFiltrados = filtrarFolhaIndices(FILTRO_FOLHA);
+  const somaCampo = (campo) => sumArr(idxFiltrados.map(i=>f[campo][i]));
+  const totalVtVr = somaCampo("vtVr"), totalAd40 = somaCampo("ad40"), totalSalario = somaCampo("salario");
+  const totalGeral = totalVtVr + totalAd40 + totalSalario;
+  const totalFolha = totalAd40 + totalSalario; // sem o benefício VT+VR — mesma convenção usada no resto do painel
+
+  const totalPeriodoLabel = FILTRO_FOLHA.categoria === "todos" ? "Total do Período (sem VT+VR)" : `Total do Período — ${categoriaLabel[FILTRO_FOLHA.categoria]}`;
+  const totalPeriodoValor = FILTRO_FOLHA.categoria === "todos" ? totalFolha : somaCampo(FILTRO_FOLHA.categoria);
+  const comparacao = compararFolhaAnoAnterior(FILTRO_FOLHA.ano !== "todos" ? FILTRO_FOLHA.ano : null);
+
+  const composicao = [
+    { nome:"Salário", valor:totalSalario, pct: totalGeral ? totalSalario/totalGeral*100 : 0 },
+    { nome:"40% Adicional", valor:totalAd40, pct: totalGeral ? totalAd40/totalGeral*100 : 0 },
+    { nome:"VT + VR", valor:totalVtVr, pct: totalGeral ? totalVtVr/totalGeral*100 : 0 }
+  ];
+
   return `
-    <div class="page-head"><h2>Folha · Benefícios + Salário</h2><p>VT/VR, adicional 40% e salário — jan/25 a mai/26</p></div>
-    <div class="kpi-grid">
-      <div class="kpi"><div class="lbl">Total Salário 2025</div><div class="val">${f.totalSalario2025_M.toFixed(3).replace(".",",")} Mi</div></div>
-      <div class="kpi"><div class="lbl">Total Salário 2026 (5 meses)</div><div class="val">${f.totalSalario2026_M.toFixed(3).replace(".",",")} Mi</div></div>
-      <div class="kpi"><div class="lbl">Diferença</div><div class="val">${f.diferenca_M.toFixed(3).replace(".",",")} Mi</div></div>
-      <div class="kpi"><div class="lbl">Crescimento</div><div class="val">${f.crescimentoPct}%</div><span class="delta up">↑ 2025 → 2026</span></div>
+    <div class="page-head"><h2>Folha · Benefícios + Salário</h2><p>VT/VR, adicional 40% e salário${f.labels.length ? ` — ${f.labels[0]} a ${f.labels[f.labels.length-1]}` : ""}</p></div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3 style="margin-bottom:10px;">Filtros</h3>
+      <div class="filtro-bar">
+        <label>Ano<select onchange="setFiltroFolha('ano',this.value)">
+          ${opt("todos","Todos",FILTRO_FOLHA.ano)}${anosDisponiveis.map(a=>opt(a,a,FILTRO_FOLHA.ano)).join("")}
+        </select></label>
+        <label>Mês<select onchange="setFiltroFolha('mes',this.value)">
+          ${opt("todos","Todos",FILTRO_FOLHA.mes)}${MONTH_ABBR.map((m,i)=>opt(String(i+1), m[0].toUpperCase()+m.slice(1), FILTRO_FOLHA.mes)).join("")}
+        </select></label>
+        <label>Categoria<select onchange="setFiltroFolha('categoria',this.value)">
+          ${opt("todos","Todos",FILTRO_FOLHA.categoria)}${opt("vtVr","VT + VR",FILTRO_FOLHA.categoria)}${opt("ad40","40% Adicional",FILTRO_FOLHA.categoria)}${opt("salario","Salário",FILTRO_FOLHA.categoria)}
+        </select></label>
+      </div>
     </div>
-    <div class="panel">
-      <h3>Composição mensal do custo (R$ mil)</h3>
-      <div class="hint">VT+VR, 40% adicional e salário — linha preta: total</div>
-      <div class="chart-wrap" style="height:320px;"><canvas id="ch-folha"></canvas></div>
-      <p class="legend-note">* jun/26 ainda não fechado na data de atualização deste painel.</p>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">${totalPeriodoLabel}</div><div class="val">${fmtBRL(totalPeriodoValor)}</div></div>
+      <div class="kpi"><div class="lbl">Total de Salário${FILTRO_FOLHA.ano!=="todos" ? ` (${FILTRO_FOLHA.ano})` : ""}</div><div class="val">${fmtBRL(totalSalario)}</div></div>
+      <div class="kpi"><div class="lbl">Total VT + VR</div><div class="val">${fmtBRL(totalVtVr)}</div><div class="delta flat">benefício, fora do total da folha</div></div>
+      ${comparacao && comparacao.comparavel ? `
+      <div class="kpi"><div class="lbl">${comparacao.ano} vs ${comparacao.anoAnterior} (${comparacao.mesesFechados} ${comparacao.mesesFechados===1?"mês":"meses"})</div><div class="val">${comparacao.crescimentoPct>=0?"+":""}${comparacao.crescimentoPct}%</div>${deltaBadge(comparacao.crescimentoPct, true)}</div>` : ""}
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Composição mensal do custo (R$)</h3>
+        <div class="hint">VT+VR, 40% adicional e salário — linha preta: total (sem VT+VR)${FILTRO_FOLHA.categoria!=="todos" ? ` · mostrando só "${categoriaLabel[FILTRO_FOLHA.categoria]}"` : ""}</div>
+        <div class="chart-wrap" style="height:320px;"><canvas id="ch-folha"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>% de Representação no Período</h3>
+        <div class="hint">Cada categoria sobre o custo total (VT+VR + 40% + Salário) nos filtros acima</div>
+        <div class="chart-wrap" style="height:220px;"><canvas id="ch-folha-comp"></canvas></div>
+        <table style="margin-top:12px;">
+          <thead><tr><th>Categoria</th><th class="num">Valor</th><th class="num">%</th></tr></thead>
+          <tbody>${composicao.map(c=>`<tr><td>${c.nome}</td><td class="num">${fmtBRL2(c.valor)}</td><td class="num">${c.pct.toFixed(1)}%</td></tr>`).join("")}</tbody>
+        </table>
+      </div>
     </div>
   `;
 };
 initCharts.folha = () => {
   const f = DATA.folha;
-  mkChart("ch-folha", {
-    data:{ labels:f.labels, datasets:[
-      { type:"bar", label:"VT+VR", data:f.vtVr, backgroundColor:"#F0B9C0", stack:"a", borderRadius:2, datalabels:{display:false} },
-      { type:"bar", label:"40% Adicional", data:f.ad40, backgroundColor:COLORS.red, stack:"a", borderRadius:2, datalabels:{display:false} },
-      { type:"bar", label:"Salário", data:f.salario, backgroundColor:COLORS.ink, stack:"a", borderRadius:2, datalabels:{display:false} },
-      { type:"line", label:"Total", data:f.total, borderColor:"#000", borderWidth:2, pointRadius:2, tension:.25,
-        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]!=null, align:"top", offset:6, color:COLORS.ink, font:{size:9, weight:700}, formatter:fmtLabelBRL } }
-    ]},
-    options:{ responsive:true, maintainAspectRatio:false,
-      plugins:{legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}}},
-      layout:{ padding:{ top:16 } },
-      scales:{ x:{stacked:true, grid:{display:false}, ticks:{maxRotation:60, minRotation:60}}, y:{stacked:true, grid:{color:COLORS.grid}} } }
+  const idxAno = FILTRO_FOLHA.ano === "todos" ? f.labels.map((_,i)=>i) : filtrarFolhaIndices({ ano:FILTRO_FOLHA.ano, mes:"todos" });
+  const labels = idxAno.map(i=>f.labels[i]);
+  const categoriaCores = { vtVr:"#F0B9C0", ad40:COLORS.red, salario:COLORS.ink };
+  const categoriaNomes = { vtVr:"VT+VR", ad40:"40% Adicional", salario:"Salário" };
+
+  if(FILTRO_FOLHA.categoria === "todos"){
+    mkChart("ch-folha", {
+      data:{ labels, datasets:[
+        { type:"bar", label:"VT+VR", data:idxAno.map(i=>f.vtVr[i]), backgroundColor:"#F0B9C0", stack:"a", borderRadius:2, datalabels:{display:false} },
+        { type:"bar", label:"40% Adicional", data:idxAno.map(i=>f.ad40[i]), backgroundColor:COLORS.red, stack:"a", borderRadius:2, datalabels:{display:false} },
+        { type:"bar", label:"Salário", data:idxAno.map(i=>f.salario[i]), backgroundColor:COLORS.ink, stack:"a", borderRadius:2, datalabels:{display:false} },
+        { type:"line", label:"Total", data:idxAno.map(i=>f.total[i]), borderColor:"#000", borderWidth:2, pointRadius:2, tension:.25,
+          datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]!=null, align:"top", offset:6, color:COLORS.ink, font:{size:9, weight:700}, formatter:fmtLabelBRL } }
+      ]},
+      options:{ responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}}},
+        layout:{ padding:{ top:16 } },
+        scales:{ x:{stacked:true, grid:{display:false}, ticks:{maxRotation:60, minRotation:60}}, y:{stacked:true, grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}} } }
+    });
+  } else {
+    const campo = FILTRO_FOLHA.categoria;
+    mkChart("ch-folha", {
+      type:"bar",
+      data:{ labels, datasets:[{ label:categoriaNomes[campo], data:idxAno.map(i=>f[campo][i]), backgroundColor:categoriaCores[campo], borderRadius:3 }]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
+          datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]!=null, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:9, weight:700}, formatter:fmtLabelBRL } },
+        layout:{ padding:{ top:16 } },
+        scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}, ticks:{maxRotation:60, minRotation:60}} } }
+    });
+  }
+
+  // Composição do período filtrado (Ano/Mês) — a Categoria não entra aqui, já que o objetivo do
+  // gráfico é comparar as 3 categorias entre si.
+  const idxFiltrados = filtrarFolhaIndices(FILTRO_FOLHA);
+  const somaCampo = (campo) => sumArr(idxFiltrados.map(i=>f[campo][i]));
+  const compData = [somaCampo("salario"), somaCampo("ad40"), somaCampo("vtVr")];
+  const compTotal = sumArr(compData);
+  mkChart("ch-folha-comp", {
+    type:"doughnut",
+    data:{ labels:["Salário","40% Adicional","VT + VR"], datasets:[{ data:compData, backgroundColor:[COLORS.ink, COLORS.red, "#F0B9C0"], borderWidth:2, borderColor:"#fff" }]},
+    options:{ responsive:true, maintainAspectRatio:false, cutout:"60%",
+      plugins:{legend:{position:"bottom", labels:{boxWidth:10, font:{size:10}, usePointStyle:true, pointStyle:"circle"}},
+        datalabels:{ display:(ctx)=>compTotal>0 && ctx.dataset.data[ctx.dataIndex]/compTotal>0.02, color:"#fff", font:{size:10, weight:700},
+          formatter:(v)=> compTotal? (v/compTotal*100).toFixed(1)+"%" : "" } } }
   });
 };
 
@@ -2247,22 +2390,29 @@ const ENTRY_FORMS = {
     <button class="entry-submit" onclick="submitManutencao()">Adicionar lançamento</button>
   `,
   folha: () => `
+    <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
+      <div class="hint" style="margin-bottom:10px;">
+        Procura em todas as abas por uma linha de cabeçalho com <b>"Mês"</b> e <b>"Salário"</b>.
+        Colunas esperadas: MÊS, VT + VR, AD. 40%, SALÁRIO (a coluna de total é ignorada — recalculada
+        aqui como Ad.40% + Salário, igual ao resto do painel).<br>
+        <b>Importar substitui todo o histórico de Folha do sistema pelo conteúdo da planilha.</b>
+      </div>
+      <input type="file" id="ef-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="importFolhaXlsx()">Importar e substituir</button>
+      <div id="ef-import-status" class="hint" style="margin-top:10px;"></div>
+    </div>
+    <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+    <div class="hint" style="margin-bottom:4px;">Ou lance/corrija um mês manualmente:</div>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
       <label>Mês (ex: jul/26)<input type="text" id="ef-mes" list="dl-folha-meses" placeholder="jul/26"></label>
       <datalist id="dl-folha-meses">${DATA.folha.labels.map(l=>`<option value="${l}">`).join("")}</datalist>
       <div></div>
-      <label>VT + VR (R$ mil)<input type="number" id="ef-vtvr" step="0.1" placeholder="Ex: 76"></label>
-      <label>40% Adicional (R$ mil)<input type="number" id="ef-ad40" step="0.1" placeholder="Ex: 111.3"></label>
-      <label>Salário (R$ mil)<input type="number" id="ef-salario" step="0.1" placeholder="Ex: 194.2"></label>
+      <label>VT + VR (R$)<input type="number" id="ef-vtvr" step="0.01" placeholder="Ex: 76000"></label>
+      <label>40% Adicional (R$)<input type="number" id="ef-ad40" step="0.01" placeholder="Ex: 111300"></label>
+      <label>Salário (R$)<input type="number" id="ef-salario" step="0.01" placeholder="Ex: 194200"></label>
     </div>
     <button class="entry-submit" onclick="submitFolha()">Adicionar / atualizar mês</button>
-    <hr style="margin:18px 0; border:none; border-top:1px solid var(--line);">
-    <div class="hint" style="margin-bottom:10px;">Totais anuais dos cards de KPI (vêm do fechamento do RH — só mude se tiver o número novo)</div>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-      <label>Total anual 2025 (Mi)<input type="number" id="ef-tot25" step="0.001" placeholder="Ex: 1.084" value="${DATA.folha.totalSalario2025_M}"></label>
-      <label>Total anual 2026 (Mi)<input type="number" id="ef-tot26" step="0.001" placeholder="Ex: 1.533" value="${DATA.folha.totalSalario2026_M}"></label>
-    </div>
-    <button class="entry-submit" onclick="submitFolhaAnual()">Atualizar totais anuais</button>
   `,
   horaextra: () => `
     <div class="tabs" style="margin-top:12px;">
@@ -2379,6 +2529,147 @@ function excelTimeToHHMM(v){
   const m = String(v).trim().match(/^(\d{1,2})[:;h](\d{2})/);
   return m ? (m[1].padStart(2,"0") + ":" + m[2]) : String(v).trim();
 }
+
+// Abreviação de mês (3 letras, PT ou EN — a planilha de Folha teve pelo menos uma linha digitada
+// como "feb/26" em vez de data de verdade) para o número do mês (1-12).
+const MESES_ABBR_PARA_NUM = { jan:1, fev:2, feb:2, mar:3, abr:4, apr:4, mai:5, may:5, jun:6, jul:7,
+  ago:8, aug:8, set:9, sep:9, out:10, oct:10, nov:11, dez:12, dec:12 };
+// Converte a coluna "Mês" da planilha de Folha (Date de verdade, ou texto "abr/26"/"apr/26") em
+// { ano, mes } — devolve null se não conseguir reconhecer o formato.
+function parseMesFolha(v){
+  if(v instanceof Date && !isNaN(v)) return { ano:v.getFullYear(), mes:v.getMonth()+1 };
+  if(typeof v === "string"){
+    const m = v.trim().toLowerCase().match(/^([a-z]{3})[\/\-](\d{2,4})$/);
+    if(m && MESES_ABBR_PARA_NUM[m[1]]){
+      let ano = parseInt(m[2],10);
+      if(m[2].length === 2) ano = 2000 + ano;
+      return { ano, mes: MESES_ABBR_PARA_NUM[m[1]] };
+    }
+  }
+  return null;
+}
+
+window.importFolhaXlsx = async () => {
+  const fileInput = document.getElementById("ef-import-file");
+  const statusEl = document.getElementById("ef-import-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada (confira se xlsx.full.min.js está na pasta)."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+
+    // Essa planilha costuma ter só uma aba sem nome descritivo — em vez de mirar um nome fixo,
+    // procura em TODAS as abas pela linha de cabeçalho (precisa ter "MÊS" e "SALÁRIO" juntos).
+    let headerRow = null, sheetRows = null;
+    for(const nome of wb.SheetNames){
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[nome], { header:1, defval:null });
+      for(let i=0;i<Math.min(rows.length,15);i++){
+        const r = rows[i];
+        if(r && r.some(c=>c!=null && ["MÊS","MES"].includes(String(c).trim().toUpperCase()))
+             && r.some(c=>c!=null && String(c).trim().toUpperCase().startsWith("SAL"))){
+          headerRow = r; sheetRows = rows.slice(i+1); break;
+        }
+      }
+      if(headerRow) break;
+    }
+    if(!headerRow){
+      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava colunas 'Mês' e 'Salário'). Confira se é a mesma estrutura do seu relatório.";
+      return;
+    }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (name) => idx[name];
+    const cMes = col("MÊS") ?? col("MES");
+    const cVtVr = col("VT + VR") ?? col("VT+VR");
+    const cAd40 = col("AD. 40%") ?? col("AD.40%") ?? col("AD 40%");
+    const cSalario = col("SALÁRIO") ?? col("SALARIO");
+    if(cMes==null || cSalario==null){
+      statusEl.textContent = "⚠ Faltam colunas essenciais (MÊS ou SALÁRIO). Confira o cabeçalho da planilha.";
+      return;
+    }
+
+    const porMes = {}; // "ano-mes" -> {ano, mes, vtVr, ad40, salario}
+    let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const mesInfo = parseMesFolha(r[cMes]);
+      if(!mesInfo){ if(r[cMes]!=null) ignoradas++; return; }
+      const vtVrRaw = cVtVr!=null ? r[cVtVr] : null, ad40Raw = cAd40!=null ? r[cAd40] : null, salarioRaw = r[cSalario];
+      const vtVr = (vtVrRaw!=null && vtVrRaw!=="") ? parseValorBRL(vtVrRaw) : null;
+      const ad40 = (ad40Raw!=null && ad40Raw!=="") ? parseValorBRL(ad40Raw) : null;
+      const salario = (salarioRaw!=null && salarioRaw!=="") ? parseValorBRL(salarioRaw) : null;
+      const chave = mesInfo.ano + "-" + String(mesInfo.mes).padStart(2,"0");
+      porMes[chave] = { ano:mesInfo.ano, mes:mesInfo.mes,
+        vtVr: isNaN(vtVr) ? null : vtVr, ad40: isNaN(ad40) ? null : ad40, salario: isNaN(salario) ? null : salario };
+    });
+
+    let chaves = Object.keys(porMes).sort();
+    if(chaves.length === 0){
+      statusEl.textContent = "⚠ Nenhum mês válido encontrado na planilha.";
+      return;
+    }
+    // Corta meses futuros totalmente vazios (planilha costuma ter linhas placeholder pro resto do
+    // ano) do FIM da lista — mas só enquanto os 3 campos estiverem vazios; um mês com pelo menos
+    // um valor preenchido (mesmo que parcial) fica.
+    while(chaves.length > 0){
+      const ultimo = porMes[chaves[chaves.length-1]];
+      if(ultimo.vtVr==null && ultimo.ad40==null && ultimo.salario==null) chaves.pop();
+      else break;
+    }
+    if(chaves.length === 0){
+      statusEl.textContent = "⚠ Nenhum mês com valor preenchido encontrado na planilha.";
+      return;
+    }
+
+    const novosLabels = chaves.map(k=>{ const m = porMes[k]; return MONTH_ABBR[m.mes-1] + "/" + String(m.ano).slice(2); });
+    const novosVtVr = chaves.map(k=>porMes[k].vtVr);
+    const novosAd40 = chaves.map(k=>porMes[k].ad40);
+    const novosSalario = chaves.map(k=>porMes[k].salario);
+
+    const anteriores = { labels:[...DATA.folha.labels], vtVr:[...DATA.folha.vtVr], ad40:[...DATA.folha.ad40], salario:[...DATA.folha.salario] };
+    DATA.folha.labels = novosLabels;
+    DATA.folha.vtVr = novosVtVr;
+    DATA.folha.ad40 = novosAd40;
+    DATA.folha.salario = novosSalario;
+    recomputeFolha();
+    logEntry("Folha (importação)", `${chaves.length} meses importados de "${file.name}"`, { kind:"bulkImportFolha", anteriores });
+    renderSessionLog();
+
+    let statusMsg = `✓ <b>${fmtNum(chaves.length)}</b> meses importados (${novosLabels[0]} a ${novosLabels[novosLabels.length-1]}).` +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) com "Mês" não reconhecido foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
+
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "folha") navigate("folha");
+
+    if(sb){
+      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
+      const { error: delError } = await sb.from("series_periodo").delete().eq("modulo","folha");
+      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      try{
+        const rows = [];
+        chaves.forEach((k,i)=>{
+          if(novosVtVr[i]!=null) rows.push({ modulo:"folha", campo:"vtVr", label:novosLabels[i], valor:novosVtVr[i] });
+          if(novosAd40[i]!=null) rows.push({ modulo:"folha", campo:"ad40", label:novosLabels[i], valor:novosAd40[i] });
+          if(novosSalario[i]!=null) rows.push({ modulo:"folha", campo:"salario", label:novosLabels[i], valor:novosSalario[i] });
+        });
+        await sbBulkInsert("series_periodo", rows);
+        statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+        toast(`✓ ${chaves.length} meses importados (salvo no banco)`);
+      }catch(e){
+        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+      }
+    } else {
+      toast(`✓ ${chaves.length} meses importados`);
+    }
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message;
+  }
+};
 
 window.importComprasXlsx = async () => {
   const fileInput = document.getElementById("ec-import-file");
@@ -3202,7 +3493,7 @@ window.submitFolha = async () => {
   const undo = prepararDesfazerPeriodo("folha", "labels", label, ["vtVr","ad40","salario"], "recomputeFolha", "series_periodo", sbRows);
   upsertPeriod(DATA.folha, "labels", label, { vtVr:vt, ad40:ad, salario:sal });
   recomputeFolha();
-  logEntry("Folha", `${label} · total salário ${(ad+sal).toFixed(1)} mil`, undo);
+  logEntry("Folha", `${label} · total salário ${fmtBRL2(ad+sal)}`, undo);
   renderSessionLog();
   if(document.querySelector('nav.menu button.active')?.dataset.page === "folha") navigate("folha");
   await gravarSeriesPeriodo([
@@ -3210,17 +3501,6 @@ window.submitFolha = async () => {
     { modulo:"folha", campo:"ad40", label, valor:ad },
     { modulo:"folha", campo:"salario", label, valor:sal }
   ], "Folha");
-};
-
-window.submitFolhaAnual = () => {
-  const v25 = parseFloat(document.getElementById("ef-tot25").value);
-  const v26 = parseFloat(document.getElementById("ef-tot26").value);
-  const anterior25 = DATA.folha.totalSalario2025_M, anterior26 = DATA.folha.totalSalario2026_M;
-  updateFolhaAnual(isNaN(v25)?null:v25, isNaN(v26)?null:v26);
-  logEntry("Folha (totais anuais)", `2025: ${DATA.folha.totalSalario2025_M} Mi · 2026: ${DATA.folha.totalSalario2026_M} Mi`, { kind:"folhaAnual", anterior25, anterior26 });
-  toast("Totais anuais atualizados ✓ (guardado só nesta aba — este KPI não é enviado ao banco)");
-  renderSessionLog();
-  if(document.querySelector('nav.menu button.active')?.dataset.page === "folha") navigate("folha");
 };
 
 window.submitHoraExtra = async () => {
@@ -3382,6 +3662,7 @@ function updateSyncPill(){
   deriveDiesel();
   deriveInfracoes();
   deriveEntregas();
+  recomputeFolha();
   carregarSessionLogLocal();
   navigate("overview"); // mostra algo na tela já, com os dados locais/baseline, sem esperar o Supabase
   // loadFromSupabase() é assíncrono e pode demorar (rede lenta no celular, por exemplo). Nesse meio
