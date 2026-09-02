@@ -224,6 +224,7 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .badge.red{background:var(--red-soft); color:var(--red-dark);}
 .badge.green{background:#E4F5EE; color:var(--green);}
 .badge.amber{background:#FCF1DE; color:var(--amber);}
+.badge.gray{background:var(--paper); color:var(--ink-soft); border:1px solid var(--line);}
 
 .overview-card{
   background:var(--card);
@@ -316,6 +317,16 @@ table td.rank{font-weight:700; color:var(--red-dark);}
   margin-right:6px;
 }
 .sub-tab-btn.active{ background:var(--ink); color:#fff; border-color:var(--ink); }
+
+/* Barra de filtros (ex: Contas a Pagar) — mesmo visual dos campos de "Entrada de Dados", mas
+   utilizável em qualquer painel, não só no formulário de lançamento. */
+.filtro-bar{ display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:10px; }
+.filtro-bar label{ display:flex; flex-direction:column; gap:5px; font-size:11px; font-weight:600; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.02em; }
+.filtro-bar select{
+  font-family:inherit; font-size:13px; color:var(--ink);
+  padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--paper); outline:none;
+}
+.filtro-bar select:focus{ border-color:var(--red); background:#fff; }
 
 ::-webkit-scrollbar{width:9px; height:9px;}
 ::-webkit-scrollbar-thumb{background:#c7c8d1; border-radius:10px;}

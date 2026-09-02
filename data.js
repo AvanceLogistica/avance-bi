@@ -2714,6 +2714,8 @@ const DATA = {
         prestador: "MANUTENÇÃO E REPARAÇÃO CB MECA",
         cnpj: "33.490.407/0001-01",
         tipoServico: "Manutenção e Reparação",
+        servico: "Manutenção e Reparação",
+        parcela: null,
         valor: 4300.00,
         formaPagamento: "Boleto",
         dataEmissao: "2026-07-14",

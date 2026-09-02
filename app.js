@@ -128,9 +128,9 @@ async function loadFromSupabase(){
     }
     if(contas.length){
       DATA.contasPagar.lancamentos = contas.map(r=>({
-        id:r.id, prestador:r.prestador, cnpj:r.cnpj, tipoServico:r.tipo_servico, valor:Number(r.valor),
-        formaPagamento:r.forma_pagamento, dataEmissao:r.data_emissao, dataVencimento:r.data_vencimento,
-        numeroDocumento:r.numero_documento, status:r.status, dataPagamento:r.data_pagamento
+        id:r.id, prestador:r.prestador, cnpj:r.cnpj, tipoServico:r.tipo_servico, servico:r.servico||null,
+        parcela:r.parcela||null, valor:Number(r.valor), formaPagamento:r.forma_pagamento, dataEmissao:r.data_emissao,
+        dataVencimento:r.data_vencimento, numeroDocumento:r.numero_documento, status:r.status, dataPagamento:r.data_pagamento
       }));
     }
     applySeriesPeriodo(series);
@@ -182,9 +182,9 @@ async function migrarParaSupabase(onProgress){
 
   say("Enviando Contas a Pagar...");
   const contasRows = DATA.contasPagar.lancamentos.map(i=>({
-    prestador:i.prestador, cnpj:i.cnpj, tipo_servico:i.tipoServico, valor:i.valor, forma_pagamento:i.formaPagamento,
-    data_emissao:i.dataEmissao, data_vencimento:i.dataVencimento, numero_documento:i.numeroDocumento,
-    status:i.status, data_pagamento:i.dataPagamento
+    prestador:i.prestador, cnpj:i.cnpj, tipo_servico:i.tipoServico, servico:i.servico||null, parcela:i.parcela||null,
+    valor:i.valor, forma_pagamento:i.formaPagamento, data_emissao:i.dataEmissao, data_vencimento:i.dataVencimento,
+    numero_documento:i.numeroDocumento, status:i.status, data_pagamento:i.dataPagamento
   }));
   if(contasRows.length){ const { error } = await sb.from("contas_pagar").insert(contasRows); if(error) throw error; }
 
@@ -278,14 +278,25 @@ function fmtMil(v){
 }
 function sumArr(a){ return a.filter(v=>v!==null && v!==undefined).reduce((x,y)=>x+y,0); }
 
-// Status calculado de uma conta a pagar: Pago (já quitada) / Vencida (passou do vencimento) / A vencer.
+// Situação calculada de uma conta a pagar, sempre em cima da data de HOJE (não confia na coluna
+// "Situação do Vencimento" importada da planilha, que é uma foto do dia em que ela foi exportada e
+// fica desatualizada rápido): Pago (já quitada) / Vencido (passou do vencimento) / Vence na Semana
+// (nos próximos 7 dias) / A Vencer (depois disso) / Sem vencimento (linha importada sem essa data).
 function statusConta(c){
   if(c.status === "Pago") return "Pago";
+  if(!c.dataVencimento) return "Sem vencimento";
   const hoje = new Date(); hoje.setHours(0,0,0,0);
   const venc = new Date(c.dataVencimento + "T00:00:00");
-  return venc < hoje ? "Vencido" : "A vencer";
+  if(venc < hoje) return "Vencido";
+  const em7dias = new Date(hoje.getTime() + 7*86400000);
+  return venc <= em7dias ? "Vence na Semana" : "A Vencer";
 }
-function statusBadgeClass(s){ return s === "Pago" ? "green" : (s === "Vencido" ? "red" : "amber"); }
+function statusBadgeClass(s){
+  if(s === "Pago") return "green";
+  if(s === "Vencido") return "red";
+  if(s === "Vence na Semana") return "amber";
+  return "gray"; // A Vencer / Sem vencimento
+}
 function fmtDataBR(iso){ return iso ? iso.split("-").reverse().join("/") : "—"; }
 function deltaPct(a,b){ if(!b) return null; return ((a-b)/b*100); }
 
@@ -507,6 +518,16 @@ async function executarUndo(d){
       await sb.from("entregas_lancamentos").delete().not("id","is",null);
       if(d.anteriores.length) await sbBulkInsert("entregas_lancamentos", d.anteriores.map(r=>({ data:r.d, servico:r.servico, transportadora:r.transportadora, cliente:r.cliente, motorista:r.motorista, carro:r.carro, qnt:r.qnt, valor:r.v, observacao:r.observacao||null })));
     }
+  } else if(d.kind === "bulkImportContasPagar"){
+    DATA.contasPagar.lancamentos = d.anteriores;
+    if(sb){
+      await sb.from("contas_pagar").delete().not("id","is",null);
+      if(d.anteriores.length) await sbBulkInsert("contas_pagar", d.anteriores.map(r=>({
+        prestador:r.prestador, cnpj:r.cnpj, tipo_servico:r.tipoServico, servico:r.servico, numero_documento:r.numeroDocumento,
+        data_emissao:r.dataEmissao, parcela:r.parcela, valor:r.valor, forma_pagamento:r.formaPagamento,
+        data_vencimento:r.dataVencimento, status:r.status, data_pagamento:r.dataPagamento
+      })));
+    }
   }
 }
 
@@ -701,6 +722,67 @@ function deriveEntregas(){
   const e = DATA.entregas;
   if(!Array.isArray(e.lancamentos)) e.lancamentos = [];
   Object.assign(e, computarEntregasStats(e.lancamentos));
+}
+
+/* ============================================================================
+   CONTAS A PAGAR — filtros (Ano, Mês, Status, Fornecedor, Tipo de Serviço) e estatísticas
+   ============================================================================ */
+const FILTRO_CONTAS = { ano:"todos", mes:"todos", status:"todos", fornecedor:"todos", tipo:"todos" };
+let FILTRO_AGENDA = "Vencido"; // qual "balde" de situação a tabela "Agenda de Vencimentos" mostra
+window.setFiltroContas = (campo, valor) => {
+  FILTRO_CONTAS[campo] = valor;
+  navigate("contaspagar");
+};
+window.setFiltroAgenda = (situacao) => {
+  FILTRO_AGENDA = situacao;
+  navigate("contaspagar");
+};
+
+// Aplica os filtros da página (Ano/Mês/Status/Fornecedor/Tipo) a uma lista de contas. Os gráficos de
+// "Análise Mensal" chamam isso com skipMes:true — não faz sentido aplicar o filtro de mês num
+// gráfico cuja função é mostrar justamente a quebra mês a mês.
+function filtrarContas(lancamentos, filtros, skipMes){
+  return lancamentos.filter(i=>{
+    if(filtros.status !== "todos" && i.status !== filtros.status) return false;
+    if(filtros.fornecedor !== "todos" && i.prestador !== filtros.fornecedor) return false;
+    if(filtros.tipo !== "todos" && i.tipoServico !== filtros.tipo) return false;
+    const precisaData = filtros.ano !== "todos" || (!skipMes && filtros.mes !== "todos");
+    if(precisaData){
+      if(!i.dataVencimento) return false;
+      const [ano,mes] = i.dataVencimento.split("-");
+      if(filtros.ano !== "todos" && ano !== filtros.ano) return false;
+      if(!skipMes && filtros.mes !== "todos" && String(parseInt(mes,10)) !== filtros.mes) return false;
+    }
+    return true;
+  });
+}
+
+// Totais/rankings mensais (Total, Pago, A Pagar, Quantidade por mês, Top tipo de serviço, Top
+// fornecedores) a partir de uma LISTA de contas — função pura, não mexe em DATA.contasPagar.
+function computarContasPagarStats(lancamentos){
+  const totalMes = Array(12).fill(0), pagoMes = Array(12).fill(0), aPagarMes = Array(12).fill(0), qtdMes = Array(12).fill(0);
+  const porTipo = {}, porFornecedor = {};
+  lancamentos.forEach(i=>{
+    if(i.dataVencimento){
+      const mIdx = parseInt(i.dataVencimento.slice(5,7),10) - 1;
+      if(mIdx>=0 && mIdx<12){
+        totalMes[mIdx] += i.valor;
+        qtdMes[mIdx] += 1;
+        if(i.status === "Pago") pagoMes[mIdx] += i.valor; else aPagarMes[mIdx] += i.valor;
+      }
+    }
+    const tipo = i.tipoServico || "Sem categoria";
+    porTipo[tipo] = (porTipo[tipo]||0) + i.valor;
+    const forn = i.prestador || "Sem fornecedor";
+    porFornecedor[forn] = (porFornecedor[forn]||0) + i.valor;
+  });
+  const porTipoArr = Object.entries(porTipo).sort((a,b)=>b[1]-a[1]).map(([tipo,valor])=>({ tipo, valor:Math.round(valor) }));
+  const topFornecedores = Object.entries(porFornecedor).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([fornecedor,valor])=>({ fornecedor, valor:Math.round(valor) }));
+  return {
+    mesesLabels: MONTH_ABBR.map(m=>m[0].toUpperCase()+m.slice(1)),
+    totalMes: totalMes.map(Math.round), pagoMes: pagoMes.map(Math.round), aPagarMes: aPagarMes.map(Math.round), qtdMes,
+    porTipoArr, topFornecedores
+  };
 }
 
 // Distingue placa de caminhão de verdade (sempre tem número, ex: "ATP-3089") de centro de custo
@@ -1753,81 +1835,164 @@ initCharts.acidentes = () => {
 /* -------------------- CONTAS A PAGAR -------------------- */
 renderers.contaspagar = () => {
   const cp = DATA.contasPagar;
-  const itens = [...cp.lancamentos].sort((a,b)=> a.dataVencimento.localeCompare(b.dataVencimento));
-  const totalPendente = sumArr(itens.filter(i=>i.status!=="Pago").map(i=>i.valor));
-  const totalPago = sumArr(itens.filter(i=>i.status==="Pago").map(i=>i.valor));
-  const vencidas = itens.filter(i=>statusConta(i)==="Vencido");
-  const hoje = new Date(); hoje.setHours(0,0,0,0);
-  const em7dias = new Date(hoje.getTime()+7*86400000);
-  const venc7 = itens.filter(i=>{
-    if(i.status==="Pago") return false;
-    const v = new Date(i.dataVencimento+"T00:00:00");
-    return v>=hoje && v<=em7dias;
-  });
+  const anosDisponiveis = [...new Set(cp.lancamentos.map(i=>i.dataVencimento).filter(Boolean).map(d=>d.slice(0,4)))].sort();
+  const fornecedoresDisponiveis = [...new Set(cp.lancamentos.map(i=>i.prestador).filter(Boolean))].sort();
+  const tiposDisponiveis = [...new Set(cp.lancamentos.map(i=>i.tipoServico).filter(Boolean))].sort();
+  const statusDisponiveis = [...new Set(cp.lancamentos.map(i=>i.status).filter(Boolean))].sort();
+  const opt = (valor,label,atual) => `<option value="${valor}" ${atual===valor?"selected":""}>${label}</option>`;
 
-  const porTipo = {};
-  itens.forEach(i=>{ porTipo[i.tipoServico] = (porTipo[i.tipoServico]||0) + i.valor; });
-  const porTipoArr = Object.entries(porTipo).sort((a,b)=>b[1]-a[1]);
+  // KPIs, ranking e agenda respeitam TODOS os filtros (Ano/Mês/Status/Fornecedor/Tipo).
+  const itensFiltrados = filtrarContas(cp.lancamentos, FILTRO_CONTAS);
+  const pagos = itensFiltrados.filter(i=>i.status==="Pago");
+  const aPagarList = itensFiltrados.filter(i=>i.status!=="Pago");
+  const vencidasList = aPagarList.filter(i=>statusConta(i)==="Vencido");
+  const venceSemanaList = aPagarList.filter(i=>statusConta(i)==="Vence na Semana");
+  const proxVencList = aPagarList.filter(i=>statusConta(i)==="A Vencer");
+  const statsFiltrado = computarContasPagarStats(itensFiltrados);
 
-  const porPrestador = {};
-  itens.forEach(i=>{ porPrestador[i.prestador] = (porPrestador[i.prestador]||0) + i.valor; });
-  const topPrestadores = Object.entries(porPrestador).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  // "Análise Mensal" ignora o filtro de Mês de propósito — ele já quebra por mês, então aplicar o
+  // filtro deixaria o gráfico com uma barra só.
+  const statsMensal = computarContasPagarStats(filtrarContas(cp.lancamentos, FILTRO_CONTAS, true));
+
+  const agendaBuckets = { "Vencido":vencidasList, "Vence na Semana":venceSemanaList, "A Vencer":proxVencList, "Pago":pagos, "Todas":itensFiltrados };
+  const agendaItens = [...(agendaBuckets[FILTRO_AGENDA]||itensFiltrados)].sort((a,b)=>b.valor-a.valor);
+  const agendaBtn = (valor,label,cor) => `<button class="sub-tab-btn ${FILTRO_AGENDA===valor?"active":""}" onclick="setFiltroAgenda('${valor}')"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${cor}; margin-right:5px;"></span>${label}</button>`;
 
   return `
-    <div class="page-head"><h2>Contas a Pagar</h2><p>Prestadores de serviço — controle de vencimentos e status de pagamento</p></div>
+    <div class="page-head"><h2>Contas a Pagar</h2><p>Fornecedores/prestadores de serviço — controle de vencimentos, situação e forma de pagamento${cp.lancamentos.length ? ` · ${fmtNum(cp.lancamentos.length)} lançamento(s)` : ""}</p></div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3 style="margin-bottom:10px;">Filtros</h3>
+      <div class="filtro-bar">
+        <label>Ano<select onchange="setFiltroContas('ano',this.value)">
+          ${opt("todos","Todos",FILTRO_CONTAS.ano)}${anosDisponiveis.map(a=>opt(a,a,FILTRO_CONTAS.ano)).join("")}
+        </select></label>
+        <label>Mês<select onchange="setFiltroContas('mes',this.value)">
+          ${opt("todos","Todos",FILTRO_CONTAS.mes)}${MONTH_ABBR.map((m,i)=>opt(String(i+1), m[0].toUpperCase()+m.slice(1), FILTRO_CONTAS.mes)).join("")}
+        </select></label>
+        <label>Status<select onchange="setFiltroContas('status',this.value)">
+          ${opt("todos","Todos",FILTRO_CONTAS.status)}${statusDisponiveis.map(s=>opt(s,s,FILTRO_CONTAS.status)).join("")}
+        </select></label>
+        <label>Fornecedor<select onchange="setFiltroContas('fornecedor',this.value)">
+          ${opt("todos","Todos",FILTRO_CONTAS.fornecedor)}${fornecedoresDisponiveis.map(f=>opt(f,f,FILTRO_CONTAS.fornecedor)).join("")}
+        </select></label>
+        <label>Tipo de Serviço<select onchange="setFiltroContas('tipo',this.value)">
+          ${opt("todos","Todos",FILTRO_CONTAS.tipo)}${tiposDisponiveis.map(t=>opt(t,t,FILTRO_CONTAS.tipo)).join("")}
+        </select></label>
+      </div>
+    </div>
+
     <div class="kpi-grid">
-      <div class="kpi"><div class="lbl">Total pendente</div><div class="val">${fmtBRL(totalPendente)}</div><div class="delta flat">${itens.filter(i=>i.status!=="Pago").length} conta(s) em aberto</div></div>
-      <div class="kpi"><div class="lbl">Vencidas</div><div class="val">${vencidas.length}</div>${vencidas.length>0?`<span class="delta up">↑ ${fmtBRL(sumArr(vencidas.map(i=>i.valor)))}</span>`:`<span class="delta down">↓ nenhuma</span>`}</div>
-      <div class="kpi"><div class="lbl">Vencendo em 7 dias</div><div class="val">${venc7.length}</div><div class="delta flat">${fmtBRL(sumArr(venc7.map(i=>i.valor)))}</div></div>
-      <div class="kpi"><div class="lbl">Total já pago</div><div class="val">${fmtBRL(totalPago)}</div></div>
+      <div class="kpi"><div class="lbl">Total de Contas</div><div class="val">${fmtNum(itensFiltrados.length)}</div></div>
+      <div class="kpi"><div class="lbl">Valor Total</div><div class="val">${fmtBRL(sumArr(itensFiltrados.map(i=>i.valor)))}</div></div>
+      <div class="kpi"><div class="lbl">Total Pago</div><div class="val">${fmtBRL(sumArr(pagos.map(i=>i.valor)))}</div><div class="delta flat">${fmtNum(pagos.length)} conta(s)</div></div>
+      <div class="kpi"><div class="lbl">Total a Pagar</div><div class="val">${fmtBRL(sumArr(aPagarList.map(i=>i.valor)))}</div><div class="delta flat">${fmtNum(aPagarList.length)} conta(s)</div></div>
+      <div class="kpi"><div class="lbl">Contas Vencidas</div><div class="val">${fmtBRL(sumArr(vencidasList.map(i=>i.valor)))}</div>${vencidasList.length>0?`<span class="delta up">↑ ${fmtNum(vencidasList.length)} conta(s)</span>`:`<span class="delta down">↓ nenhuma</span>`}</div>
+      <div class="kpi"><div class="lbl">Venc. na Semana</div><div class="val">${fmtBRL(sumArr(venceSemanaList.map(i=>i.valor)))}</div><div class="delta flat">${fmtNum(venceSemanaList.length)} conta(s)</div></div>
+      <div class="kpi"><div class="lbl">Próx. Vencimentos</div><div class="val">${fmtBRL(sumArr(proxVencList.map(i=>i.valor)))}</div><div class="delta flat">${fmtNum(proxVencList.length)} conta(s)</div></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Agenda de Vencimentos — contas que exigem atenção</h3>
+      <div class="tabs" style="margin:6px 0 12px;">
+        ${agendaBtn("Vencido","Vencidas",COLORS.red)}
+        ${agendaBtn("Vence na Semana","Vence na Semana",COLORS.amber)}
+        ${agendaBtn("A Vencer","A Vencer",COLORS.inkSoft)}
+        ${agendaBtn("Pago","Pagas",COLORS.green)}
+        ${agendaBtn("Todas","Todas",COLORS.ink)}
+      </div>
+      ${agendaItens.length === 0 ? `
+      <div class="empty-state" style="padding:24px;"><div class="glyph">📋</div><p>Nenhuma conta nessa situação com os filtros atuais.</p></div>` : `
+      <table>
+        <thead><tr><th>Fornecedor</th><th>Serviço/Descrição</th><th class="num">Valor</th><th>Vencimento</th><th>Status</th><th>Situação</th><th>Ação</th></tr></thead>
+        <tbody>
+          ${agendaItens.map(i=>{
+            const st = statusConta(i);
+            return `<tr>
+              <td>${i.prestador}</td>
+              <td>${i.servico || i.tipoServico}${(i.parcela && String(i.parcela).includes("/")) ? ` <span class="hint" style="margin:0;">(${i.parcela})</span>` : ""}</td>
+              <td class="num">${fmtBRL2(i.valor)}</td>
+              <td>${fmtDataBR(i.dataVencimento)}</td>
+              <td>${i.status}</td>
+              <td><span class="badge ${statusBadgeClass(st)}">${st}</span></td>
+              <td>${i.status==="Pago" ? `<span class="hint" style="margin:0;">pago em ${fmtDataBR(i.dataPagamento)}</span>` : `<button onclick="marcarContaPaga('${i.id}')" style="background:var(--green); color:#fff; border:none; padding:5px 10px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;">Marcar como pago</button>`}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>`}
+    </div>
+
+    <div class="page-head" style="margin-bottom:8px;"><h3 style="font-size:16px;">Análise Mensal</h3><p>Ignora o filtro de Mês acima — mostra o ano inteiro pra dar contexto</p></div>
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Valores por Mês: Total, Pago e A Pagar</h3>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ch-cp-mensal"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Quantidade de Contas por Mês</h3>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ch-cp-qtdmes"></canvas></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Previsto x Pago (mensal)</h3>
+      <div class="hint">Total previsto x total já pago, mês a mês</div>
+      <div class="chart-wrap" style="height:260px;"><canvas id="ch-cp-previstopago"></canvas></div>
     </div>
 
     <div class="grid-2">
       <div class="panel">
         <h3>Custo por tipo de serviço</h3>
+        <div class="hint">Considera os filtros acima (Ano/Mês/Status/Fornecedor/Tipo)</div>
         <div class="chart-wrap" style="height:260px;"><canvas id="ch-cp-tipo"></canvas></div>
       </div>
       <div class="panel">
-        <h3>Maiores prestadores</h3>
+        <h3>Maiores fornecedores</h3>
         <table>
-          <thead><tr><th>#</th><th>Prestador</th><th class="num">Valor</th></tr></thead>
-          <tbody>${topPrestadores.map(([nome,v],i)=>`<tr><td class="rank">${i+1}</td><td>${nome}</td><td class="num">${fmtBRL2(v)}</td></tr>`).join("")}</tbody>
+          <thead><tr><th>#</th><th>Fornecedor</th><th class="num">Valor</th></tr></thead>
+          <tbody>${statsFiltrado.topFornecedores.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.fornecedor}</td><td class="num">${fmtBRL2(t.valor)}</td></tr>`).join("")}</tbody>
         </table>
       </div>
-    </div>
-
-    <div class="panel">
-      <h3>Todas as contas</h3>
-      <div class="hint">Ordenadas por vencimento — clique em "Marcar como pago" para dar baixa</div>
-      <table>
-        <thead><tr><th>Status</th><th>Prestador</th><th>Tipo de Serviço</th><th>CNPJ</th><th>Forma Pgto</th><th class="num">Valor</th><th>Vencimento</th><th>Ação</th></tr></thead>
-        <tbody>
-          ${itens.map(i=>{
-            const st = statusConta(i);
-            return `<tr>
-              <td><span class="badge ${statusBadgeClass(st)}">${st}</span></td>
-              <td>${i.prestador}</td>
-              <td>${i.tipoServico}</td>
-              <td>${i.cnpj}</td>
-              <td>${i.formaPagamento}</td>
-              <td class="num">${fmtBRL2(i.valor)}</td>
-              <td>${fmtDataBR(i.dataVencimento)}</td>
-              <td>${i.status==="Pago" ? `<span class="hint" style="margin:0;">pago em ${fmtDataBR(i.dataPagamento)}</span>` : `<button onclick="marcarContaPaga('${i.id}')" style="background:var(--green); color:#fff; border:none; padding:5px 10px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;">Marcar como pago</button>`}</td>
-            </tr>`;
-          }).join("")}
-        </tbody>
-      </table>
     </div>
   `;
 };
 initCharts.contaspagar = () => {
   const cp = DATA.contasPagar;
-  const porTipo = {};
-  cp.lancamentos.forEach(i=>{ porTipo[i.tipoServico] = (porTipo[i.tipoServico]||0) + i.valor; });
-  const arr = Object.entries(porTipo).sort((a,b)=>b[1]-a[1]);
+  const itensFiltrados = filtrarContas(cp.lancamentos, FILTRO_CONTAS);
+  const statsFiltrado = computarContasPagarStats(itensFiltrados);
+  const statsMensal = computarContasPagarStats(filtrarContas(cp.lancamentos, FILTRO_CONTAS, true));
+
+  mkChart("ch-cp-mensal", {
+    type:"bar",
+    data:{ labels:statsMensal.mesesLabels, datasets:[
+      { label:"Valor Total", data:statsMensal.totalMes, backgroundColor:COLORS.ink, borderRadius:3 },
+      { label:"Valor Pago", data:statsMensal.pagoMes, backgroundColor:COLORS.green, borderRadius:3 },
+      { label:"Valor A Pagar", data:statsMensal.aPagarMes, backgroundColor:COLORS.amber, borderRadius:3 }
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}}},
+      scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}} } }
+  });
+  mkChart("ch-cp-qtdmes", {
+    type:"bar",
+    data:{ labels:statsMensal.mesesLabels, datasets:[{ data:statsMensal.qtdMes, backgroundColor:COLORS.red, borderRadius:4 }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
+        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]>0, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelNum } },
+      layout:{ padding:{ top:16 } },
+      scales:{ y:{grid:{color:COLORS.grid}}, x:{grid:{display:false}} } }
+  });
+  mkChart("ch-cp-previstopago", {
+    type:"line",
+    data:{ labels:statsMensal.mesesLabels, datasets:[
+      { label:"Valor Total", data:statsMensal.totalMes, borderColor:COLORS.ink, backgroundColor:COLORS.ink+"14", fill:true, tension:.3, pointRadius:2 },
+      { label:"Valor Pago", data:statsMensal.pagoMes, borderColor:COLORS.green, backgroundColor:COLORS.green+"14", fill:true, tension:.3, pointRadius:2 }
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}}},
+      scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}} } }
+  });
   mkChart("ch-cp-tipo", {
     type:"bar",
-    data:{ labels:arr.map(a=>a[0]), datasets:[{ data:arr.map(a=>a[1]), backgroundColor:COLORS.red, borderRadius:4 }]},
+    data:{ labels:statsFiltrado.porTipoArr.map(t=>t.tipo), datasets:[{ data:statsFiltrado.porTipoArr.map(t=>t.valor), backgroundColor:COLORS.red, borderRadius:4 }]},
     options:{ indexAxis:"y", responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
         datalabels:{ display:true, anchor:"end", align:"right", color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } },
       layout:{ padding:{ right:46 } },
@@ -1972,17 +2137,35 @@ const ENTRY_FORMS = {
     <button class="entry-submit" onclick="submitEntrega()">Adicionar operação</button>
   `,
   contaspagar: () => `
+    <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
+      <div class="hint" style="margin-bottom:10px;">
+        Lê só a aba <b>"MATRIZ"</b> da planilha (as outras abas são ignoradas). Colunas esperadas nela:
+        FORNECEDOR, CNPJ, TIPO DO SERVIÇO, SERVIÇO, No. DA O.S, DATA DA O.S, PARCELA, VALOR (DO)
+        SERVIÇO, FORMA DE PAGAMENTO, DATA DO VENCIMENTO, STATUS DO PAGAMENTO (MÊS, ANO, SEMANA e a
+        coluna de situação são ignoradas — a situação de cada conta é sempre recalculada em cima da
+        data de hoje, não da foto do dia em que a planilha foi exportada).<br>
+        <b>Importar substitui todo o histórico de Contas a Pagar do sistema pelo conteúdo da aba MATRIZ.</b>
+      </div>
+      <input type="file" id="ecp-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="importContasPagarXlsx()">Importar e substituir</button>
+      <div id="ecp-import-status" class="hint" style="margin-top:10px;"></div>
+    </div>
+    <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+    <div class="hint" style="margin-bottom:4px;">Ou lance uma conta avulsa manualmente:</div>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
-      <label style="grid-column:1/-1;">Prestador de Serviço<input type="text" id="ecp-prestador" list="dl-prestadores" placeholder="Ex: MANUTENÇÃO E REPARAÇÃO CB MECA"></label>
+      <label style="grid-column:1/-1;">Fornecedor / Prestador de Serviço<input type="text" id="ecp-prestador" list="dl-prestadores" placeholder="Ex: MANUTENÇÃO E REPARAÇÃO CB MECA"></label>
       <datalist id="dl-prestadores">${[...new Set(DATA.contasPagar.lancamentos.map(r=>r.prestador))].sort().map(l=>`<option value="${l}">`).join("")}</datalist>
       <label>CNPJ<input type="text" id="ecp-cnpj" placeholder="00.000.000/0000-00"></label>
       <label>Tipo de Serviço<input type="text" id="ecp-tipo" list="dl-tipos-servico" placeholder="Ex: Manutenção e Reparação"></label>
       <datalist id="dl-tipos-servico">${TIPOS_SERVICO.map(t=>`<option value="${t}">`).join("")}</datalist>
+      <label style="grid-column:1/-1;">Serviço / Descrição (opcional, se diferente do tipo)<input type="text" id="ecp-servico" placeholder="Ex: COMPRAS DE PEÇAS"></label>
       <label>Valor do Serviço (R$)<input type="number" id="ecp-valor" step="0.01" placeholder="0,00"></label>
+      <label>Parcela (opcional)<input type="text" id="ecp-parcela" placeholder="Ex: 1/3"></label>
       <label>Forma de Pagamento<select id="ecp-forma">${FORMAS_PAGAMENTO.map(f=>`<option>${f}</option>`).join("")}</select></label>
-      <label>Data de Emissão<input type="date" id="ecp-emissao" value="${new Date().toISOString().slice(0,10)}"></label>
+      <label>Data de Emissão / da O.S.<input type="date" id="ecp-emissao" value="${new Date().toISOString().slice(0,10)}"></label>
       <label>Data de Vencimento<input type="date" id="ecp-vencimento"></label>
-      <label style="grid-column:1/-1;">Nº do Documento (opcional)<input type="text" id="ecp-numdoc" placeholder="Ex: 0262"></label>
+      <label style="grid-column:1/-1;">Nº do Documento / da O.S. (opcional)<input type="text" id="ecp-numdoc" placeholder="Ex: 0262"></label>
     </div>
     <button class="entry-submit" onclick="submitContaPagar()">Adicionar conta a pagar</button>
   `,
@@ -2737,11 +2920,132 @@ window.importEntregasXlsx = async () => {
   }
 };
 
+window.importContasPagarXlsx = async () => {
+  const fileInput = document.getElementById("ecp-import-file");
+  const statusEl = document.getElementById("ecp-import-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada (confira se xlsx.full.min.js está na pasta)."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+
+    // Só a aba "MATRIZ" é importada — mesma convenção usada em Manutenção/Infrações/Entregas.
+    const nomeAbaAlvo = wb.SheetNames.find(n=>n.trim().toUpperCase()==="MATRIZ");
+    if(!nomeAbaAlvo){
+      statusEl.textContent = `⚠ Não encontrei uma aba chamada "MATRIZ" nesta planilha. Abas encontradas: ${wb.SheetNames.join(", ")}.`;
+      return;
+    }
+
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nomeAbaAlvo], { header:1, defval:null });
+    let headerRow = null, sheetRows = null;
+    for(let i=0;i<Math.min(rows.length,30);i++){
+      const r = rows[i];
+      if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="FORNECEDOR") && r.some(c=>c!=null && String(c).trim().toUpperCase()==="CNPJ")){
+        headerRow = r; sheetRows = rows.slice(i+1); break;
+      }
+    }
+    if(!headerRow){
+      statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava colunas 'Fornecedor' e 'CNPJ') na aba MATRIZ. Confira se é a mesma estrutura do seu relatório.";
+      return;
+    }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (name) => idx[name];
+    // "VALOR SO SERVIÇO" é o nome real da coluna na planilha (com esse typo mesmo) — aceita variações
+    // pra não quebrar se um dia corrigirem a grafia.
+    let cValor = col("VALOR SO SERVIÇO") ?? col("VALOR DO SERVIÇO");
+    if(cValor == null){ const k = Object.keys(idx).find(k=>k.startsWith("VALOR")); if(k) cValor = idx[k]; }
+    const cFornecedor = col("FORNECEDOR"), cCnpj = col("CNPJ"), cTipo = col("TIPO DO SERVIÇO"), cServico = col("SERVIÇO"),
+          cNumOS = col("NO. DA O.S"), cDataOS = col("DATA DA O.S"), cParcela = col("PARCELA"),
+          cForma = col("FORMA DE PAGAMENTO"), cVencimento = col("DATA DO VENCIMENTO"), cStatus = col("STATUS DO PAGAMENTO");
+    if(cFornecedor==null || cValor==null){
+      statusEl.textContent = "⚠ Faltam colunas essenciais (FORNECEDOR ou VALOR) na aba MATRIZ. Confira o cabeçalho da planilha.";
+      return;
+    }
+
+    const novos = [];
+    let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const fornecedorRaw = r[cFornecedor], valorRaw = r[cValor];
+      if(fornecedorRaw == null || String(fornecedorRaw).trim()==="" || valorRaw == null || valorRaw === ""){ ignoradas++; return; }
+      const valor = parseValorBRL(valorRaw);
+      if(isNaN(valor)){ ignoradas++; return; }
+      // Vencimento pode faltar em alguma linha (raro) — a conta ainda entra nos totais, só fica de
+      // fora dos filtros/gráficos por ano e mês e some como "Sem vencimento" na situação.
+      const vencimentoIso = cVencimento!=null ? excelDateToISO(r[cVencimento]) : null;
+      const emissaoIso = cDataOS!=null ? excelDateToISO(r[cDataOS]) : null;
+      const statusRaw = cStatus!=null ? String(r[cStatus]||"").trim() : "";
+      novos.push({
+        id: localId(),
+        prestador: String(fornecedorRaw).trim(),
+        cnpj: (cCnpj!=null ? (r[cCnpj]||"").toString().trim() : ""),
+        tipoServico: (cTipo!=null && r[cTipo]!=null && String(r[cTipo]).trim()!=="") ? String(r[cTipo]).trim() : "Outros",
+        servico: (cServico!=null && r[cServico]!=null && String(r[cServico]).trim()!=="") ? String(r[cServico]).trim() : null,
+        numeroDocumento: (cNumOS!=null && r[cNumOS]!=null) ? String(r[cNumOS]).trim() : null,
+        dataEmissao: emissaoIso,
+        parcela: (cParcela!=null && r[cParcela]!=null && String(r[cParcela]).trim()!=="") ? String(r[cParcela]).trim() : null,
+        valor,
+        formaPagamento: (cForma!=null ? (r[cForma]||"").toString().trim() : ""),
+        dataVencimento: vencimentoIso,
+        status: statusRaw || "A Pagar",
+        dataPagamento: null
+      });
+    });
+
+    if(novos.length === 0){
+      statusEl.textContent = "⚠ Nenhuma conta válida encontrada na planilha.";
+      return;
+    }
+
+    const anteriores = DATA.contasPagar.lancamentos;
+    DATA.contasPagar.lancamentos = novos;
+    logEntry("Contas a Pagar (importação)", `${novos.length} contas importadas de "${file.name}"`, { kind:"bulkImportContasPagar", anteriores });
+    renderSessionLog();
+
+    const semVenc = novos.filter(r=>!r.dataVencimento).length;
+    let statusMsg = `✓ <b>${fmtNum(novos.length)}</b> contas importadas, total ${fmtBRL(novos.reduce((s,r)=>s+r.valor,0))}.` +
+      (semVenc>0 ? `<br>${semVenc} conta(s) sem data de vencimento na planilha (ficam fora dos filtros de ano/mês).` : "") +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem fornecedor ou valor válido foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
+
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "contaspagar") navigate("contaspagar");
+
+    if(sb){
+      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
+      const { error: delError } = await sb.from("contas_pagar").delete().not("id","is",null);
+      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      try{
+        await sbBulkInsert("contas_pagar", novos.map(r=>({
+          prestador:r.prestador, cnpj:r.cnpj, tipo_servico:r.tipoServico, servico:r.servico, numero_documento:r.numeroDocumento,
+          data_emissao:r.dataEmissao, parcela:r.parcela, valor:r.valor, forma_pagamento:r.formaPagamento,
+          data_vencimento:r.dataVencimento, status:r.status, data_pagamento:r.dataPagamento
+        })));
+        statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+        toast(`✓ ${novos.length} contas importadas (salvo no banco)`);
+      }catch(e){
+        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+      }
+    } else {
+      toast(`✓ ${novos.length} contas importadas`);
+    }
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message;
+  }
+};
+
 window.submitContaPagar = async () => {
   const prestador = document.getElementById("ecp-prestador").value.trim();
   const cnpj = document.getElementById("ecp-cnpj").value.trim();
   const tipo = document.getElementById("ecp-tipo").value.trim();
+  const servico = document.getElementById("ecp-servico").value.trim();
   const valor = parseFloat(document.getElementById("ecp-valor").value);
+  const parcela = document.getElementById("ecp-parcela").value.trim();
   const forma = document.getElementById("ecp-forma").value;
   const emissao = document.getElementById("ecp-emissao").value;
   const vencimento = document.getElementById("ecp-vencimento").value;
@@ -2750,8 +3054,8 @@ window.submitContaPagar = async () => {
   if(!prestador || isNaN(valor) || !vencimento){ toast("Preencha ao menos prestador, valor e vencimento."); return; }
 
   const novaConta = {
-    id: localId(), prestador, cnpj, tipoServico: tipo || "Outros", valor, formaPagamento: forma,
-    dataEmissao: emissao || null, dataVencimento: vencimento, numeroDocumento: numdoc || null,
+    id: localId(), prestador, cnpj, tipoServico: tipo || "Outros", servico: servico || tipo || "Outros", parcela: parcela || null,
+    valor, formaPagamento: forma, dataEmissao: emissao || null, dataVencimento: vencimento, numeroDocumento: numdoc || null,
     status: "Pendente", dataPagamento: null
   };
   DATA.contasPagar.lancamentos.push(novaConta);
@@ -2762,8 +3066,9 @@ window.submitContaPagar = async () => {
 
   if(sb){
     const { data, error } = await sb.from("contas_pagar").insert({
-      prestador, cnpj, tipo_servico: tipo || "Outros", valor, forma_pagamento: forma,
-      data_emissao: emissao || null, data_vencimento: vencimento, numero_documento: numdoc || null, status: "Pendente"
+      prestador, cnpj, tipo_servico: tipo || "Outros", servico: servico || tipo || "Outros", parcela: parcela || null,
+      valor, forma_pagamento: forma, data_emissao: emissao || null, data_vencimento: vencimento,
+      numero_documento: numdoc || null, status: "Pendente"
     }).select().single();
     if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
     novaConta.id = data.id; // troca o id local pelo id real do banco, pra "marcar como pago" funcionar depois
