@@ -109,7 +109,7 @@ function applyEventosDiarios(rows){
 async function loadFromSupabase(){
   if(!sb) return false;
   try{
-    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc] = await Promise.all([
+    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc, ftLanc] = await Promise.all([
       sbFetchAll("compras_lancamentos"),
       sbFetchAll("contas_pagar"),
       sbFetchAll("series_periodo"),
@@ -118,10 +118,11 @@ async function loadFromSupabase(){
       sbFetchAll("manutencao_lancamentos"),
       sbFetchAll("diesel_abastecimentos"),
       sbFetchAll("infracoes_lancamentos"),
-      sbFetchAll("entregas_lancamentos")
+      sbFetchAll("entregas_lancamentos"),
+      sbFetchAll("faturamento_lancamentos")
     ]);
 
-    if(!compras.length && !contas.length && !series.length && !infLanc.length && !entLanc.length) return false; // banco ainda vazio
+    if(!compras.length && !contas.length && !series.length && !infLanc.length && !entLanc.length && !ftLanc.length) return false; // banco ainda vazio
 
     if(compras.length){
       DATA.compras.comprasLancamentos = compras.map(r=>({ id:r.id, d:r.data, p:r.placa||"", l:r.local||"", c:r.categoria||"", i:r.item||"", v:Number(r.valor) }));
@@ -159,6 +160,12 @@ async function loadFromSupabase(){
       DATA.entregas.lancamentos = entLanc.map(r=>({
         id:r.id, d:r.data, servico:r.servico||"", transportadora:r.transportadora||"", cliente:r.cliente||"",
         motorista:r.motorista||"", carro:r.carro||"", qnt:Number(r.qnt)||1, v:Number(r.valor), observacao:r.observacao||""
+      }));
+    }
+    if(ftLanc.length){
+      DATA.faturamento.lancamentos = ftLanc.map(r=>({
+        id:r.id, contrato:r.contrato||null, nf:r.nf||null, deadline:r.deadline||null, doc:r.doc||null,
+        balsaViagem:r.balsa_viagem||null, valor:Number(r.valor), vencimento:r.vencimento||null
       }));
     }
 
@@ -214,6 +221,12 @@ async function migrarParaSupabase(onProgress){
     say(`Enviando ${fmtNum(DATA.entregas.lancamentos.length)} operações de Entregas...`);
     const entRows = DATA.entregas.lancamentos.map(r=>({ data:r.d, servico:r.servico, transportadora:r.transportadora, cliente:r.cliente, motorista:r.motorista, carro:r.carro, qnt:r.qnt, valor:r.v, observacao:r.observacao||null }));
     await sbBulkInsert("entregas_lancamentos", entRows);
+  }
+
+  if(DATA.faturamento.lancamentos.length){
+    say(`Enviando ${fmtNum(DATA.faturamento.lancamentos.length)} lançamentos de Faturamento...`);
+    const ftRows = DATA.faturamento.lancamentos.map(r=>({ contrato:r.contrato, nf:r.nf, deadline:r.deadline, doc:r.doc, balsa_viagem:r.balsaViagem, valor:r.valor, vencimento:r.vencimento }));
+    await sbBulkInsert("faturamento_lancamentos", ftRows);
   }
 
   say("Enviando séries mensais (Manutenção, Diesel, Folha, Hora Extra, Atestados, Infrações, Acidentes)...");
@@ -310,11 +323,12 @@ function deltaBadge(pct, invert){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar"];
+const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento"];
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
+  faturamento: ["Faturamento","Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem"],
   entregas: ["Entregas","Coletas e entregas — receita, viagens e ranking por motorista, cliente e transportadora"],
   manutencao: ["Manutenção de Carreta","Custos de manutenção geral, pintura e outros serviços"],
   diesel: ["Diesel","Custo de abastecimento mensal, semanal e por veículo"],
@@ -538,6 +552,14 @@ async function executarUndo(d){
         prestador:r.prestador, cnpj:r.cnpj, tipo_servico:r.tipoServico, servico:r.servico, numero_documento:r.numeroDocumento,
         data_emissao:r.dataEmissao, parcela:r.parcela, valor:r.valor, forma_pagamento:r.formaPagamento,
         data_vencimento:r.dataVencimento, status:r.status, data_pagamento:r.dataPagamento
+      })));
+    }
+  } else if(d.kind === "bulkImportFaturamento"){
+    DATA.faturamento.lancamentos = d.anteriores;
+    if(sb){
+      await sb.from("faturamento_lancamentos").delete().not("id","is",null);
+      if(d.anteriores.length) await sbBulkInsert("faturamento_lancamentos", d.anteriores.map(r=>({
+        contrato:r.contrato, nf:r.nf, deadline:r.deadline, doc:r.doc, balsa_viagem:r.balsaViagem, valor:r.valor, vencimento:r.vencimento
       })));
     }
   }
@@ -857,6 +879,68 @@ function computarContasPagarStats(lancamentos){
     mesesLabels: MONTH_ABBR.map(m=>m[0].toUpperCase()+m.slice(1)),
     totalMes: totalMes.map(Math.round), pagoMes: pagoMes.map(Math.round), aPagarMes: aPagarMes.map(Math.round), qtdMes,
     porTipoArr, topFornecedores
+  };
+}
+
+/* ============================================================================
+   FATURAMENTO — filtros (Ano, Mês, Balsa/Viagem) e estatísticas
+   ============================================================================ */
+const FILTRO_FATURAMENTO = { ano:"todos", mes:"todos", balsa:"todos" };
+window.setFiltroFaturamento = (campo, valor) => {
+  FILTRO_FATURAMENTO[campo] = valor;
+  navigate("faturamento");
+};
+
+// A coluna BALSA/VIAGEM traz o nome do navio + nº da viagem (ex: "MELBOURNE - 16029", às vezes sem o
+// espaço antes do número: "TOKYO -8278") ou um rótulo de operação (ex: "LOGISTICA REVERSA"). Pra virar
+// um resumo útil, agrupa pelo texto antes do hífen (tolerando espaço de um só lado ou nenhum).
+function balsaGrupo(raw){
+  if(!raw) return "Sem informação";
+  const s = String(raw).trim();
+  const m = s.match(/^(.*?)\s*-\s*\S+$/);
+  return m ? m[1].trim() : s;
+}
+
+// Aplica os filtros da página (Ano/Mês/Balsa) a uma lista de lançamentos de faturamento. O gráfico de
+// "Análise Mensal" chama isso com skipMes:true, pelo mesmo motivo do Contas a Pagar.
+function filtrarFaturamento(lancamentos, filtros, skipMes){
+  return lancamentos.filter(i=>{
+    if(filtros.balsa !== "todos" && balsaGrupo(i.balsaViagem) !== filtros.balsa) return false;
+    const precisaData = filtros.ano !== "todos" || (!skipMes && filtros.mes !== "todos");
+    if(precisaData){
+      if(!i.vencimento) return false;
+      const [ano,mes] = i.vencimento.split("-");
+      if(filtros.ano !== "todos" && ano !== filtros.ano) return false;
+      if(!skipMes && filtros.mes !== "todos" && String(parseInt(mes,10)) !== filtros.mes) return false;
+    }
+    return true;
+  });
+}
+
+// Totais mensais (por VENCIMENTO, a pedido) e resumo por Balsa/Viagem a partir de uma LISTA de
+// lançamentos — função pura, não mexe em DATA.faturamento.
+function computarFaturamentoStats(lancamentos){
+  const valorMes = Array(12).fill(0), qtdMes = Array(12).fill(0);
+  const porBalsa = {};
+  lancamentos.forEach(i=>{
+    if(i.vencimento){
+      const mIdx = parseInt(i.vencimento.slice(5,7),10) - 1;
+      if(mIdx>=0 && mIdx<12){
+        valorMes[mIdx] += i.valor;
+        qtdMes[mIdx] += 1;
+      }
+    }
+    const grupo = balsaGrupo(i.balsaViagem);
+    if(!porBalsa[grupo]) porBalsa[grupo] = { valor:0, qtd:0 };
+    porBalsa[grupo].valor += i.valor;
+    porBalsa[grupo].qtd += 1;
+  });
+  const porBalsaArr = Object.entries(porBalsa).sort((a,b)=>b[1].valor-a[1].valor)
+    .map(([nome,v])=>({ nome, valor:Math.round(v.valor), qtd:v.qtd }));
+  return {
+    mesesLabels: MONTH_ABBR.map(m=>m[0].toUpperCase()+m.slice(1)),
+    valorMes: valorMes.map(Math.round), qtdMes,
+    porBalsaArr
   };
 }
 
@@ -1180,7 +1264,7 @@ const initCharts = {};
 /* -------------------- OVERVIEW -------------------- */
 renderers.overview = () => {
   const m = DATA.manutencao, d = DATA.diesel, f = DATA.folha, he = DATA.horaExtraCusto,
-        c = DATA.compras, at = DATA.atestados, inf = DATA.infracoes, ac = DATA.acidentes, cp = DATA.contasPagar, eg = DATA.entregas;
+        c = DATA.compras, at = DATA.atestados, inf = DATA.infracoes, ac = DATA.acidentes, cp = DATA.contasPagar, eg = DATA.entregas, ft = DATA.faturamento;
 
   const cpPendente = sumArr(cp.lancamentos.filter(i=>i.status!=="Pago").map(i=>i.valor));
   const cpVencidas = cp.lancamentos.filter(i=>statusConta(i)==="Vencido").length;
@@ -1198,7 +1282,9 @@ renderers.overview = () => {
     { page:"atestados", ic:"🩺", label:"Atestados (mai/26)", big:fmtNum(at.ocorrencias[at.ocorrencias.length-1]), foot:"Ocorrências no último mês fechado", id:"spk-atestados" },
     { page:"infracoes", ic:"🚨", label:"Infrações (2026)", big:fmtNum(inf.totalAno2026), foot:`Uso de celular: ${inf.usoCelular2026} ocorrências`, id:"spk-infracoes" },
     { page:"acidentes", ic:"⚠️", label:"Acidentes & Incidentes", big:"0", foot:"Nenhuma ocorrência registrada em 2025", id:"spk-acidentes" },
-    { page:"contaspagar", ic:"💵", label:"Contas a Pagar", big:fmtBRL(cpPendente), foot: cpVencidas>0 ? `⚠ ${cpVencidas} conta(s) vencida(s)` : "Nenhuma conta vencida" }
+    { page:"contaspagar", ic:"💵", label:"Contas a Pagar", big:fmtBRL(cpPendente), foot: cpVencidas>0 ? `⚠ ${cpVencidas} conta(s) vencida(s)` : "Nenhuma conta vencida" },
+    { page:"faturamento", ic:"🧾", label:"Faturamento", big: ft.lancamentos.length ? fmtBRL(sumArr(ft.lancamentos.map(i=>i.valor))) : "—",
+      foot: ft.lancamentos.length ? `${fmtNum(ft.lancamentos.length)} lançamento(s)` : "Nenhum lançamento importado ainda" }
   ];
 
   return `
@@ -2171,6 +2257,130 @@ initCharts.contaspagar = () => {
       scales:{ x:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, y:{grid:{display:false}} } }
   });
 };
+
+/* -------------------- FATURAMENTO -------------------- */
+renderers.faturamento = () => {
+  const ft = DATA.faturamento;
+  const anosDisponiveis = [...new Set(ft.lancamentos.map(i=>i.vencimento).filter(Boolean).map(d=>d.slice(0,4)))].sort();
+  const balsasDisponiveis = [...new Set(ft.lancamentos.map(i=>balsaGrupo(i.balsaViagem)))].sort();
+  const opt = (valor,label,atual) => `<option value="${valor}" ${atual===valor?"selected":""}>${label}</option>`;
+
+  const itensFiltrados = filtrarFaturamento(ft.lancamentos, FILTRO_FATURAMENTO);
+  const statsFiltrado = computarFaturamentoStats(itensFiltrados);
+  // "Análise Mensal" ignora o filtro de Mês de propósito — mesmo motivo do Contas a Pagar.
+  const statsMensal = computarFaturamentoStats(filtrarFaturamento(ft.lancamentos, FILTRO_FATURAMENTO, true));
+
+  const totalFaturado = sumArr(itensFiltrados.map(i=>i.valor));
+  const ticketMedio = itensFiltrados.length ? totalFaturado / itensFiltrados.length : 0;
+  const maxMes = Math.max(0, ...statsMensal.valorMes);
+  const mesMaior = maxMes > 0 ? statsMensal.mesesLabels[statsMensal.valorMes.indexOf(maxMes)] : "—";
+
+  return `
+    <div class="page-head"><h2>Faturamento</h2><p>Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem${ft.lancamentos.length ? ` · ${fmtNum(ft.lancamentos.length)} lançamento(s)` : ""}</p></div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3 style="margin-bottom:10px;">Filtros</h3>
+      <div class="filtro-bar">
+        <label>Ano<select onchange="setFiltroFaturamento('ano',this.value)">
+          ${opt("todos","Todos",FILTRO_FATURAMENTO.ano)}${anosDisponiveis.map(a=>opt(a,a,FILTRO_FATURAMENTO.ano)).join("")}
+        </select></label>
+        <label>Mês<select onchange="setFiltroFaturamento('mes',this.value)">
+          ${opt("todos","Todos",FILTRO_FATURAMENTO.mes)}${MONTH_ABBR.map((m,i)=>opt(String(i+1), m[0].toUpperCase()+m.slice(1), FILTRO_FATURAMENTO.mes)).join("")}
+        </select></label>
+        <label>Balsa/Viagem<select onchange="setFiltroFaturamento('balsa',this.value)">
+          ${opt("todos","Todas",FILTRO_FATURAMENTO.balsa)}${balsasDisponiveis.map(b=>opt(b,b,FILTRO_FATURAMENTO.balsa)).join("")}
+        </select></label>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Total Faturado</div><div class="val">${fmtBRL(totalFaturado)}</div></div>
+      <div class="kpi"><div class="lbl">Qtde de Lançamentos</div><div class="val">${fmtNum(itensFiltrados.length)}</div></div>
+      <div class="kpi"><div class="lbl">Ticket Médio</div><div class="val">${fmtBRL2(ticketMedio)}</div></div>
+      <div class="kpi"><div class="lbl">Mês de Maior Faturamento</div><div class="val">${mesMaior}</div></div>
+      <div class="kpi"><div class="lbl">Balsas/Rotas Distintas</div><div class="val">${fmtNum(statsFiltrado.porBalsaArr.length)}</div></div>
+    </div>
+
+    <div class="page-head" style="margin-bottom:8px;"><h3 style="font-size:16px;">Análise Mensal (por Vencimento)</h3><p>Ignora o filtro de Mês acima — mostra o ano inteiro pra dar contexto</p></div>
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Faturamento por Mês</h3>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ch-ft-mensal"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Quantidade de Lançamentos por Mês</h3>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ch-ft-qtdmes"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Resumo por Balsa/Viagem — Top 12</h3>
+        <div class="hint">Considera os filtros acima (Ano/Mês/Balsa)</div>
+        <div class="chart-wrap" style="height:320px;"><canvas id="ch-ft-balsa"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Ranking completo por Balsa/Viagem</h3>
+        <table>
+          <thead><tr><th>#</th><th>Balsa/Viagem</th><th class="num">Qtde</th><th class="num">Valor</th></tr></thead>
+          <tbody>${statsFiltrado.porBalsaArr.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.nome}</td><td class="num">${fmtNum(t.qtd)}</td><td class="num">${fmtBRL2(t.valor)}</td></tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <h3>Lançamentos</h3>
+      <div class="hint">Ordenado por vencimento, mais recente primeiro</div>
+      ${itensFiltrados.length === 0 ? `
+      <div class="empty-state" style="padding:24px;"><div class="glyph">🧾</div><p>Nenhum lançamento com os filtros atuais.</p></div>` : `
+      <table>
+        <thead><tr><th>Contrato</th><th>NF</th><th>Balsa/Viagem</th><th class="num">Valor</th><th>Deadline</th><th>Vencimento</th></tr></thead>
+        <tbody>
+          ${[...itensFiltrados].sort((a,b)=>(b.vencimento||"").localeCompare(a.vencimento||"")).map(i=>`<tr>
+            <td>${i.contrato||"—"}</td>
+            <td>${i.nf||"—"}</td>
+            <td>${i.balsaViagem||"—"}</td>
+            <td class="num">${fmtBRL2(i.valor)}</td>
+            <td>${fmtDataBR(i.deadline)}</td>
+            <td>${fmtDataBR(i.vencimento)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>`}
+    </div>
+  `;
+};
+initCharts.faturamento = () => {
+  const ft = DATA.faturamento;
+  const itensFiltrados = filtrarFaturamento(ft.lancamentos, FILTRO_FATURAMENTO);
+  const statsFiltrado = computarFaturamentoStats(itensFiltrados);
+  const statsMensal = computarFaturamentoStats(filtrarFaturamento(ft.lancamentos, FILTRO_FATURAMENTO, true));
+  const topBalsa = statsFiltrado.porBalsaArr.slice(0,12);
+
+  mkChart("ch-ft-mensal", {
+    type:"bar",
+    data:{ labels:statsMensal.mesesLabels, datasets:[{ label:"Faturamento", data:statsMensal.valorMes, backgroundColor:COLORS.red, borderRadius:4 }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
+        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]>0, anchor:"end", align:"top", color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } },
+      layout:{ padding:{ top:16 } },
+      scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}} } }
+  });
+  mkChart("ch-ft-qtdmes", {
+    type:"bar",
+    data:{ labels:statsMensal.mesesLabels, datasets:[{ data:statsMensal.qtdMes, backgroundColor:COLORS.ink, borderRadius:4 }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
+        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]>0, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelNum } },
+      layout:{ padding:{ top:16 } },
+      scales:{ y:{grid:{color:COLORS.grid}}, x:{grid:{display:false}} } }
+  });
+  mkChart("ch-ft-balsa", {
+    type:"bar",
+    data:{ labels:topBalsa.map(t=>t.nome), datasets:[{ data:topBalsa.map(t=>t.valor), backgroundColor:COLORS.amber, borderRadius:4 }]},
+    options:{ indexAxis:"y", responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
+        datalabels:{ display:true, anchor:"end", align:"right", color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } },
+      layout:{ padding:{ right:46 } },
+      scales:{ x:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, y:{grid:{display:false}} } }
+  });
+};
 window.marcarContaPaga = async (id) => {
   const item = DATA.contasPagar.lancamentos.find(i=>i.id===id);
   if(!item) return;
@@ -2201,6 +2411,7 @@ window.rodarMigracaoSupabase = async () => {
 /* -------------------- ENTRADA DE DADOS -------------------- */
 const ENTRY_MODULES = [
   { key:"contaspagar", ic:"💵", label:"Contas a Pagar", desc:"Prestador de serviço, CNPJ, valor, forma de pagamento e vencimento" },
+  { key:"faturamento", ic:"🧾", label:"Faturamento", desc:"Importação de planilha de contratos ou lançamento avulso — contrato, NF, balsa/viagem, valor e vencimento" },
   { key:"entregas", ic:"🚚", label:"Entregas", desc:"Importação de planilha ou lançamento avulso por operação" },
   { key:"compras", ic:"🧰", label:"Compras de Peças", desc:"Lançamento diário — data, local/fornecedor, categoria e valor" },
   { key:"diesel", ic:"⛽", label:"Diesel", desc:"Custo mensal ou semanal" },
@@ -2340,6 +2551,34 @@ const ENTRY_FORMS = {
       <label style="grid-column:1/-1;">Nº do Documento / da O.S. (opcional)<input type="text" id="ecp-numdoc" placeholder="Ex: 0262"></label>
     </div>
     <button class="entry-submit" onclick="submitContaPagar()">Adicionar conta a pagar</button>
+  `,
+  faturamento: () => `
+    <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
+      <div class="hint" style="margin-bottom:10px;">
+        Procura a linha de cabeçalho (colunas <b>CONTRATO</b> e <b>VENCIMENTO</b>) em qualquer aba da
+        planilha — não depende do nome da aba, já que ele muda a cada ano (ex: "CONTRATOS 2026").
+        Colunas esperadas: CONTRATO, NF, DEADLINE, DOC, BALSA/VIAGEM, VALOR, VENCIMENTO. O mês de cada
+        lançamento nos gráficos é sempre calculado a partir da coluna VENCIMENTO.<br>
+        <b>Importar substitui todo o histórico de Faturamento do sistema pelo conteúdo da planilha.</b>
+      </div>
+      <input type="file" id="eft-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="importFaturamentoXlsx()">Importar e substituir</button>
+      <div id="eft-import-status" class="hint" style="margin-top:10px;"></div>
+    </div>
+    <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+    <div class="hint" style="margin-bottom:4px;">Ou lance um contrato avulso manualmente:</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+      <label>Contrato<input type="text" id="eft-contrato" placeholder="Ex: 971"></label>
+      <label>NF<input type="text" id="eft-nf" placeholder="Ex: 11 NF'S"></label>
+      <label style="grid-column:1/-1;">Balsa/Viagem<input type="text" id="eft-balsa" list="dl-eft-balsa" placeholder="Ex: MELBOURNE - 16029"></label>
+      <datalist id="dl-eft-balsa">${[...new Set(DATA.faturamento.lancamentos.map(r=>r.balsaViagem))].sort().map(l=>`<option value="${l}">`).join("")}</datalist>
+      <label>Valor (R$)<input type="number" id="eft-valor" step="0.01" placeholder="0,00"></label>
+      <label>Deadline<input type="date" id="eft-deadline"></label>
+      <label>Vencimento<input type="date" id="eft-vencimento"></label>
+      <label>Doc (opcional)<input type="text" id="eft-doc" placeholder="Ex: 0262"></label>
+    </div>
+    <button class="entry-submit" onclick="submitFaturamento()">Adicionar lançamento</button>
   `,
   compras: () => `
     <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
@@ -2525,6 +2764,11 @@ window.toggleSub = (btn, showId, hideId) => {
   document.getElementById(hideId).style.display = "none";
 };
 
+// Nome do mês por extenso, em português (algumas linhas da planilha de Faturamento trazem a data
+// digitada como "sexta-feira, 16 de janeiro de 2026" em vez de data de verdade).
+const MESES_PT_PARA_NUM = { janeiro:1, fevereiro:2, "março":3, marco:3, abril:4, maio:5, junho:6,
+  julho:7, agosto:8, setembro:9, outubro:10, novembro:11, dezembro:12 };
+
 // Converte data do Excel (Date object, já que lemos com cellDates:true) para "YYYY-MM-DD" local, sem shift de fuso.
 function excelDateToISO(d){
   if(d instanceof Date && !isNaN(d)){
@@ -2539,6 +2783,13 @@ function excelDateToISO(d){
       let [, dd, mm, yyyy] = m;
       if(yyyy.length === 2) yyyy = (Number(yyyy) < 50 ? "20" : "19") + yyyy;
       return `${yyyy}-${mm.padStart(2,"0")}-${dd.padStart(2,"0")}`;
+    }
+    // ...ou por extenso, ex: "sexta-feira, 16 de janeiro de 2026" (visto na planilha de Faturamento).
+    const mExt = d.trim().toLowerCase().match(/(\d{1,2})\s+de\s+([a-zçã]+)\s+de\s+(\d{4})/);
+    if(mExt){
+      const [, dd, mesNome, yyyy] = mExt;
+      const mesNum = MESES_PT_PARA_NUM[mesNome];
+      if(mesNum) return `${yyyy}-${String(mesNum).padStart(2,"0")}-${dd.padStart(2,"0")}`;
     }
   }
   return null;
@@ -3397,6 +3648,143 @@ window.submitContaPagar = async () => {
     salvarSessionLogLocal();
   }
   toast("Conta a pagar adicionada ✓" + (sb ? " (salvo no banco)" : ""));
+};
+
+window.importFaturamentoXlsx = async () => {
+  const fileInput = document.getElementById("eft-import-file");
+  const statusEl = document.getElementById("eft-import-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada (confira se xlsx.full.min.js está na pasta)."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+
+    // O nome da aba muda todo ano (ex: "CONTRATOS 2026"), então procura em todas as abas a linha de
+    // cabeçalho com as colunas CONTRATO e VENCIMENTO — mesma ideia usada na importação de Folha.
+    let headerRow = null, sheetRows = null;
+    for(const nomeAba of wb.SheetNames){
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[nomeAba], { header:1, defval:null });
+      for(let i=0;i<Math.min(rows.length,30);i++){
+        const r = rows[i];
+        if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="CONTRATO") && r.some(c=>c!=null && String(c).trim().toUpperCase()==="VENCIMENTO")){
+          headerRow = r; sheetRows = rows.slice(i+1); break;
+        }
+      }
+      if(headerRow) break;
+    }
+    if(!headerRow){
+      statusEl.textContent = `⚠ Não encontrei a linha de cabeçalho (esperava colunas 'Contrato' e 'Vencimento') em nenhuma aba. Abas encontradas: ${wb.SheetNames.join(", ")}.`;
+      return;
+    }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (name) => idx[name];
+    const cContrato = col("CONTRATO"), cNf = col("NF"), cDeadline = col("DEADLINE"), cDoc = col("DOC"),
+          cBalsa = col("BALSA/VIAGEM"), cValor = col("VALOR"), cVencimento = col("VENCIMENTO");
+    if(cValor==null || cVencimento==null){
+      statusEl.textContent = "⚠ Faltam colunas essenciais (VALOR ou VENCIMENTO) na planilha. Confira o cabeçalho.";
+      return;
+    }
+
+    const novos = [];
+    let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const valorRaw = r[cValor];
+      if(valorRaw == null || valorRaw === ""){ ignoradas++; return; }
+      const valor = parseValorBRL(valorRaw);
+      if(isNaN(valor)){ ignoradas++; return; }
+      const docRaw = cDoc!=null ? r[cDoc] : null;
+      const docTxt = (docRaw!=null && String(docRaw).trim()!=="" && String(docRaw).trim()!=="-") ? (excelDateToISO(docRaw) || String(docRaw).trim()) : null;
+      novos.push({
+        id: localId(),
+        contrato: (cContrato!=null && r[cContrato]!=null) ? String(r[cContrato]).trim() : null,
+        nf: (cNf!=null && r[cNf]!=null && String(r[cNf]).trim()!=="") ? String(r[cNf]).trim() : null,
+        deadline: cDeadline!=null ? excelDateToISO(r[cDeadline]) : null,
+        doc: docTxt,
+        balsaViagem: (cBalsa!=null && r[cBalsa]!=null && String(r[cBalsa]).trim()!=="") ? String(r[cBalsa]).trim() : null,
+        valor,
+        vencimento: excelDateToISO(r[cVencimento])
+      });
+    });
+
+    if(novos.length === 0){
+      statusEl.textContent = "⚠ Nenhum lançamento válido encontrado na planilha.";
+      return;
+    }
+
+    const anteriores = DATA.faturamento.lancamentos;
+    DATA.faturamento.lancamentos = novos;
+    logEntry("Faturamento (importação)", `${novos.length} lançamentos importados de "${file.name}"`, { kind:"bulkImportFaturamento", anteriores });
+    renderSessionLog();
+
+    const semVenc = novos.filter(r=>!r.vencimento).length;
+    let statusMsg = `✓ <b>${fmtNum(novos.length)}</b> lançamentos importados, total ${fmtBRL(novos.reduce((s,r)=>s+r.valor,0))}.` +
+      (semVenc>0 ? `<br>${semVenc} lançamento(s) sem data de vencimento reconhecida na planilha (ficam fora dos filtros/gráficos de ano e mês).` : "") +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem valor válido foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
+
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "faturamento") navigate("faturamento");
+
+    if(sb){
+      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
+      const { error: delError } = await sb.from("faturamento_lancamentos").delete().not("id","is",null);
+      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      try{
+        await sbBulkInsert("faturamento_lancamentos", novos.map(r=>({
+          contrato:r.contrato, nf:r.nf, deadline:r.deadline, doc:r.doc, balsa_viagem:r.balsaViagem, valor:r.valor, vencimento:r.vencimento
+        })));
+        statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+        toast(`✓ ${novos.length} lançamentos importados (salvo no banco)`);
+      }catch(e){
+        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+      }
+    } else {
+      toast(`✓ ${novos.length} lançamentos importados`);
+    }
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message;
+  }
+};
+
+window.submitFaturamento = async () => {
+  const contrato = document.getElementById("eft-contrato").value.trim();
+  const nf = document.getElementById("eft-nf").value.trim();
+  const balsaViagem = document.getElementById("eft-balsa").value.trim();
+  const valor = parseFloat(document.getElementById("eft-valor").value);
+  const deadline = document.getElementById("eft-deadline").value;
+  const vencimento = document.getElementById("eft-vencimento").value;
+  const doc = document.getElementById("eft-doc").value.trim();
+
+  if(isNaN(valor) || !vencimento){ toast("Preencha ao menos valor e vencimento."); return; }
+
+  const novoLancamento = {
+    id: localId(), contrato: contrato || null, nf: nf || null, deadline: deadline || null,
+    doc: doc || null, balsaViagem: balsaViagem || null, valor, vencimento
+  };
+  DATA.faturamento.lancamentos.push(novoLancamento);
+  const undoDescr = prepararDesfazerArrayById("faturamento.lancamentos", novoLancamento.id, "faturamento_lancamentos");
+  logEntry("Faturamento", `${balsaViagem || contrato || "Lançamento"} · ${fmtBRL2(valor)} · vence ${vencimento.split("-").reverse().join("/")}`, undoDescr);
+  renderSessionLog();
+  if(document.querySelector('nav.menu button.active')?.dataset.page === "faturamento") navigate("faturamento");
+
+  if(sb){
+    const { data, error } = await sb.from("faturamento_lancamentos").insert({
+      contrato: contrato || null, nf: nf || null, deadline: deadline || null, doc: doc || null,
+      balsa_viagem: balsaViagem || null, valor, vencimento
+    }).select().single();
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+    novoLancamento.id = data.id; // troca o id local pelo id real do banco
+    undoDescr.itemId = data.id;
+    undoDescr.sbId = data.id;
+    salvarSessionLogLocal();
+  }
+  toast("Lançamento de faturamento adicionado ✓" + (sb ? " (salvo no banco)" : ""));
 };
 
 window.submitCompra = async () => {

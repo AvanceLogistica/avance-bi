@@ -2724,6 +2724,19 @@ const DATA = {
         dataPagamento: null
       }
     ]
+  },
+
+  /* ---------------------------------------------------------------------
+     12. FATURAMENTO - CONTROLE DE CONTRATOS
+     Módulo 100% transacional (sem baseline agregada) — só existe conteúdo depois de
+     importar a planilha "Controle de Contratos_Faturamento" ou lançar um contrato
+     avulso. Cada lançamento: contrato, nf, deadline, doc, balsaViagem, valor,
+     vencimento (é a data usada pra agrupar tudo por mês — ver computarFaturamentoStats
+     em app.js). "Resumo por Balsa/Viagem" agrupa pelo nome antes do " - " (ex:
+     "MELBOURNE - 16029" vira "MELBOURNE").
+  --------------------------------------------------------------------- */
+  faturamento: {
+    lancamentos: []
   }
 
 };
