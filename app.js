@@ -1540,8 +1540,8 @@ initCharts.diesel = () => {
     type:"bar",
     data:{ labels:d.mensalLabels, datasets:datasetsMensal },
     options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display: media2026 != null, position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"line"}},
-        datalabels:{ display:(ctx)=>ctx.datasetIndex===0, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } },
-      layout:{ padding:{ top:18 } },
+        datalabels:{ display:(ctx)=>ctx.datasetIndex===0, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:13, weight:700}, formatter:fmtLabelBRL } },
+      layout:{ padding:{ top:22 } },
       scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}} } }
   });
   mkChart("ch-diesel-semanal", {
