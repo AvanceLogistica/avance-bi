@@ -349,9 +349,61 @@ table td.rank{font-weight:700; color:var(--red-dark);}
   cursor:pointer;
   margin-right:10px;
 }
+
+/* ---------- LOGIN / CADASTRO ---------- */
+body:not(.authed) #sidebar, body:not(.authed) #main{display:none;}
+body.authed #authScreen{display:none;}
+#authScreen{
+  position:fixed; inset:0; z-index:200;
+  background:var(--paper);
+  display:flex; align-items:center; justify-content:center;
+  padding:20px;
+}
+.auth-card{
+  background:var(--card); border:1px solid var(--line); border-radius:16px;
+  padding:32px 30px; width:100%; max-width:380px;
+  box-shadow:0 20px 50px rgba(0,0,0,.08);
+}
+.auth-card .brand{display:flex; align-items:center; gap:10px; margin-bottom:24px;}
+.auth-card .brand .mark{width:34px;height:34px;background:var(--red);border-radius:8px;position:relative;overflow:hidden;flex-shrink:0;}
+.auth-card .brand .mark::after{content:"";position:absolute;width:60px;height:14px;background:#fff;opacity:.18;transform:rotate(-35deg);top:14px;left:-14px;}
+.auth-card .brand b{font-size:15.5px; display:block;}
+.auth-card .brand span{font-size:11px; color:var(--ink-soft);}
+.auth-card h2{font-size:19px; font-weight:800; margin-bottom:18px;}
+.auth-card label{display:flex; flex-direction:column; gap:5px; font-size:11.5px; font-weight:600; color:var(--ink-soft); margin-bottom:14px;}
+.auth-card input{font-family:inherit; font-size:14px; padding:10px 12px; border:1px solid var(--line); border-radius:9px; background:var(--paper); outline:none; width:100%;}
+.auth-card input:focus{border-color:var(--red); background:#fff;}
+.auth-submit{width:100%; background:var(--red); color:#fff; border:none; padding:12px; border-radius:9px; font-size:13.5px; font-weight:700; cursor:pointer; margin-top:4px;}
+.auth-submit:hover{background:var(--red-dark);}
+.auth-submit:disabled{opacity:.6; cursor:default;}
+.auth-error{background:var(--red-soft); color:var(--red-dark); font-size:12px; padding:10px 12px; border-radius:8px; margin-bottom:14px;}
+.auth-msg{background:#E4F5EE; color:var(--green); font-size:12px; padding:10px 12px; border-radius:8px; margin-bottom:14px;}
+.auth-toggle{text-align:center; font-size:12.5px; color:var(--ink-soft); margin-top:16px;}
+.auth-toggle a{color:var(--red); font-weight:700; text-decoration:none; cursor:pointer;}
 </style>
 </head>
 <body>
+
+<div id="authScreen">
+  <div class="auth-card">
+    <div class="brand">
+      <div class="mark"></div>
+      <div class="txt"><b>AVANCE</b><span>Painel de Gestão · BI</span></div>
+    </div>
+    <h2 id="authTitle">Entrar</h2>
+    <div id="authError" class="auth-error" style="display:none;"></div>
+    <div id="authMsg" class="auth-msg" style="display:none;"></div>
+    <form id="authForm" onsubmit="event.preventDefault(); submitAuth();">
+      <label>E-mail<input type="email" id="auth-email" autocomplete="email" required></label>
+      <label>Senha<input type="password" id="auth-password" autocomplete="current-password" required minlength="6"></label>
+      <button type="submit" class="auth-submit" id="authSubmitBtn">Entrar</button>
+    </form>
+    <div class="auth-toggle">
+      <span id="authToggleText">Não tem conta?</span> <a id="authToggleLink" onclick="toggleAuthMode()">Criar conta</a>
+    </div>
+  </div>
+</div>
+
 
 <aside id="sidebar">
   <div class="brand">
@@ -381,8 +433,9 @@ table td.rank{font-weight:700; color:var(--red-dark);}
     <button data-page="contaspagar"><span class="ic">💵</span> Contas a Pagar</button>
   </nav>
   <div class="foot">
-    <b>Fabiano da Silva Ribeiro</b>
+    <b id="authUserEmail">—</b>
     Gestor de Suprimentos · Atualização manual dos dados
+    <a onclick="logout()" style="display:block; margin-top:8px; color:#D7D8E2; text-decoration:underline; cursor:pointer;">Sair</a>
   </div>
 </aside>
 

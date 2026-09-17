@@ -4173,7 +4173,7 @@ function updateSyncPill(){
   }
 }
 
-(async function initApp(){
+async function iniciarPainel(){
   deriveCompras(); // garante que os dados locais (data.js) já estão prontos como base/fallback
   deriveManutencao();
   deriveDiesel();
@@ -4193,4 +4193,94 @@ function updateSyncPill(){
   updateSyncPill();
   const activePage = document.querySelector('nav.menu button.active')?.dataset.page || "overview";
   if(activePage !== "entrada") navigate(activePage);
+}
+
+/* ============================================================================
+   LOGIN / CADASTRO — trava o painel inteiro (sidebar + conteúdo, escondidos via CSS
+   "body:not(.authed)") atrás de e-mail+senha usando a autenticação nativa do Supabase.
+   Sem SUPABASE_URL configurado (sb === null) não tem como autenticar, então libera o painel
+   direto — mesma filosofia "degrada pra modo local" usada no resto do arquivo.
+   ============================================================================ */
+let AUTH_MODE = "login"; // ou "signup"
+let painelIniciado = false;
+
+function traduzErroAuth(msg){
+  const m = (msg||"").toLowerCase();
+  if(m.includes("invalid login credentials")) return "E-mail ou senha incorretos.";
+  if(m.includes("already registered") || m.includes("already exists")) return "Já existe uma conta com esse e-mail — tente entrar.";
+  if(m.includes("password should be at least") || m.includes("password is too short")) return "A senha precisa ter pelo menos 6 caracteres.";
+  if(m.includes("email not confirmed")) return "Confirme seu e-mail antes de entrar (verifique sua caixa de entrada, inclusive o spam).";
+  if(m.includes("email") && m.includes("invalid")) return "E-mail inválido.";
+  if(m.includes("rate limit")) return "Muitas tentativas seguidas — espere um minuto e tente de novo.";
+  if(m.includes("network") || m.includes("fetch")) return "Falha de conexão — confira sua internet e tente de novo.";
+  return msg || "Erro ao processar. Tente novamente.";
+}
+
+window.toggleAuthMode = () => {
+  AUTH_MODE = AUTH_MODE === "login" ? "signup" : "login";
+  document.getElementById("authTitle").textContent = AUTH_MODE === "login" ? "Entrar" : "Criar conta";
+  document.getElementById("authSubmitBtn").textContent = AUTH_MODE === "login" ? "Entrar" : "Criar conta";
+  document.getElementById("authToggleText").textContent = AUTH_MODE === "login" ? "Não tem conta?" : "Já tem conta?";
+  document.getElementById("authToggleLink").textContent = AUTH_MODE === "login" ? "Criar conta" : "Entrar";
+  document.getElementById("authError").style.display = "none";
+  document.getElementById("authMsg").style.display = "none";
+};
+
+window.submitAuth = async () => {
+  const email = document.getElementById("auth-email").value.trim();
+  const password = document.getElementById("auth-password").value;
+  const errEl = document.getElementById("authError"), msgEl = document.getElementById("authMsg"), btn = document.getElementById("authSubmitBtn");
+  errEl.style.display = "none"; msgEl.style.display = "none";
+  if(!sb){ errEl.textContent = "Sem conexão com o banco — não é possível fazer login agora."; errEl.style.display = "block"; return; }
+  if(!email || !password){ errEl.textContent = "Preencha e-mail e senha."; errEl.style.display = "block"; return; }
+
+  btn.disabled = true; btn.textContent = AUTH_MODE === "login" ? "Entrando..." : "Criando conta...";
+  try{
+    if(AUTH_MODE === "login"){
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      if(error) throw error;
+      // sucesso: o listener sb.auth.onAuthStateChange (registrado no boot) cuida de mostrar o painel
+    } else {
+      const { data, error } = await sb.auth.signUp({ email, password });
+      if(error) throw error;
+      if(data.user && !data.session){
+        msgEl.textContent = "Conta criada! Verifique seu e-mail e clique no link de confirmação pra poder entrar.";
+        msgEl.style.display = "block";
+      }
+      // se data.session já vier preenchida (confirmação de e-mail desligada no projeto Supabase), o
+      // listener abaixo já libera o painel direto, sem precisar de mais nada aqui.
+    }
+  }catch(e){
+    errEl.textContent = traduzErroAuth(e.message);
+    errEl.style.display = "block";
+  }finally{
+    btn.disabled = false;
+    btn.textContent = AUTH_MODE === "login" ? "Entrar" : "Criar conta";
+  }
+};
+
+window.logout = async () => {
+  if(sb) await sb.auth.signOut();
+  location.reload(); // reseta todo o estado em memória (DATA, filtros, log da sessão) de uma vez
+};
+
+(async function initAuth(){
+  if(!sb){
+    document.body.classList.add("authed");
+    iniciarPainel();
+    return;
+  }
+  const aplicarSessao = (session) => {
+    if(session){
+      document.body.classList.add("authed");
+      document.getElementById("authUserEmail").textContent = session.user.email;
+      if(!painelIniciado){ painelIniciado = true; iniciarPainel(); }
+    } else {
+      document.body.classList.remove("authed");
+      painelIniciado = false;
+    }
+  };
+  const { data:{ session } } = await sb.auth.getSession();
+  aplicarSessao(session);
+  sb.auth.onAuthStateChange((_event, session) => aplicarSessao(session));
 })();
