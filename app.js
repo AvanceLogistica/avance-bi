@@ -322,6 +322,53 @@ function deltaBadge(pct, invert){
   return `<span class="delta ${cls}">${arrow} ${Math.abs(pct).toFixed(1)}% vs. período anterior</span>`;
 }
 
+/* ============================================================================
+   ANÁLISE AUTOMÁTICA — frases curtas (1-2 orações) exibidas abaixo de cada gráfico, recalculadas
+   a cada render a partir dos dados já filtrados na tela. Três formatos cobrem praticamente todo
+   gráfico do painel: série por período (insightSerie), ranking/top-N (insightRanking) e composição
+   percentual (insightComposicao). "fmt" é sempre a função de formatação já usada no resto da página
+   (fmtBRL, fmtNum, etc.) — pra frase sair no mesmo padrão dos KPIs.
+   ============================================================================ */
+
+// Série por período (mensal, semanal, diária...): destaca o pico e a variação do último ponto em
+// relação ao anterior. skipZeros ignora pontos zerados/nulos ao escolher o pico (evita "pico" bobo
+// quando quase tudo é zero, ex: Acidentes).
+function insightSerie(labels, valores, fmt){
+  const pares = labels.map((l,i)=>({ l, v: valores[i] })).filter(p=>p.v!=null);
+  const comValor = pares.filter(p=>p.v>0);
+  if(comValor.length === 0) return "Nenhuma ocorrência registrada no período.";
+  const pico = comValor.reduce((a,b)=> b.v>a.v ? b : a);
+  let frase = `Pico em ${pico.l}, com ${fmt(pico.v)}.`;
+  if(pares.length >= 2){
+    const ultimo = pares[pares.length-1], anterior = pares[pares.length-2];
+    if(anterior.v){
+      const variacao = (ultimo.v-anterior.v)/anterior.v*100;
+      const dir = variacao >= 0 ? "alta" : "queda";
+      frase += ` ${ultimo.l} teve ${dir} de ${Math.abs(variacao).toFixed(1)}% frente a ${anterior.l}.`;
+    }
+  }
+  return frase;
+}
+
+// Ranking/top-N já ordenado do maior pro menor (fornecedores, motoristas, categorias...): destaca o
+// líder e sua participação % sobre a soma de todos os itens (não só os exibidos no top, se "totalGeral"
+// for passado — usado quando a lista já vem cortada em top 10/12 mas o total real é maior).
+function insightRanking(items, nomeKey, valorKey, fmt, totalGeral){
+  if(!items.length) return "Sem dados no período.";
+  const total = totalGeral != null ? totalGeral : sumArr(items.map(i=>i[valorKey]));
+  const lider = items[0];
+  const pct = total ? (lider[valorKey]/total*100) : 0;
+  return `${lider[nomeKey]} lidera com ${fmt(lider[valorKey])}${total ? ` (${pct.toFixed(0)}% do total)` : ""}.`;
+}
+
+// Composição percentual (doughnut/pizza): destaca a fatia dominante e seu %.
+function insightComposicao(items, nomeKey, valorKey){
+  const total = sumArr(items.map(i=>i[valorKey]));
+  if(!total) return "Sem dados no período.";
+  const maior = [...items].sort((a,b)=>b[valorKey]-a[valorKey])[0];
+  return `${maior[nomeKey]} concentra ${(maior[valorKey]/total*100).toFixed(0)}% do total.`;
+}
+
 /* ---------- Navegação ---------- */
 const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento"];
 const titles = {
@@ -1312,11 +1359,13 @@ renderers.overview = () => {
         <h3>Custo de Hora Extra (R$) — 2025 vs 2026</h3>
         <div class="hint">Comparativo mensal, valores em reais</div>
         <div class="chart-wrap" style="height:260px;"><canvas id="ov-he"></canvas></div>
+        <div class="chart-insight">${insightSerie(he.labels, he.y2026, fmtBRL)}</div>
       </div>
       <div class="panel">
         <h3>Distribuição de Infrações por Tipo</h3>
         <div class="hint">Acumulado 2026</div>
         <div class="chart-wrap" style="height:260px;"><canvas id="ov-inf"></canvas></div>
+        <div class="chart-insight">${insightComposicao(inf.porTipo, "tipo", "valor")}</div>
       </div>
     </div>
 
@@ -1398,11 +1447,13 @@ renderers.manutencao = () => {
         <h3>Custo mensal por serviço</h3>
         <div class="hint">Empilhado — Manutenção Geral, Pintura do Teto e Outros Serviços</div>
         <div class="chart-wrap" style="height:300px;"><canvas id="ch-manut-mensal"></canvas></div>
+        <div class="chart-insight">${insightSerie(m.labels, m.totalGeral, fmtBRL)}</div>
       </div>
       <div class="panel">
         <h3>Composição do custo total</h3>
         <div class="hint">% sobre o total do período</div>
         <div class="chart-wrap" style="height:300px;"><canvas id="ch-manut-comp"></canvas></div>
+        <div class="chart-insight">${insightComposicao(m.composicao, "nome", "valor")}</div>
       </div>
     </div>
     <div class="panel">
@@ -1500,11 +1551,13 @@ renderers.diesel = () => {
     <div class="panel" style="margin-bottom:16px;">
       <h3>Custo mensal (${d.mensalLabels[0]}–${d.mensalLabels[d.mensalLabels.length-1]})</h3>
       <div class="chart-wrap" style="height:280px;"><canvas id="ch-diesel-mensal"></canvas></div>
+      <div class="chart-insight">${insightSerie(d.mensalLabels, d.mensal, fmtBRL)}</div>
     </div>
     <div class="grid-2">
       <div class="panel">
         <h3>Custo semanal (R$ mil)</h3>
         <div class="chart-wrap" style="height:260px;"><canvas id="ch-diesel-semanal"></canvas></div>
+        <div class="chart-insight">${insightSerie(d.semanalLabels, d.semanal_x1000, v=>fmtNum(Math.round(v))+"K")}</div>
       </div>
       <div class="panel">
         <h3>10 maiores caminhões</h3>
@@ -1575,6 +1628,17 @@ renderers.folha = () => {
     { nome:"VT + VR", valor:totalVtVr, pct: totalGeral ? totalVtVr/totalGeral*100 : 0 }
   ];
 
+  // Mesma série (por ano, ignorando o filtro de Mês) que o gráfico principal desenha — replicada aqui
+  // só pra gerar a frase de análise, ver initCharts.folha pra a versão que realmente monta o gráfico.
+  const idxAnoInsight = FILTRO_FOLHA.ano === "todos" ? f.labels.map((_,i)=>i) : filtrarFolhaIndices({ ano:FILTRO_FOLHA.ano, mes:"todos" });
+  const labelsInsight = idxAnoInsight.map(i=>f.labels[i]);
+  const valoresInsight = FILTRO_FOLHA.categoria !== "todos"
+    ? idxAnoInsight.map(i=>f[FILTRO_FOLHA.categoria][i])
+    : idxAnoInsight.map(i=>{
+        const vt=f.vtVr[i], ad=f.ad40[i], sal=f.salario[i];
+        return (vt==null && ad==null && sal==null) ? null : (vt||0)+(ad||0)+(sal||0);
+      });
+
   return `
     <div class="page-head"><h2>Folha · Benefícios + Salário</h2><p>VT/VR, adicional 40% e salário${f.labels.length ? ` — ${f.labels[0]} a ${f.labels[f.labels.length-1]}` : ""}</p></div>
 
@@ -1605,6 +1669,7 @@ renderers.folha = () => {
       <h3>Composição mensal do custo (R$)</h3>
       <div class="hint">VT+VR, 40% adicional e salário — linha preta: custo total do mês (com VT+VR)${FILTRO_FOLHA.categoria!=="todos" ? ` · mostrando só "${categoriaLabel[FILTRO_FOLHA.categoria]}"` : ""}. Passe o mouse sobre uma coluna pra ver os valores.</div>
       <div class="chart-wrap" style="height:400px;"><canvas id="ch-folha"></canvas></div>
+      <div class="chart-insight">${insightSerie(labelsInsight, valoresInsight, fmtBRL)}</div>
     </div>
     <div class="panel">
       <h3>% de Representação no Período</h3>
@@ -1616,6 +1681,7 @@ renderers.folha = () => {
           <tbody>${composicao.map(c=>`<tr><td>${c.nome}</td><td class="num">${fmtBRL2(c.valor)}</td><td class="num">${c.pct.toFixed(1)}%</td></tr>`).join("")}</tbody>
         </table>
       </div>
+      <div class="chart-insight">${insightComposicao(composicao, "nome", "valor")}</div>
     </div>
   `;
 };
@@ -1703,6 +1769,7 @@ renderers.horaextra = () => {
       <div class="panel" style="margin-bottom:16px;">
         <h3>Custo mensal — 2025 vs 2026</h3>
         <div class="chart-wrap" style="height:280px;"><canvas id="ch-he-custo"></canvas></div>
+        <div class="chart-insight">${insightSerie(he.labels, he.y2026, fmtBRL)}</div>
       </div>
       <div class="panel">
         <h3>10 maiores em 2026 (R$)</h3>
@@ -1725,6 +1792,7 @@ renderers.horaextra = () => {
       <div class="panel" style="margin-bottom:16px;">
         <h3>Quantidade de horas extras — 2025 vs 2026</h3>
         <div class="chart-wrap" style="height:280px;"><canvas id="ch-he-qtd"></canvas></div>
+        <div class="chart-insight">${insightSerie(hq.labels, hq.y2026, v=>fmtNum(v)+"h")}</div>
       </div>
       <div class="panel">
         <h3>10 maiores em 2026 (horas)</h3>
@@ -1794,12 +1862,14 @@ renderers.compras = () => {
     <div class="panel" style="margin-bottom:16px;">
       <h3>Custo mensal (R$)</h3>
       <div class="chart-wrap" style="height:280px;"><canvas id="ch-compras-mensal"></canvas></div>
+      <div class="chart-insight">${insightSerie(c.mensalLabels, c.mensal, fmtBRL)}</div>
     </div>
     <div class="grid-2">
       <div class="panel">
         <h3>Custo por categoria</h3>
         <div class="hint">Total acumulado de todos os lançamentos</div>
         <div class="chart-wrap" style="height:260px;"><canvas id="ch-compras-cat"></canvas></div>
+        <div class="chart-insight">${insightRanking(c.porCategoria, "categoria", "valor", fmtBRL2)}</div>
       </div>
       <div class="panel">
         <h3>10 maiores locais</h3>
@@ -1858,6 +1928,7 @@ renderers.atestados = () => {
     <div class="panel" style="margin-bottom:16px;">
       <h3>Ocorrências por mês</h3>
       <div class="chart-wrap" style="height:260px;"><canvas id="ch-atest-mensal"></canvas></div>
+      <div class="chart-insight">${insightSerie(at.labels, at.ocorrencias, fmtNum)}</div>
     </div>
     <div class="grid-2">
       <div class="panel">
@@ -1908,10 +1979,12 @@ renderers.infracoes = () => {
       <div class="panel">
         <h3>Ocorrências mensais</h3>
         <div class="chart-wrap" style="height:260px;"><canvas id="ch-inf-mensal"></canvas></div>
+        <div class="chart-insight">${insightSerie(inf.labels, inf.ocorrencias, fmtNum)}</div>
       </div>
       <div class="panel">
         <h3>Por tipo de infração</h3>
         <div class="chart-wrap" style="height:260px;"><canvas id="ch-inf-tipo"></canvas></div>
+        <div class="chart-insight">${insightComposicao(inf.porTipo, "tipo", "valor")}</div>
       </div>
     </div>
     <div class="grid-2">
@@ -1934,6 +2007,7 @@ renderers.infracoes = () => {
       <h3>Ocorrências diárias — últimos registros</h3>
       <div class="hint">Detalhe complementar por turno (não soma automaticamente no total mensal)</div>
       <div class="chart-wrap" style="height:220px;"><canvas id="ch-inf-junho"></canvas></div>
+      <div class="chart-insight">${insightSerie(inf.diario.labels.slice(-14), inf.diario.labels.slice(-14).map((_,i)=>{ const t1=inf.diario.turno1.slice(-14)[i], t2=inf.diario.turno2.slice(-14)[i]; return (t1||0)+(t2||0); }), fmtNum)}</div>
     </div>
   `;
 };
@@ -1996,16 +2070,19 @@ renderers.entregas = () => {
       <div class="panel">
         <h3>Demonstrativo em Valor R$ (mensal)</h3>
         <div class="chart-wrap" style="height:260px;"><canvas id="ch-ent-mensal"></canvas></div>
+        <div class="chart-insight">${insightSerie(e.mensalLabels, e.mensalValor, fmtBRL)}</div>
       </div>
       <div class="panel">
         <h3>Tipo de Serviço</h3>
         <div class="hint">% sobre o valor total</div>
         <div class="chart-wrap" style="height:260px;"><canvas id="ch-ent-tipo"></canvas></div>
+        <div class="chart-insight">${insightComposicao(e.porTipo, "tipo", "valor")}</div>
       </div>
     </div>
     <div class="panel" style="margin-bottom:16px;">
       <h3>Demonstrativo em Quantidade (por quinzena)</h3>
       <div class="chart-wrap" style="height:260px;"><canvas id="ch-ent-quinzena"></canvas></div>
+      <div class="chart-insight">${insightSerie(e.quinzenaLabels, e.quinzenaQtd, fmtNum)}</div>
     </div>
     <div class="grid-2">
       <div class="panel">
@@ -2075,6 +2152,7 @@ renderers.acidentes = () => {
     <div class="panel" style="margin-bottom:16px;">
       <h3>Demonstrativo mensal</h3>
       <div class="chart-wrap" style="height:220px;"><canvas id="ch-acidentes"></canvas></div>
+      <div class="chart-insight">${insightSerie(ac.labels, ac.valores, fmtNum)}</div>
     </div>
     <div class="panel">
       <h3>Plano de ação</h3>
@@ -2200,16 +2278,19 @@ renderers.contaspagar = () => {
       <div class="panel">
         <h3>Valores por Mês: Total, Pago e A Pagar</h3>
         <div class="chart-wrap" style="height:280px;"><canvas id="ch-cp-mensal"></canvas></div>
+        <div class="chart-insight">${insightSerie(statsMensal.mesesLabels, statsMensal.totalMes, fmtBRL)}</div>
       </div>
       <div class="panel">
         <h3>Quantidade de Contas por Mês</h3>
         <div class="chart-wrap" style="height:280px;"><canvas id="ch-cp-qtdmes"></canvas></div>
+        <div class="chart-insight">${insightSerie(statsMensal.mesesLabels, statsMensal.qtdMes, fmtNum)}</div>
       </div>
     </div>
     <div class="panel" style="margin-bottom:16px;">
       <h3>Previsto x Pago (mensal)</h3>
       <div class="hint">Total previsto x total já pago, mês a mês</div>
       <div class="chart-wrap" style="height:260px;"><canvas id="ch-cp-previstopago"></canvas></div>
+      <div class="chart-insight">${(()=>{ const totG=sumArr(statsMensal.totalMes), pagoG=sumArr(statsMensal.pagoMes); return totG ? `${fmtBRL(pagoG)} pagos de ${fmtBRL(totG)} no período (${(pagoG/totG*100).toFixed(0)}%).` : "Sem dados no período."; })()}</div>
     </div>
 
     <div class="grid-2">
@@ -2217,6 +2298,7 @@ renderers.contaspagar = () => {
         <h3>Custo por tipo de serviço</h3>
         <div class="hint">Considera os filtros acima (Ano/Mês/Status/Fornecedor/Tipo)</div>
         <div class="chart-wrap" style="height:260px;"><canvas id="ch-cp-tipo"></canvas></div>
+        <div class="chart-insight">${insightRanking(statsFiltrado.porTipoArr, "tipo", "valor", fmtBRL2)}</div>
       </div>
       <div class="panel">
         <h3>Maiores fornecedores</h3>
@@ -2321,10 +2403,12 @@ renderers.faturamento = () => {
       <div class="panel">
         <h3>Faturamento por Mês</h3>
         <div class="chart-wrap" style="height:280px;"><canvas id="ch-ft-mensal"></canvas></div>
+        <div class="chart-insight">${insightSerie(statsMensal.mesesLabels, statsMensal.valorMes, fmtBRL)}</div>
       </div>
       <div class="panel">
         <h3>Quantidade de Lançamentos por Mês</h3>
         <div class="chart-wrap" style="height:280px;"><canvas id="ch-ft-qtdmes"></canvas></div>
+        <div class="chart-insight">${insightSerie(statsMensal.mesesLabels, statsMensal.qtdMes, fmtNum)}</div>
       </div>
     </div>
 
@@ -2333,6 +2417,7 @@ renderers.faturamento = () => {
         <h3>Resumo por Balsa/Viagem — Top 12</h3>
         <div class="hint">Considera os filtros acima (Ano/Mês/Balsa)</div>
         <div class="chart-wrap" style="height:320px;"><canvas id="ch-ft-balsa"></canvas></div>
+        <div class="chart-insight">${insightRanking(statsFiltrado.porBalsaArr, "nome", "valor", fmtBRL2)}</div>
       </div>
       <div class="panel">
         <h3>Ranking completo por Balsa/Viagem</h3>
