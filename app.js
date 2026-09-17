@@ -1521,11 +1521,26 @@ renderers.diesel = () => {
 };
 initCharts.diesel = () => {
   const d = dieselView || DATA.diesel;
+  // Média de 2026 pra desenhar como linha de referência por cima das barras — só entra se o recorte
+  // atual (Todos/2025/2026) realmente tiver algum mês de 2026 pra calcular em cima.
+  const valores2026 = d.mensalLabels.map((l,i)=>l.endsWith("/26") ? d.mensal[i] : null).filter(v=>v!=null);
+  const media2026 = valores2026.length ? sumArr(valores2026)/valores2026.length : null;
+
+  const datasetsMensal = [
+    { label:"Custo Mensal", data:d.mensal, backgroundColor:d.mensal.map(v=>v===Math.max(...d.mensal)?COLORS.redDark:COLORS.red), borderRadius:5 }
+  ];
+  if(media2026 != null){
+    datasetsMensal.push({
+      type:"line", label:`Média 2026 (${fmtBRL2(media2026)})`, data:d.mensalLabels.map(()=>media2026),
+      borderColor:COLORS.ink, borderDash:[6,4], borderWidth:2, pointRadius:0, fill:false,
+      datalabels:{ display:false }
+    });
+  }
   mkChart("ch-diesel-mensal", {
     type:"bar",
-    data:{ labels:d.mensalLabels, datasets:[{ data:d.mensal, backgroundColor:d.mensal.map(v=>v===Math.max(...d.mensal)?COLORS.redDark:COLORS.red), borderRadius:5 }]},
-    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
-        datalabels:{ display:true, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } },
+    data:{ labels:d.mensalLabels, datasets:datasetsMensal },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display: media2026 != null, position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"line"}},
+        datalabels:{ display:(ctx)=>ctx.datasetIndex===0, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelBRL } },
       layout:{ padding:{ top:18 } },
       scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}} } }
   });
