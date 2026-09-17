@@ -1466,7 +1466,7 @@ initCharts.manutencao = () => {
     ]},
     options:{ responsive:true, maintainAspectRatio:false,
       plugins:{legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
-        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex] > 8000, color:"#fff", font:{size:9, weight:700}, formatter:fmtLabelBRL } },
+        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex] > 8000, color:"#fff", font:{size:13, weight:700}, formatter:fmtLabelBRL } },
       scales:{ x:{stacked:true, grid:{display:false}}, y:{stacked:true, grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}} } }
   });
   const totalComp = sumArr(m.composicao.map(c=>c.valor));
