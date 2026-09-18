@@ -370,12 +370,14 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento"];
+const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","acessos"];
+const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","acessos"];
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
   faturamento: ["Faturamento","Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem"],
+  acessos: ["Gestão de Acessos","Libere ou altere o perfil de cada pessoa cadastrada no sistema"],
   entregas: ["Entregas","Coletas e entregas — receita, viagens e ranking por motorista, cliente e transportadora"],
   manutencao: ["Manutenção de Carreta","Custos de manutenção geral, pintura e outros serviços"],
   diesel: ["Diesel","Custo de abastecimento mensal, semanal e por veículo"],
@@ -401,6 +403,9 @@ function mkChart(id, config){
 }
 
 function navigate(page){
+  // Reforço além de esconder os botões no menu: mesmo se alguém forçar a navegação (ex: console do
+  // navegador), quem não é Diretor cai de volta no Painel Executivo.
+  if(PAGINAS_SO_DIRETOR.includes(page) && MEU_PAPEL !== "diretor") page = "overview";
   document.getElementById("pageTitle").textContent = titles[page][0];
   document.getElementById("pageSub").textContent = titles[page][1];
   document.querySelectorAll("nav.menu button").forEach(b=>{
@@ -1340,7 +1345,7 @@ renderers.overview = () => {
       <p>Clique em qualquer indicador abaixo para abrir o módulo completo, com gráficos, tabelas e rankings.</p>
     </div>
     <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit, minmax(230px,1fr));">
-      ${cards.map(c=>`
+      ${cards.filter(c=>!PAGINAS_SO_DIRETOR.includes(c.page) || MEU_PAPEL==="diretor").map(c=>`
         <div class="overview-card" onclick="navigate('${c.page}')">
           <div class="top">
             <div class="ic">${c.ic}</div>
@@ -2522,6 +2527,11 @@ const ENTRY_MODULES = [
   { key:"infracoes", ic:"🚨", label:"Infrações", desc:"Importação de planilha ou lançamento avulso por ocorrência" },
   { key:"acidentes", ic:"⚠️", label:"Acidentes & Incidentes", desc:"Ocorrências mensais ou registro de problema/ação" }
 ];
+// Quem não é Diretor não vê as abas de Contas a Pagar/Faturamento na Entrada de Dados — mesma
+// restrição do menu lateral, só que aplicada às abas dessa tela.
+function entryModulesVisiveis(){
+  return MEU_PAPEL === "diretor" ? ENTRY_MODULES : ENTRY_MODULES.filter(m=>!PAGINAS_SO_DIRETOR.includes(m.key));
+}
 
 const CATEGORIAS_COMPRAS = ["💡 ELÉTRICA","🧱 ESTRUTURA / CABINE","🚛 SUSPENSÃO / AR","🔧 PEÇAS MECÂNICAS","🛢️ FILTROS E LUBRIFICANTES","🧪 QUÍMICOS / CONSUMO","🧰 FIXAÇÃO / METAIS","🧼 LIMPEZA / EPI","⚙️ SERVIÇOS"];
 const MANUTENCAO_SERVICOS = ["Manutenção Geral","Pintura do Teto","Outros Serviços"];
@@ -2553,13 +2563,13 @@ renderers.entrada = () => `
   </div>`}
 
   <div class="tabs" id="entryModTabs">
-    ${ENTRY_MODULES.map((m,i)=>`<button class="tab-btn ${i===0?"active":""}" data-mod="${m.key}">${m.ic} ${m.label}</button>`).join("")}
+    ${entryModulesVisiveis().map((m,i)=>`<button class="tab-btn ${i===0?"active":""}" data-mod="${m.key}">${m.ic} ${m.label}</button>`).join("")}
   </div>
 
   <div class="grid-2">
     <div class="panel">
-      <h3 id="entryFormTitle">${ENTRY_MODULES[0].ic} ${ENTRY_MODULES[0].label}</h3>
-      <div class="hint" id="entryFormDesc">${ENTRY_MODULES[0].desc}</div>
+      <h3 id="entryFormTitle">${entryModulesVisiveis()[0].ic} ${entryModulesVisiveis()[0].label}</h3>
+      <div class="hint" id="entryFormDesc">${entryModulesVisiveis()[0].desc}</div>
       <div id="entryFormArea"></div>
     </div>
     <div class="panel">
@@ -2852,6 +2862,7 @@ const ENTRY_FORMS = {
 };
 
 function mountEntryForm(mod){
+  if(PAGINAS_SO_DIRETOR.includes(mod) && MEU_PAPEL !== "diretor") mod = entryModulesVisiveis()[0].key;
   const meta = ENTRY_MODULES.find(m=>m.key===mod);
   document.getElementById("entryFormTitle").textContent = `${meta.ic} ${meta.label}`;
   document.getElementById("entryFormDesc").textContent = meta.desc;
@@ -4149,7 +4160,7 @@ async function gravarEventosDiarios(rows, nomeModulo){
 }
 
 initCharts.entrada = () => {
-  mountEntryForm(ENTRY_MODULES[0].key);
+  mountEntryForm(entryModulesVisiveis()[0].key);
   renderSessionLog();
   document.getElementById("entryModTabs").addEventListener("click", (e)=>{
     const btn = e.target.closest(".tab-btn");
@@ -4203,6 +4214,7 @@ async function iniciarPainel(){
    ============================================================================ */
 let AUTH_MODE = "login"; // ou "signup"
 let painelIniciado = false;
+let MEU_PAPEL = null; // "diretor" | "operacional" | null (ainda sem perfil atribuído)
 
 function traduzErroAuth(msg){
   const m = (msg||"").toLowerCase();
@@ -4264,23 +4276,105 @@ window.logout = async () => {
   location.reload(); // reseta todo o estado em memória (DATA, filtros, log da sessão) de uma vez
 };
 
+// Aplica/remove a visibilidade dos itens do menu marcados com data-requer="diretor" (grupo
+// Financeiro + Gestão de Acessos) de acordo com o perfil da pessoa logada.
+function aplicarRestricoesDePapel(){
+  const souDiretor = MEU_PAPEL === "diretor";
+  document.querySelectorAll('[data-requer="diretor"]').forEach(el=>{
+    el.style.display = souDiretor ? "" : "none";
+  });
+}
+
+/* -------------------- GESTÃO DE ACESSOS (só Diretor) -------------------- */
+renderers.acessos = () => `
+  <div class="page-head"><h2>Gestão de Acessos</h2><p>Libere ou altere o perfil de cada pessoa que já se cadastrou no site</p></div>
+  <div class="panel">
+    <div id="acessosArea"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando usuários...</p></div></div>
+  </div>
+`;
+initCharts.acessos = () => { carregarGestaoAcessos(); };
+
+async function carregarGestaoAcessos(){
+  const area = document.getElementById("acessosArea");
+  if(!area || !sb) return;
+  const { data, error } = await sb.rpc("listar_usuarios_para_gestao");
+  if(error){
+    area.innerHTML = `<div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><p>Não foi possível carregar a lista de usuários (${error.message}). Se o erro falar em função inexistente, confira se rodou o <code>supabase_user_roles.sql</code> no Supabase.</p></div>`;
+    return;
+  }
+  if(!data.length){
+    area.innerHTML = `<div class="empty-state" style="padding:24px;"><div class="glyph">👤</div><p>Ninguém se cadastrou ainda.</p></div>`;
+    return;
+  }
+  area.innerHTML = `
+    <table>
+      <thead><tr><th>E-mail</th><th>Cadastro</th><th>Perfil</th><th></th></tr></thead>
+      <tbody>
+        ${data.map(u=>`<tr>
+          <td>${u.email}</td>
+          <td>${fmtDataBR(u.criado_em.slice(0,10))}</td>
+          <td>
+            <select id="papel-${u.user_id}">
+              <option value="sem_perfil" ${u.papel==="sem_perfil"?"selected":""}>Sem perfil (aguardando)</option>
+              <option value="operacional" ${u.papel==="operacional"?"selected":""}>Operacional</option>
+              <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
+            </select>
+          </td>
+          <td><button onclick="salvarPapelUsuario('${u.user_id}','${u.email}')" style="background:var(--red); color:#fff; border:none; padding:6px 12px; border-radius:6px; font-size:11.5px; font-weight:700; cursor:pointer;">Salvar</button></td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+window.salvarPapelUsuario = async (userId, email) => {
+  const sel = document.getElementById(`papel-${userId}`);
+  const papel = sel.value;
+  if(papel === "sem_perfil"){
+    const { error } = await sb.from("user_roles").delete().eq("user_id", userId);
+    if(error){ toast("⚠ Falha ao remover acesso: " + error.message); return; }
+    toast(`Acesso de ${email} removido`);
+  } else {
+    const { error } = await sb.from("user_roles").upsert({ user_id:userId, email, papel });
+    if(error){ toast("⚠ Falha ao salvar: " + error.message); return; }
+    toast(`${email} agora é ${papel === "diretor" ? "Diretor" : "Operacional"} ✓`);
+  }
+  carregarGestaoAcessos();
+};
+
 (async function initAuth(){
   if(!sb){
     document.body.classList.add("authed");
     iniciarPainel();
     return;
   }
-  const aplicarSessao = (session) => {
-    if(session){
-      document.body.classList.add("authed");
-      document.getElementById("authUserEmail").textContent = session.user.email;
-      if(!painelIniciado){ painelIniciado = true; iniciarPainel(); }
-    } else {
-      document.body.classList.remove("authed");
+  const aplicarSessao = async (session) => {
+    if(!session){
+      document.body.classList.remove("authed","pending");
       painelIniciado = false;
+      MEU_PAPEL = null;
+      return;
     }
+    // Descobre o perfil (Diretor/Operacional) atribuído a essa pessoa — se ainda não tiver nenhum,
+    // fica na tela de "aguardando liberação" em vez de entrar direto no painel (cadastro é aberto,
+    // mas o ACESSO às telas depende de um Diretor liberar depois).
+    const { data: roleRow } = await sb.from("user_roles").select("papel").eq("user_id", session.user.id).maybeSingle();
+    if(!roleRow){
+      document.body.classList.remove("authed");
+      document.body.classList.add("pending");
+      document.getElementById("pendingUserEmail").textContent = session.user.email;
+      painelIniciado = false;
+      MEU_PAPEL = null;
+      return;
+    }
+    MEU_PAPEL = roleRow.papel;
+    document.body.classList.remove("pending");
+    document.body.classList.add("authed");
+    document.getElementById("authUserEmail").textContent = session.user.email;
+    aplicarRestricoesDePapel();
+    if(!painelIniciado){ painelIniciado = true; iniciarPainel(); }
   };
   const { data:{ session } } = await sb.auth.getSession();
-  aplicarSessao(session);
+  await aplicarSessao(session);
   sb.auth.onAuthStateChange((_event, session) => aplicarSessao(session));
 })();

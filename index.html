@@ -353,12 +353,20 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 /* ---------- LOGIN / CADASTRO ---------- */
 body:not(.authed) #sidebar, body:not(.authed) #main{display:none;}
 body.authed #authScreen{display:none;}
+body.pending #authScreen{display:none;}
 #authScreen{
   position:fixed; inset:0; z-index:200;
   background:var(--paper);
   display:flex; align-items:center; justify-content:center;
   padding:20px;
 }
+#pendingScreen{
+  position:fixed; inset:0; z-index:200;
+  background:var(--paper);
+  display:none; align-items:center; justify-content:center;
+  padding:20px;
+}
+body.pending #pendingScreen{display:flex;}
 .auth-card{
   background:var(--card); border:1px solid var(--line); border-radius:16px;
   padding:32px 30px; width:100%; max-width:380px;
@@ -404,6 +412,22 @@ body.authed #authScreen{display:none;}
   </div>
 </div>
 
+<div id="pendingScreen">
+  <div class="auth-card">
+    <div class="brand">
+      <div class="mark"></div>
+      <div class="txt"><b>AVANCE</b><span>Painel de Gestão · BI</span></div>
+    </div>
+    <h2>Aguardando liberação</h2>
+    <p style="font-size:13px; color:var(--ink-soft); line-height:1.5; margin-bottom:16px;">
+      Seu e-mail foi confirmado, mas ainda não tem acesso liberado às telas do painel.
+      Peça pra um Diretor liberar seu acesso em <b>Gestão de Acessos</b>.
+    </p>
+    <div style="font-size:12px; color:var(--ink-soft); margin-bottom:18px;">Logado como <b id="pendingUserEmail">—</b></div>
+    <a onclick="logout()" class="auth-submit" style="display:block; text-align:center; text-decoration:none; box-sizing:border-box;">Sair</a>
+  </div>
+</div>
+
 
 <aside id="sidebar">
   <div class="brand">
@@ -428,9 +452,12 @@ body.authed #authScreen{display:none;}
     <button data-page="horaextra"><span class="ic">⏱️</span> Hora Extra</button>
     <button data-page="atestados"><span class="ic">🩺</span> Atestados</button>
 
-    <div class="grp-label">Financeiro</div>
-    <button data-page="faturamento"><span class="ic">🧾</span> Faturamento</button>
-    <button data-page="contaspagar"><span class="ic">💵</span> Contas a Pagar</button>
+    <div class="grp-label" data-requer="diretor">Financeiro</div>
+    <button data-page="faturamento" data-requer="diretor"><span class="ic">🧾</span> Faturamento</button>
+    <button data-page="contaspagar" data-requer="diretor"><span class="ic">💵</span> Contas a Pagar</button>
+
+    <div class="grp-label" data-requer="diretor">Administração</div>
+    <button data-page="acessos" data-requer="diretor"><span class="ic">🔐</span> Gestão de Acessos</button>
   </nav>
   <div class="foot">
     <b id="authUserEmail">—</b>
