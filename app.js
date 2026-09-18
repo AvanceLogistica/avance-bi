@@ -46,6 +46,7 @@ const sb = (typeof supabase !== "undefined" && typeof SUPABASE_URL !== "undefine
   ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
   : null;
 let SUPABASE_SINCRONIZADO = false; // true assim que carregarmos dados reais do banco com sucesso
+let SUPABASE_FALHA_CONEXAO = false; // true quando uma busca no banco falhou por conexão (projeto pausado, sem internet...), não porque a tabela está genuinamente vazia
 
 async function sbFetchAll(table){
   if(!sb) return [];
@@ -53,7 +54,10 @@ async function sbFetchAll(table){
   const pageSize = 1000;
   while(true){
     const { data, error } = await sb.from(table).select("*").range(from, from + pageSize - 1);
-    if(error){ console.warn("Erro ao buscar", table, error); break; }
+    // Erro aqui quase sempre é falha de conexão (projeto Supabase pausado, sem internet, etc.), não
+    // "a tabela existe mas está vazia" — guarda isso separado pra updateSyncPill() não confundir os
+    // dois casos e dizer "banco vazio" quando na real os dados estão lá, só não deu pra buscar.
+    if(error){ console.warn("Erro ao buscar", table, error); SUPABASE_FALHA_CONEXAO = true; break; }
     all = all.concat(data);
     if(!data.length || data.length < pageSize) break;
     from += pageSize;
@@ -108,6 +112,7 @@ function applyEventosDiarios(rows){
 // Busca tudo do banco e substitui/atualiza o DATA local. Retorna true se havia dados no banco.
 async function loadFromSupabase(){
   if(!sb) return false;
+  SUPABASE_FALHA_CONEXAO = false; // reseta a cada tentativa — só fica true se alguma busca desta rodada falhar
   try{
     const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc, ftLanc] = await Promise.all([
       sbFetchAll("compras_lancamentos"),
@@ -177,6 +182,7 @@ async function loadFromSupabase(){
     return true;
   }catch(e){
     console.warn("Falha ao carregar do Supabase, mantendo dados locais:", e);
+    SUPABASE_FALHA_CONEXAO = true;
     return false;
   }
 }
@@ -4177,6 +4183,11 @@ function updateSyncPill(){
   if(!el) return;
   if(!sb){
     el.innerHTML = `<span class="dot" style="background:var(--inkSoft);"></span> Modo local (sem banco configurado)`;
+  } else if(SUPABASE_FALHA_CONEXAO){
+    // Não confundir com "banco vazio" — os dados provavelmente estão lá, só não deu pra buscar agora
+    // (caso mais comum: projeto do Supabase pausado por inatividade no plano gratuito). Reimportar uma
+    // planilha aqui não resolve nada; é preciso reconectar o banco primeiro.
+    el.innerHTML = `<span class="dot" style="background:var(--red);"></span> Falha ao conectar no banco — dados podem estar desatualizados, tente recarregar a página`;
   } else if(SUPABASE_SINCRONIZADO){
     el.innerHTML = `<span class="dot"></span> Conectado ao banco`;
   } else {
