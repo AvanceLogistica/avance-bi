@@ -39,7 +39,9 @@ language plpgsql security definer
 set search_path = public
 as $$
 begin
-  if not exists (select 1 from user_roles where user_id = auth.uid() and papel = 'diretor') then
+  -- "user_id" sozinho aqui é ambíguo (bate com a coluna de retorno da função E com a coluna da
+  -- tabela) — precisa qualificar com o nome da tabela pra não dar erro "column reference is ambiguous".
+  if not exists (select 1 from user_roles where user_roles.user_id = auth.uid() and user_roles.papel = 'diretor') then
     raise exception 'Acesso negado — só um Diretor pode listar os usuários.';
   end if;
   return query
