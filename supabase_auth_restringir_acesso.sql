@@ -28,6 +28,14 @@ begin
     'faturamento_lancamentos'
   ]
   loop
+    -- pula tabela que ainda não foi criada nesse projeto (ex: infracoes_lancamentos, cujo script de
+    -- criação existe no repositório mas pode nunca ter sido rodado) — sem isso o comando inteiro
+    -- aborta no meio e nenhuma das outras tabelas chega a ser corrigida.
+    if to_regclass('public.' || t) is null then
+      raise notice 'tabela % nao existe, pulando', t;
+      continue;
+    end if;
+
     -- remove TODAS as permissões existentes na tabela, seja qual for o nome ou o perfil delas
     for pol in select policyname from pg_policies where schemaname = 'public' and tablename = t loop
       execute format('drop policy if exists %I on %I', pol.policyname, t);
