@@ -1,0 +1,28 @@
+name: Keep Supabase Alive
+
+# O projeto Supabase (plano gratuito) pausa sozinho depois de um tempo sem nenhuma atividade na API,
+# e enquanto pausado o site não consegue ler nem gravar nada. Esse workflow só faz uma consulta bem
+# pequena de tempos em tempos pra manter o projeto "ativo" e evitar essa pausa automática.
+#
+# A chave usada aqui (apikey) é a mesma chave pública "anon" que já fica exposta no código do site
+# (supabase-config.js) — segura por natureza, a proteção real dos dados vem das políticas de acesso
+# (RLS) configuradas no banco.
+
+on:
+  schedule:
+    - cron: "0 9 */3 * *" # a cada ~3 dias, bem dentro da janela de inatividade que causa a pausa
+  workflow_dispatch: {} # permite rodar manualmente em Actions > Keep Supabase Alive > Run workflow
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API
+        run: |
+          http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://fzubpjdrmxahwonfnenl.supabase.co/rest/v1/contas_pagar?select=id&limit=1" \
+            -H "apikey: sb_publishable_HzeaT7X-wNg_20_CHNlW9g_ocwv45N7")
+          echo "Supabase respondeu HTTP $http_code"
+          if [ "$http_code" != "200" ]; then
+            echo "::warning::Supabase não respondeu 200 (respondeu $http_code) — confira se o projeto está pausado."
+          fi
