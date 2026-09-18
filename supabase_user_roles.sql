@@ -14,6 +14,21 @@ create table if not exists user_roles (
 
 alter table user_roles enable row level security;
 
+-- Função auxiliar pra saber se quem está logado é diretor. Precisa ser "security definer" (roda com
+-- privilégio elevado) de propósito: assim a consulta interna dela NÃO aciona de novo as políticas de
+-- RLS da própria user_roles. Sem isso, a política de escrita abaixo entraria num loop infinito —
+-- "para checar se posso escrever, preciso ler a tabela; pra ler a tabela, preciso checar a política de
+-- escrita; ..." — e é exatamente esse loop que estava causando o erro "infinite recursion detected in
+-- policy for relation user_roles" (e por tabela nenhuma consulta funcionava, nem a de ler o próprio perfil).
+create or replace function eh_diretor()
+returns boolean
+language sql security definer
+stable
+set search_path = public
+as $$
+  select exists (select 1 from user_roles where user_id = auth.uid() and papel = 'diretor');
+$$;
+
 drop policy if exists "user_roles_select_own" on user_roles;
 drop policy if exists "user_roles_write_diretor" on user_roles;
 
@@ -25,8 +40,8 @@ create policy "user_roles_select_own" on user_roles for select
 -- próprio) — assim ninguém consegue se auto-promover, e só um diretor já existente pode liberar
 -- acesso de gente nova.
 create policy "user_roles_write_diretor" on user_roles for all
-  using (exists (select 1 from user_roles ur where ur.user_id = auth.uid() and ur.papel = 'diretor'))
-  with check (exists (select 1 from user_roles ur where ur.user_id = auth.uid() and ur.papel = 'diretor'));
+  using (eh_diretor())
+  with check (eh_diretor());
 
 -- Função usada pela tela "Gestão de Acessos": lista todo mundo que já se cadastrou (auth.users),
 -- junto com o perfil de cada um (ou "sem_perfil" pra quem ainda está aguardando liberação). Roda com
