@@ -74,6 +74,32 @@ async function sbBulkInsert(table, rows){
   }
 }
 
+// Aviso grande e vermelho de "não salvou no banco". Antes essa falha aparecia como uma linha de texto
+// cinza no rodapé da caixa de importação e passava batida — a pessoa via os dados na tela, achava que
+// tinha dado certo, e só descobria que não tinha salvo ao recarregar a página e ver tudo "sumir".
+function avisoFalhaGravacao(e){
+  return `<br><b style="color:var(--red-dark);">⚠ ATENÇÃO: a importação NÃO foi salva no banco de dados.</b>` +
+    `<br>Os números aparecem na tela agora, mas somem quando você recarregar a página. O histórico que já estava no banco continua intacto.` +
+    `<br>Motivo técnico: ${e && e.message ? e.message : e}`;
+}
+
+// Troca TODO o conteúdo de uma tabela pelo conteúdo novo de uma importação, na ordem segura:
+// grava o novo PRIMEIRO e só depois apaga o antigo. A ordem importa muito — do jeito anterior
+// (apagar tudo e depois inserir), qualquer falha no meio da inserção deixava a tabela vazia e o
+// histórico era perdido de vez. Assim, se a inserção falhar, o dado antigo continua intacto e a
+// importação inteira é abortada com erro; no pior caso (falha só ao limpar o antigo) sobram linhas
+// duplicadas, que dá pra resolver reimportando — nunca perda de dados.
+async function sbSubstituirTabela(table, rows){
+  const antigos = await sbFetchAll(table);
+  await sbBulkInsert(table, rows); // se falhar aqui, lança e o antigo segue no lugar
+  const idsAntigos = antigos.map(r=>r.id).filter(Boolean);
+  const chunkSize = 200; // ids vão na URL do DELETE, então não dá pra mandar milhares de uma vez
+  for(let i=0;i<idsAntigos.length;i+=chunkSize){
+    const { error } = await sb.from(table).delete().in("id", idsAntigos.slice(i, i+chunkSize));
+    if(error) throw error;
+  }
+}
+
 function setMonthValue(arr, label, val, labelsArr){
   const labels = labelsArr || MONTH_ABBR;
   const idx = labels.indexOf(label);
@@ -3157,15 +3183,14 @@ window.importComprasXlsx = async () => {
     if(document.querySelector('nav.menu button.active')?.dataset.page === "compras") navigate("compras");
 
     if(sb){
-      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
-      const { error: delError } = await sb.from("compras_lancamentos").delete().not("id","is",null);
-      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
       try{
-        await sbBulkInsert("compras_lancamentos", novos.map(r=>({ data:r.d, placa:r.p, local:r.l, categoria:r.c, item:r.i, valor:r.v })));
+        await sbSubstituirTabela("compras_lancamentos", novos.map(r=>({ data:r.d, placa:r.p, local:r.l, categoria:r.c, item:r.i, valor:r.v })));
         statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
         toast(`✓ ${novos.length} lançamentos importados (salvo no banco)`);
       }catch(e){
-        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+        statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+        toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
       }
     } else {
       toast(`✓ ${novos.length} lançamentos importados`);
@@ -3270,15 +3295,14 @@ window.importManutencaoXlsx = async () => {
     if(document.querySelector('nav.menu button.active')?.dataset.page === "manutencao") navigate("manutencao");
 
     if(sb){
-      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
-      const { error: delError } = await sb.from("manutencao_lancamentos").delete().not("id","is",null);
-      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
       try{
-        await sbBulkInsert("manutencao_lancamentos", novos.map(r=>({ data:r.d, placa:r.placa, local:r.local, nf:r.nf, os:r.os, frota:r.frota, servico:r.servico, status:r.status, valor:r.v })));
+        await sbSubstituirTabela("manutencao_lancamentos", novos.map(r=>({ data:r.d, placa:r.placa, local:r.local, nf:r.nf, os:r.os, frota:r.frota, servico:r.servico, status:r.status, valor:r.v })));
         statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
         toast(`✓ ${novos.length} lançamentos importados (salvo no banco)`);
       }catch(e){
-        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+        statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+        toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
       }
     } else {
       toast(`✓ ${novos.length} lançamentos importados`);
@@ -3380,15 +3404,14 @@ window.importDieselXlsx = async () => {
     if(document.querySelector('nav.menu button.active')?.dataset.page === "diesel") navigate("diesel");
 
     if(sb){
-      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
-      const { error: delError } = await sb.from("diesel_abastecimentos").delete().not("id","is",null);
-      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
       try{
-        await sbBulkInsert("diesel_abastecimentos", novos.map(r=>({ data:r.d, placa:r.placa, km:r.km, litros:r.litros, valor_unitario:r.valorUnit, valor:r.v, motorista:r.motorista, posto:r.posto, status:r.status })));
+        await sbSubstituirTabela("diesel_abastecimentos", novos.map(r=>({ data:r.d, placa:r.placa, km:r.km, litros:r.litros, valor_unitario:r.valorUnit, valor:r.v, motorista:r.motorista, posto:r.posto, status:r.status })));
         statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
         toast(`✓ ${novos.length} abastecimentos importados (salvo no banco)`);
       }catch(e){
-        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+        statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+        toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
       }
     } else {
       toast(`✓ ${novos.length} abastecimentos importados`);
@@ -3482,15 +3505,14 @@ window.importInfracoesXlsx = async () => {
     if(document.querySelector('nav.menu button.active')?.dataset.page === "infracoes") navigate("infracoes");
 
     if(sb){
-      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
-      const { error: delError } = await sb.from("infracoes_lancamentos").delete().not("id","is",null);
-      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
       try{
-        await sbBulkInsert("infracoes_lancamentos", novos.map(r=>({ data:r.d, motorista:r.motorista, placa:r.placa, turno:r.turno, hora:r.hora||null, ocorrencia:r.ocorrencia, observacoes:r.observacoes||null })));
+        await sbSubstituirTabela("infracoes_lancamentos", novos.map(r=>({ data:r.d, motorista:r.motorista, placa:r.placa, turno:r.turno, hora:r.hora||null, ocorrencia:r.ocorrencia, observacoes:r.observacoes||null })));
         statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
         toast(`✓ ${novos.length} ocorrências importadas (salvo no banco)`);
       }catch(e){
-        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+        statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+        toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
       }
     } else {
       toast(`✓ ${novos.length} ocorrências importadas`);
@@ -3589,15 +3611,14 @@ window.importEntregasXlsx = async () => {
     if(document.querySelector('nav.menu button.active')?.dataset.page === "entregas") navigate("entregas");
 
     if(sb){
-      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
-      const { error: delError } = await sb.from("entregas_lancamentos").delete().not("id","is",null);
-      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
       try{
-        await sbBulkInsert("entregas_lancamentos", novos.map(r=>({ data:r.d, servico:r.servico, transportadora:r.transportadora, cliente:r.cliente, motorista:r.motorista, carro:r.carro, qnt:r.qnt, valor:r.v, observacao:r.observacao||null })));
+        await sbSubstituirTabela("entregas_lancamentos", novos.map(r=>({ data:r.d, servico:r.servico, transportadora:r.transportadora, cliente:r.cliente, motorista:r.motorista, carro:r.carro, qnt:r.qnt, valor:r.v, observacao:r.observacao||null })));
         statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
         toast(`✓ ${novos.length} operações importadas (salvo no banco)`);
       }catch(e){
-        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+        statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+        toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
       }
     } else {
       toast(`✓ ${novos.length} operações importadas`);
@@ -3704,11 +3725,9 @@ window.importContasPagarXlsx = async () => {
     if(document.querySelector('nav.menu button.active')?.dataset.page === "contaspagar") navigate("contaspagar");
 
     if(sb){
-      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
-      const { error: delError } = await sb.from("contas_pagar").delete().not("id","is",null);
-      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
       try{
-        await sbBulkInsert("contas_pagar", novos.map(r=>({
+        await sbSubstituirTabela("contas_pagar", novos.map(r=>({
           prestador:r.prestador, cnpj:r.cnpj, tipo_servico:r.tipoServico, servico:r.servico, numero_documento:r.numeroDocumento,
           data_emissao:r.dataEmissao, parcela:r.parcela, valor:r.valor, forma_pagamento:r.formaPagamento,
           data_vencimento:r.dataVencimento, status:r.status, data_pagamento:r.dataPagamento
@@ -3716,7 +3735,8 @@ window.importContasPagarXlsx = async () => {
         statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
         toast(`✓ ${novos.length} contas importadas (salvo no banco)`);
       }catch(e){
-        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+        statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+        toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
       }
     } else {
       toast(`✓ ${novos.length} contas importadas`);
@@ -3848,17 +3868,16 @@ window.importFaturamentoXlsx = async () => {
     if(document.querySelector('nav.menu button.active')?.dataset.page === "faturamento") navigate("faturamento");
 
     if(sb){
-      statusEl.innerHTML = statusMsg + "<br>Substituindo no banco de dados...";
-      const { error: delError } = await sb.from("faturamento_lancamentos").delete().not("id","is",null);
-      if(delError){ statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao limpar o banco: " + delError.message; return; }
+      statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
       try{
-        await sbBulkInsert("faturamento_lancamentos", novos.map(r=>({
+        await sbSubstituirTabela("faturamento_lancamentos", novos.map(r=>({
           contrato:r.contrato, nf:r.nf, deadline:r.deadline, doc:r.doc, balsa_viagem:r.balsaViagem, valor:r.valor, vencimento:r.vencimento
         })));
         statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
         toast(`✓ ${novos.length} lançamentos importados (salvo no banco)`);
       }catch(e){
-        statusEl.innerHTML = statusMsg + "<br>⚠ Salvo aqui, mas falhou ao gravar no banco: " + e.message;
+        statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+        toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
       }
     } else {
       toast(`✓ ${novos.length} lançamentos importados`);
