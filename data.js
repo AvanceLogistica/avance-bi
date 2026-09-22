@@ -2737,6 +2737,20 @@ const DATA = {
   --------------------------------------------------------------------- */
   faturamento: {
     lancamentos: []
+  },
+
+  /* ---------------------------------------------------------------------
+     13. OPERAÇÃO BELÉM — custos e DRE mensal
+     Operação separada da de Manaus (que é o resto do painel). Os três custos
+     (combustível, mão de obra e peças) ficam todos em "lancamentos", cada um com
+     sua "categoria", e são alimentados por importação de planilha. "receita" guarda
+     só os meses em que a receita bruta foge do valor de contrato padrão
+     (RECEITA_BELEM_PADRAO em app.js) — no formato { "2026-01": 90000 }.
+     Ver computarBelemStats em app.js.
+  --------------------------------------------------------------------- */
+  belem: {
+    lancamentos: [],
+    receita: {}
   }
 
 };

@@ -140,7 +140,7 @@ async function loadFromSupabase(){
   if(!sb) return false;
   SUPABASE_FALHA_CONEXAO = false; // reseta a cada tentativa — só fica true se alguma busca desta rodada falhar
   try{
-    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc, ftLanc] = await Promise.all([
+    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc, ftLanc, belemLanc, belemRec] = await Promise.all([
       sbFetchAll("compras_lancamentos"),
       sbFetchAll("contas_pagar"),
       sbFetchAll("series_periodo"),
@@ -150,10 +150,12 @@ async function loadFromSupabase(){
       sbFetchAll("diesel_abastecimentos"),
       sbFetchAll("infracoes_lancamentos"),
       sbFetchAll("entregas_lancamentos"),
-      sbFetchAll("faturamento_lancamentos")
+      sbFetchAll("faturamento_lancamentos"),
+      sbFetchAll("belem_lancamentos"),
+      sbFetchAll("belem_receita")
     ]);
 
-    if(!compras.length && !contas.length && !series.length && !infLanc.length && !entLanc.length && !ftLanc.length) return false; // banco ainda vazio
+    if(!compras.length && !contas.length && !series.length && !infLanc.length && !entLanc.length && !ftLanc.length && !belemLanc.length) return false; // banco ainda vazio
 
     if(compras.length){
       DATA.compras.comprasLancamentos = compras.map(r=>({ id:r.id, d:r.data, p:r.placa||"", l:r.local||"", c:r.categoria||"", i:r.item||"", v:Number(r.valor) }));
@@ -198,6 +200,16 @@ async function loadFromSupabase(){
         id:r.id, contrato:r.contrato||null, nf:r.nf||null, deadline:r.deadline||null, doc:r.doc||null,
         balsaViagem:r.balsa_viagem||null, valor:Number(r.valor), vencimento:r.vencimento||null
       }));
+    }
+    if(belemLanc.length){
+      DATA.belem.lancamentos = belemLanc.map(r=>({
+        id:r.id, d:r.data, categoria:r.categoria, descricao:r.descricao||"", referencia:r.referencia||"",
+        qtd:r.quantidade!=null?Number(r.quantidade):null, v:Number(r.valor)
+      }));
+    }
+    if(belemRec.length){
+      DATA.belem.receita = {};
+      belemRec.forEach(r=>{ DATA.belem.receita[r.mes] = Number(r.valor); });
     }
 
     deriveCompras();
@@ -402,14 +414,15 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","acessos"];
-const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","acessos"];
+const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","belem","acessos"];
+const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","belem","acessos"];
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
   faturamento: ["Faturamento","Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem"],
   acessos: ["Gestão de Acessos","Libere ou altere o perfil de cada pessoa cadastrada no sistema"],
+  belem: ["Operação Belém","Combustível, mão de obra e peças — com DRE do resultado mensal"],
   entregas: ["Entregas","Coletas e entregas — receita, viagens e ranking por motorista, cliente e transportadora"],
   manutencao: ["Manutenção de Carreta","Custos de manutenção geral, pintura e outros serviços"],
   diesel: ["Diesel","Custo de abastecimento mensal, semanal e por veículo"],
@@ -636,6 +649,13 @@ async function executarUndo(d){
         prestador:r.prestador, cnpj:r.cnpj, tipo_servico:r.tipoServico, servico:r.servico, numero_documento:r.numeroDocumento,
         data_emissao:r.dataEmissao, parcela:r.parcela, valor:r.valor, forma_pagamento:r.formaPagamento,
         data_vencimento:r.dataVencimento, status:r.status, data_pagamento:r.dataPagamento
+      })));
+    }
+  } else if(d.kind === "bulkImportBelem"){
+    DATA.belem.lancamentos = d.anteriores;
+    if(sb){
+      await substituirCategoriaBelem(d.categoria, d.anteriores.filter(r=>r.categoria===d.categoria).map(r=>({
+        data:r.d, categoria:r.categoria, descricao:r.descricao, referencia:r.referencia, quantidade:r.qtd, valor:r.v
       })));
     }
   } else if(d.kind === "bulkImportFaturamento"){
@@ -964,6 +984,71 @@ function computarContasPagarStats(lancamentos){
     totalMes: totalMes.map(Math.round), pagoMes: pagoMes.map(Math.round), aPagarMes: aPagarMes.map(Math.round), qtdMes,
     porTipoArr, topFornecedores
   };
+}
+
+/* ============================================================================
+   OPERAÇÃO BELÉM — custos por categoria e DRE mensal
+   ============================================================================ */
+const RECEITA_BELEM_PADRAO = 85000; // receita bruta de contrato; cada mês pode ser ajustado na tela
+const BELEM_CATEGORIAS = [
+  { chave:"combustivel", label:"Combustível", cor:"#D0021B" },
+  { chave:"mao_de_obra", label:"Mão de Obra", cor:"#17181C" },
+  { chave:"pecas",       label:"Peças",       cor:"#E1971F" }
+];
+const FILTRO_BELEM = { ano:"todos" };
+window.setFiltroBelem = (campo, valor) => {
+  FILTRO_BELEM[campo] = valor;
+  navigate("belem");
+};
+
+// Monta o DRE mês a mês: soma os custos de cada categoria, pega a receita do mês (o valor editado
+// para aquele mês, ou o padrão de contrato) e fecha com resultado e margem. Função pura — devolve
+// tudo pronto pra tela, sem mexer em DATA.belem.
+function computarBelemStats(lancamentos, receitaOverrides, filtroAno){
+  const itens = filtroAno && filtroAno !== "todos"
+    ? lancamentos.filter(r=>r.d && r.d.startsWith(filtroAno))
+    : lancamentos;
+
+  const porMes = {};
+  const garantirMes = (mes) => {
+    if(!porMes[mes]) porMes[mes] = { mes, combustivel:0, mao_de_obra:0, pecas:0 };
+    return porMes[mes];
+  };
+  itens.forEach(r=>{
+    if(!r.d) return;
+    const mes = r.d.slice(0,7);
+    const linha = garantirMes(mes);
+    if(linha[r.categoria] != null) linha[r.categoria] += r.v;
+  });
+  // Um mês que teve a receita editada aparece no DRE mesmo sem nenhum custo lançado ainda.
+  Object.keys(receitaOverrides||{}).forEach(mes=>{
+    if(!filtroAno || filtroAno === "todos" || mes.startsWith(filtroAno)) garantirMes(mes);
+  });
+
+  const linhas = Object.values(porMes).sort((a,b)=>a.mes.localeCompare(b.mes)).map(l=>{
+    const custoTotal = l.combustivel + l.mao_de_obra + l.pecas;
+    const receita = (receitaOverrides && receitaOverrides[l.mes] != null) ? receitaOverrides[l.mes] : RECEITA_BELEM_PADRAO;
+    const resultado = receita - custoTotal;
+    return { ...l, label: rotuloMesBelem(l.mes), custoTotal, receita, resultado,
+             margem: receita ? (resultado/receita*100) : 0 };
+  });
+
+  const soma = (campo) => linhas.reduce((s,l)=>s+l[campo], 0);
+  const receitaTotal = soma("receita"), custoTotal = soma("custoTotal");
+  return {
+    linhas,
+    labels: linhas.map(l=>l.label),
+    receitaTotal, custoTotal,
+    resultadoTotal: receitaTotal - custoTotal,
+    margemTotal: receitaTotal ? ((receitaTotal - custoTotal)/receitaTotal*100) : 0,
+    porCategoria: BELEM_CATEGORIAS.map(c=>({ nome:c.label, valor: soma(c.chave), cor:c.cor }))
+  };
+}
+
+// "2026-01" -> "jan/26", no mesmo padrão de rótulo usado no resto do painel.
+function rotuloMesBelem(mes){
+  const [ano, mm] = mes.split("-");
+  return MONTH_ABBR[parseInt(mm,10)-1] + "/" + ano.slice(2);
 }
 
 /* ============================================================================
@@ -2549,6 +2634,7 @@ window.rodarMigracaoSupabase = async () => {
 const ENTRY_MODULES = [
   { key:"contaspagar", ic:"💵", label:"Contas a Pagar", desc:"Prestador de serviço, CNPJ, valor, forma de pagamento e vencimento" },
   { key:"faturamento", ic:"🧾", label:"Faturamento", desc:"Importação de planilha de contratos ou lançamento avulso — contrato, NF, balsa/viagem, valor e vencimento" },
+  { key:"belem", ic:"🏗️", label:"Operação Belém", desc:"Importação das planilhas de combustível, mão de obra e peças da operação de Belém" },
   { key:"entregas", ic:"🚚", label:"Entregas", desc:"Importação de planilha ou lançamento avulso por operação" },
   { key:"compras", ic:"🧰", label:"Compras de Peças", desc:"Lançamento diário — data, local/fornecedor, categoria e valor" },
   { key:"diesel", ic:"⛽", label:"Diesel", desc:"Custo mensal ou semanal" },
@@ -2722,6 +2808,36 @@ const ENTRY_FORMS = {
     </div>
     <button class="entry-submit" onclick="submitFaturamento()">Adicionar lançamento</button>
   `,
+  belem: () => {
+    const caixa = (titulo, descricao, idArquivo, idStatus, fn) => `
+      <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+        <h4 style="font-size:13px; margin-bottom:4px;">${titulo}</h4>
+        <div class="hint" style="margin-bottom:10px;">${descricao}</div>
+        <input type="file" id="${idArquivo}" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
+        <button class="entry-submit" style="margin-top:10px;" onclick="${fn}()">Importar e substituir</button>
+        <div id="${idStatus}" class="hint" style="margin-top:10px;"></div>
+      </div>`;
+    return `
+    <div class="hint" style="margin-top:10px;">
+      Cada planilha alimenta uma categoria de custo. Importar uma delas <b>substitui só aquela categoria</b> —
+      as outras duas continuam como estão. O DRE do módulo Belém recalcula sozinho a cada importação.
+    </div>
+    ${caixa("⛽ Combustível",
+      `Mesmo formato da planilha de Diesel de Manaus: aba <b>"Abastecimento"</b>, colunas DATA, PLACA, LITROS, VALOR POR VEÍCULO, POSTO.`,
+      "eb-comb-file", "eb-comb-status", "importBelemCombustivelXlsx")}
+    ${caixa("👷 Mão de Obra",
+      `Mesmo formato da planilha de pagamento de salários: colunas <b>Mês</b>, VT + VR, AD. 40% e Salário (procura em qualquer aba).`,
+      "eb-mo-file", "eb-mo-status", "importBelemMaoObraXlsx")}
+    ${caixa("🧰 Peças",
+      `Mesmo formato da planilha de compras de peças: aba <b>"Tabela"</b>, colunas CAMINHÃO, DATA DA COMPRA, PEÇA COMPRADAS, QTDE, TOTAL.`,
+      "eb-pecas-file", "eb-pecas-status", "importBelemPecasXlsx")}
+    <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+    <div class="hint">
+      A <b>Receita Bruta</b> começa em ${fmtBRL(RECEITA_BELEM_PADRAO)} por mês (valor do contrato) e é ajustada
+      direto na tabela do DRE, dentro do módulo <b>Operação Belém</b>.
+    </div>
+  `;
+  },
   compras: () => `
     <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
       <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
@@ -3923,6 +4039,207 @@ window.submitFaturamento = async () => {
   toast("Lançamento de faturamento adicionado ✓" + (sb ? " (salvo no banco)" : ""));
 };
 
+/* -------------------- IMPORTAÇÕES DA OPERAÇÃO BELÉM --------------------
+   As três planilhas de Belém têm os mesmos formatos das equivalentes de Manaus (abastecimento de
+   diesel, pagamento de salários e compras de peças), então cada leitor abaixo reaproveita o mesmo
+   layout de colunas do módulo correspondente — só que convertendo tudo pro formato único de
+   belem_lancamentos (data, categoria, descrição, referência, quantidade, valor).
+   Importar uma categoria substitui apenas os lançamentos daquela categoria; as outras duas ficam
+   intactas, porque cada uma vem de uma planilha diferente e é atualizada em momentos diferentes. */
+
+// Substitui no banco só os lançamentos de UMA categoria de Belém, preservando as outras duas.
+// Mesma ordem segura do sbSubstituirTabela: grava o novo primeiro, apaga o antigo depois.
+async function substituirCategoriaBelem(categoria, linhas){
+  const { data: antigos, error: errBusca } = await sb.from("belem_lancamentos").select("id").eq("categoria", categoria);
+  if(errBusca) throw errBusca;
+  await sbBulkInsert("belem_lancamentos", linhas);
+  const ids = (antigos||[]).map(r=>r.id);
+  for(let i=0;i<ids.length;i+=200){
+    const { error } = await sb.from("belem_lancamentos").delete().in("id", ids.slice(i, i+200));
+    if(error) throw error;
+  }
+}
+
+// Caminho comum das 3 importações: troca a categoria no DATA local, redesenha, e grava no banco.
+async function finalizarImportBelem(categoria, novos, statusEl, statusMsg, file){
+  const anteriores = DATA.belem.lancamentos;
+  DATA.belem.lancamentos = anteriores.filter(r=>r.categoria !== categoria).concat(novos);
+  const nomeCat = BELEM_CATEGORIAS.find(c=>c.chave===categoria).label;
+  logEntry(`Belém · ${nomeCat} (importação)`, `${novos.length} lançamentos de "${file.name}"`, { kind:"bulkImportBelem", categoria, anteriores });
+  renderSessionLog();
+  statusEl.innerHTML = statusMsg;
+  if(document.querySelector('nav.menu button.active')?.dataset.page === "belem") navigate("belem");
+
+  if(!sb){ toast(`✓ ${novos.length} lançamentos importados`); return; }
+  statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
+  try{
+    await substituirCategoriaBelem(categoria, novos.map(r=>({
+      data:r.d, categoria:r.categoria, descricao:r.descricao, referencia:r.referencia, quantidade:r.qtd, valor:r.v
+    })));
+    statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+    toast(`✓ ${novos.length} lançamentos de ${nomeCat} importados (salvo no banco)`);
+  }catch(e){
+    statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+    toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
+  }
+}
+
+window.importBelemCombustivelXlsx = async () => {
+  const fileInput = document.getElementById("eb-comb-file");
+  const statusEl = document.getElementById("eb-comb-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+    const nomeAba = wb.SheetNames.find(n=>n.trim().toUpperCase()==="ABASTECIMENTO");
+    if(!nomeAba){
+      statusEl.textContent = `⚠ Não encontrei a aba "Abastecimento". Abas encontradas: ${wb.SheetNames.join(", ")}.`;
+      return;
+    }
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nomeAba], { header:1, defval:null });
+    let headerRow = null, sheetRows = null;
+    for(let i=0;i<Math.min(rows.length,30);i++){
+      const r = rows[i];
+      if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="PLACA")){ headerRow = r; sheetRows = rows.slice(i+1); break; }
+    }
+    if(!headerRow){ statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'PLACA') na aba Abastecimento."; return; }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (n) => idx[n];
+    const cData = col("DATA"), cPlaca = col("PLACA"), cLitros = col("LITROS"),
+          cValor = col("VALOR POR VEÍCULO") ?? col("VALOR"), cPosto = col("POSTO");
+    if(cData==null || cValor==null){ statusEl.textContent = "⚠ Faltam colunas essenciais (DATA ou VALOR POR VEÍCULO) na aba Abastecimento."; return; }
+
+    const novos = []; let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const iso = excelDateToISO(r[cData]);
+      const valor = parseValorBRL(r[cValor]);
+      if(!iso || isNaN(valor)){ ignoradas++; return; }
+      novos.push({ id:localId(), d:iso, categoria:"combustivel",
+        descricao: cPosto!=null ? String(r[cPosto]||"").trim() : "",
+        referencia: cPlaca!=null ? String(r[cPlaca]||"").trim() : "",
+        qtd: cLitros!=null ? (parseValorBRL(r[cLitros])||null) : null, v:valor });
+    });
+    if(!novos.length){ statusEl.textContent = "⚠ Nenhum abastecimento válido encontrado na planilha."; return; }
+
+    const datas = novos.map(r=>r.d).sort();
+    const statusMsg = `✓ <b>${fmtNum(novos.length)}</b> abastecimentos importados (${fmtDataBR(datas[0])} a ${fmtDataBR(datas[datas.length-1])}), total ${fmtBRL(sumArr(novos.map(r=>r.v)))}.` +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem data ou valor válido foram ignoradas.` : "");
+    await finalizarImportBelem("combustivel", novos, statusEl, statusMsg, file);
+  }catch(e){ console.error(e); statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message; }
+};
+
+window.importBelemMaoObraXlsx = async () => {
+  const fileInput = document.getElementById("eb-mo-file");
+  const statusEl = document.getElementById("eb-mo-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+    // Aqui o nome da aba varia, então procura em todas a linha de cabeçalho que tenha a coluna "Mês".
+    let headerRow = null, sheetRows = null;
+    for(const nome of wb.SheetNames){
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[nome], { header:1, defval:null });
+      for(let i=0;i<Math.min(rows.length,30);i++){
+        const r = rows[i];
+        if(r && r.some(c=>c!=null && ["MÊS","MES"].includes(String(c).trim().toUpperCase()))){ headerRow = r; sheetRows = rows.slice(i+1); break; }
+      }
+      if(headerRow) break;
+    }
+    if(!headerRow){ statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'Mês') em nenhuma aba."; return; }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (n) => idx[n];
+    const cMes = col("MÊS") ?? col("MES");
+    const componentes = [
+      { label:"VT + VR",       c: col("VT + VR") ?? col("VT+VR") },
+      { label:"Adicional 40%", c: col("AD. 40%") ?? col("AD.40%") ?? col("AD 40%") },
+      { label:"Salário",       c: col("SALÁRIO") ?? col("SALARIO") }
+    ].filter(x=>x.c != null);
+    if(cMes==null || !componentes.length){ statusEl.textContent = "⚠ Faltam colunas essenciais (Mês e pelo menos uma de VT + VR / AD. 40% / Salário)."; return; }
+
+    const novos = []; let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const ref = parseMesFolha(r[cMes]);
+      if(!ref){ ignoradas++; return; }
+      const iso = `${ref.ano}-${String(ref.mes).padStart(2,"0")}-01`;
+      componentes.forEach(comp=>{
+        const valor = parseValorBRL(r[comp.c]);
+        if(isNaN(valor) || valor === 0) return;
+        novos.push({ id:localId(), d:iso, categoria:"mao_de_obra", descricao:comp.label, referencia:"Folha", qtd:null, v:valor });
+      });
+    });
+    if(!novos.length){ statusEl.textContent = "⚠ Nenhum valor de mão de obra válido encontrado na planilha."; return; }
+
+    const meses = [...new Set(novos.map(r=>r.d.slice(0,7)))].sort();
+    const statusMsg = `✓ <b>${fmtNum(novos.length)}</b> valores importados, cobrindo ${meses.length} ${meses.length===1?"mês":"meses"} (${rotuloMesBelem(meses[0])} a ${rotuloMesBelem(meses[meses.length-1])}), total ${fmtBRL(sumArr(novos.map(r=>r.v)))}.` +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem mês reconhecido foram ignoradas.` : "");
+    await finalizarImportBelem("mao_de_obra", novos, statusEl, statusMsg, file);
+  }catch(e){ console.error(e); statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message; }
+};
+
+window.importBelemPecasXlsx = async () => {
+  const fileInput = document.getElementById("eb-pecas-file");
+  const statusEl = document.getElementById("eb-pecas-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+    let headerRow = null, sheetRows = null;
+    const nomeAbaTabela = wb.SheetNames.find(n=>n.trim().toUpperCase()==="TABELA");
+    for(const name of (nomeAbaTabela ? [nomeAbaTabela] : wb.SheetNames)){
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:null });
+      for(let i=0;i<Math.min(rows.length,15);i++){
+        const r = rows[i];
+        if(r && r[0] && String(r[0]).trim().toUpperCase().indexOf("CAMINH") === 0){ headerRow = r; sheetRows = rows.slice(i+1); break; }
+      }
+      if(headerRow) break;
+    }
+    if(!headerRow){ statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'CAMINHÃO') na aba Tabela."; return; }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (n) => idx[n];
+    const cData = col("DATA DA COMPRA"), cCam = col("CAMINHÃO"), cPeca = col("PEÇA COMPRADAS"),
+          cQtde = col("QTDE"), cTotal = col("TOTAL");
+    if(cData==null || cTotal==null){ statusEl.textContent = "⚠ Faltam colunas essenciais (DATA DA COMPRA ou TOTAL)."; return; }
+
+    const novos = []; let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const iso = excelDateToISO(r[cData]);
+      const valor = parseValorBRL(r[cTotal]);
+      if(!iso || isNaN(valor)){ ignoradas++; return; }
+      novos.push({ id:localId(), d:iso, categoria:"pecas",
+        descricao: cPeca!=null ? String(r[cPeca]||"").trim() : "",
+        referencia: cCam!=null ? String(r[cCam]||"").trim() : "",
+        qtd: cQtde!=null ? (parseValorBRL(r[cQtde])||null) : null, v:valor });
+    });
+    if(!novos.length){ statusEl.textContent = "⚠ Nenhuma compra válida encontrada na planilha."; return; }
+
+    const datas = novos.map(r=>r.d).sort();
+    const statusMsg = `✓ <b>${fmtNum(novos.length)}</b> compras importadas (${fmtDataBR(datas[0])} a ${fmtDataBR(datas[datas.length-1])}), total ${fmtBRL(sumArr(novos.map(r=>r.v)))}.` +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem data ou valor válido foram ignoradas.` : "");
+    await finalizarImportBelem("pecas", novos, statusEl, statusMsg, file);
+  }catch(e){ console.error(e); statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message; }
+};
+
 window.submitCompra = async () => {
   const d = document.getElementById("ec-data").value;
   const v = parseFloat(document.getElementById("ec-valor").value);
@@ -4314,6 +4631,178 @@ function aplicarRestricoesDePapel(){
     el.style.display = souDiretor ? "" : "none";
   });
 }
+
+/* -------------------- OPERAÇÃO BELÉM -------------------- */
+renderers.belem = () => {
+  const b = DATA.belem;
+  const anosDisponiveis = [...new Set(b.lancamentos.map(r=>r.d).filter(Boolean).map(d=>d.slice(0,4)))].sort();
+  const st = computarBelemStats(b.lancamentos, b.receita, FILTRO_BELEM.ano);
+  const opt = (valor,label,atual) => `<option value="${valor}" ${atual===valor?"selected":""}>${label}</option>`;
+  const vazio = b.lancamentos.length === 0 && Object.keys(b.receita).length === 0;
+
+  const sinal = (v) => v >= 0 ? "green" : "red";
+  const recentes = [...b.lancamentos].sort((a,c)=>c.d.localeCompare(a.d)).slice(0,25);
+  const catLabel = Object.fromEntries(BELEM_CATEGORIAS.map(c=>[c.chave, c.label]));
+
+  return `
+    <div class="page-head">
+      <h2>Operação Belém</h2>
+      <p>Custos da operação e resultado mensal (DRE) — receita de contrato de ${fmtBRL(RECEITA_BELEM_PADRAO)}/mês${b.lancamentos.length ? ` · ${fmtNum(b.lancamentos.length)} lançamento(s)` : ""}</p>
+      ${anosDisponiveis.length ? `
+      <div class="tabs" style="margin-top:12px;">
+        <button class="tab-btn ${FILTRO_BELEM.ano==="todos"?"active":""}" onclick="setFiltroBelem('ano','todos')">Todos</button>
+        ${anosDisponiveis.map(a=>`<button class="tab-btn ${FILTRO_BELEM.ano===a?"active":""}" onclick="setFiltroBelem('ano','${a}')">${a}</button>`).join("")}
+      </div>` : ""}
+    </div>
+
+    ${vazio ? `
+    <div class="panel">
+      <div class="empty-state" style="padding:24px;"><div class="glyph">🏗️</div>
+        <h4>Nenhum dado de Belém ainda</h4>
+        <p>Vá em <b>Entrada de Dados → Operação Belém</b> para importar as planilhas de combustível, mão de obra e peças.</p>
+      </div>
+    </div>` : `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Receita Bruta</div><div class="val">${fmtBRL(st.receitaTotal)}</div><div class="delta flat">${st.linhas.length} ${st.linhas.length===1?"mês":"meses"}</div></div>
+      <div class="kpi"><div class="lbl">Custo Total</div><div class="val">${fmtBRL(st.custoTotal)}</div><div class="delta flat">${st.receitaTotal ? (st.custoTotal/st.receitaTotal*100).toFixed(1) : 0}% da receita</div></div>
+      <div class="kpi"><div class="lbl">Resultado do Período</div><div class="val" style="color:var(--${sinal(st.resultadoTotal)});">${fmtBRL(st.resultadoTotal)}</div><div class="delta ${st.resultadoTotal>=0?"down":"up"}">${st.resultadoTotal>=0?"lucro":"prejuízo"}</div></div>
+      <div class="kpi"><div class="lbl">Margem</div><div class="val" style="color:var(--${sinal(st.resultadoTotal)});">${st.margemTotal.toFixed(1)}%</div></div>
+      ${st.porCategoria.map(c=>`
+      <div class="kpi"><div class="lbl">${c.nome}</div><div class="val">${fmtBRL(c.valor)}</div><div class="delta flat">${st.custoTotal ? (c.valor/st.custoTotal*100).toFixed(1) : 0}% dos custos</div></div>`).join("")}
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>DRE — Resultado mês a mês</h3>
+      <div class="hint">A Receita Bruta começa em ${fmtBRL(RECEITA_BELEM_PADRAO)} (valor do contrato). Clique no valor para ajustar um mês específico — a alteração é salva na hora.</div>
+      <table>
+        <thead><tr>
+          <th>Mês</th><th class="num">Receita Bruta</th><th class="num">Combustível</th><th class="num">Mão de Obra</th>
+          <th class="num">Peças</th><th class="num">Custo Total</th><th class="num">Resultado</th><th class="num">Margem</th>
+        </tr></thead>
+        <tbody>
+          ${st.linhas.map(l=>`<tr>
+            <td><b>${l.label}</b></td>
+            <td class="num"><input type="number" step="0.01" value="${l.receita}" onchange="salvarReceitaBelem('${l.mes}', this.value)"
+                style="width:110px; text-align:right; font-family:inherit; font-size:12.5px; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--paper);"></td>
+            <td class="num">${fmtBRL2(l.combustivel)}</td>
+            <td class="num">${fmtBRL2(l.mao_de_obra)}</td>
+            <td class="num">${fmtBRL2(l.pecas)}</td>
+            <td class="num"><b>${fmtBRL2(l.custoTotal)}</b></td>
+            <td class="num" style="color:var(--${sinal(l.resultado)}); font-weight:700;">${fmtBRL2(l.resultado)}</td>
+            <td class="num"><span class="badge ${l.resultado>=0?"green":"red"}">${l.margem.toFixed(1)}%</span></td>
+          </tr>`).join("")}
+        </tbody>
+        <tfoot><tr style="font-weight:700; background:var(--paper);">
+          <td>Total</td>
+          <td class="num">${fmtBRL2(st.receitaTotal)}</td>
+          ${BELEM_CATEGORIAS.map(c=>`<td class="num">${fmtBRL2(st.porCategoria.find(p=>p.nome===c.label).valor)}</td>`).join("")}
+          <td class="num">${fmtBRL2(st.custoTotal)}</td>
+          <td class="num" style="color:var(--${sinal(st.resultadoTotal)});">${fmtBRL2(st.resultadoTotal)}</td>
+          <td class="num">${st.margemTotal.toFixed(1)}%</td>
+        </tr></tfoot>
+      </table>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Receita, Custo e Resultado por mês</h3>
+      <div class="chart-wrap" style="height:300px;"><canvas id="ch-belem-dre"></canvas></div>
+      <div class="chart-insight">${insightSerie(st.labels, st.linhas.map(l=>l.resultado), fmtBRL)}</div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Custo por categoria (mensal)</h3>
+        <div class="hint">Empilhado — combustível, mão de obra e peças</div>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ch-belem-cat"></canvas></div>
+        <div class="chart-insight">${insightSerie(st.labels, st.linhas.map(l=>l.custoTotal), fmtBRL)}</div>
+      </div>
+      <div class="panel">
+        <h3>Composição dos custos</h3>
+        <div class="hint">% sobre o custo total do período</div>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ch-belem-comp"></canvas></div>
+        <div class="chart-insight">${insightComposicao(st.porCategoria, "nome", "valor")}</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Lançamentos mais recentes</h3>
+      <div class="hint">Últimos 25 registros importados</div>
+      ${recentes.length === 0 ? `<div class="empty-state" style="padding:24px;"><div class="glyph">📋</div><p>Nenhum custo lançado ainda.</p></div>` : `
+      <table>
+        <thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>Referência</th><th class="num">Qtde</th><th class="num">Valor</th></tr></thead>
+        <tbody>
+          ${recentes.map(r=>`<tr>
+            <td>${fmtDataBR(r.d)}</td>
+            <td>${catLabel[r.categoria] || r.categoria}</td>
+            <td>${r.descricao || "—"}</td>
+            <td>${r.referencia || "—"}</td>
+            <td class="num">${r.qtd != null ? fmtNum(r.qtd) : "—"}</td>
+            <td class="num">${fmtBRL2(r.v)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>`}
+    </div>
+    `}
+  `;
+};
+
+initCharts.belem = () => {
+  const b = DATA.belem;
+  const st = computarBelemStats(b.lancamentos, b.receita, FILTRO_BELEM.ano);
+  if(!st.linhas.length) return;
+
+  mkChart("ch-belem-dre", {
+    type:"bar",
+    data:{ labels:st.labels, datasets:[
+      { label:"Receita Bruta", data:st.linhas.map(l=>l.receita), backgroundColor:COLORS.green, borderRadius:4 },
+      { label:"Custo Total", data:st.linhas.map(l=>l.custoTotal), backgroundColor:COLORS.red, borderRadius:4 },
+      { type:"line", label:"Resultado", data:st.linhas.map(l=>l.resultado), borderColor:COLORS.ink, borderWidth:2.5,
+        pointRadius:3, pointBackgroundColor:COLORS.ink, tension:.25,
+        datalabels:{ display:true, align:"top", offset:6, color:COLORS.ink, font:{size:11, weight:700}, formatter:fmtLabelBRL } }
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
+        datalabels:{ display:(ctx)=>ctx.datasetIndex===2 } },
+      layout:{ padding:{ top:24 } },
+      scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}} } }
+  });
+
+  mkChart("ch-belem-cat", {
+    type:"bar",
+    data:{ labels:st.labels, datasets: BELEM_CATEGORIAS.map(c=>({
+      label:c.label, data:st.linhas.map(l=>l[c.chave]), backgroundColor:c.cor, stack:"a", borderRadius:3
+    }))},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
+        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex] > 3000, color:"#fff", font:{size:10, weight:700}, formatter:fmtLabelBRL } },
+      scales:{ x:{stacked:true, grid:{display:false}}, y:{stacked:true, grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}} } }
+  });
+
+  const totalComp = sumArr(st.porCategoria.map(c=>c.valor));
+  mkChart("ch-belem-comp", {
+    type:"doughnut",
+    data:{ labels:st.porCategoria.map(c=>c.nome), datasets:[{ data:st.porCategoria.map(c=>c.valor),
+      backgroundColor:st.porCategoria.map(c=>c.cor), borderWidth:2, borderColor:"#fff" }]},
+    options:{ responsive:true, maintainAspectRatio:false, cutout:"60%",
+      plugins:{ legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
+        datalabels:{ display:(ctx)=>totalComp>0 && ctx.dataset.data[ctx.dataIndex]/totalComp > 0.02, color:"#fff", font:{size:11, weight:700},
+          formatter:(v)=> totalComp ? Math.round(v/totalComp*100)+"%" : "" } } }
+  });
+};
+
+// Ajuste da receita bruta de um mês direto na tabela do DRE. Guarda só o mês alterado — os demais
+// seguem no valor padrão de contrato.
+window.salvarReceitaBelem = async (mes, valorTexto) => {
+  const valor = parseFloat(valorTexto);
+  if(isNaN(valor)){ toast("⚠ Valor de receita inválido"); return; }
+  DATA.belem.receita[mes] = valor;
+  navigate("belem");
+  if(sb){
+    const { error } = await sb.from("belem_receita").upsert({ mes, valor });
+    if(error){ toast("⚠ Salvo aqui, mas falhou ao gravar no banco: " + error.message); return; }
+  }
+  toast(`Receita de ${rotuloMesBelem(mes)} ajustada para ${fmtBRL(valor)} ✓`);
+};
 
 /* -------------------- GESTÃO DE ACESSOS (só Diretor) -------------------- */
 renderers.acessos = () => `
