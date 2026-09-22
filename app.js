@@ -4095,18 +4095,23 @@ window.importBelemCombustivelXlsx = async () => {
   try{
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type:"array", cellDates:true });
-    const nomeAba = wb.SheetNames.find(n=>n.trim().toUpperCase()==="ABASTECIMENTO");
-    if(!nomeAba){
-      statusEl.textContent = `⚠ Não encontrei a aba "Abastecimento". Abas encontradas: ${wb.SheetNames.join(", ")}.`;
-      return;
-    }
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nomeAba], { header:1, defval:null });
+    // O nome da aba muda de uma planilha pra outra ("Abastecimento" em Manaus, "Dados" em Belém),
+    // então tenta os nomes conhecidos primeiro e, se não achar, procura em qualquer aba a linha de
+    // cabeçalho que tenha a coluna PLACA — o layout das colunas é o mesmo nas duas.
+    const preferidas = wb.SheetNames.filter(n=>["ABASTECIMENTO","DADOS"].includes(n.trim().toUpperCase()));
     let headerRow = null, sheetRows = null;
-    for(let i=0;i<Math.min(rows.length,30);i++){
-      const r = rows[i];
-      if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="PLACA")){ headerRow = r; sheetRows = rows.slice(i+1); break; }
+    for(const nome of [...preferidas, ...wb.SheetNames]){
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[nome], { header:1, defval:null });
+      for(let i=0;i<Math.min(rows.length,30);i++){
+        const r = rows[i];
+        if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="PLACA")
+             && r.some(c=>c!=null && String(c).trim().toUpperCase()==="DATA")){
+          headerRow = r; sheetRows = rows.slice(i+1); break;
+        }
+      }
+      if(headerRow) break;
     }
-    if(!headerRow){ statusEl.textContent = "⚠ Não encontrei a linha de cabeçalho (esperava uma coluna 'PLACA') na aba Abastecimento."; return; }
+    if(!headerRow){ statusEl.textContent = `⚠ Não encontrei em nenhuma aba a linha de cabeçalho com as colunas 'DATA' e 'PLACA'. Abas encontradas: ${wb.SheetNames.join(", ")}.`; return; }
 
     const idx = {};
     headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
