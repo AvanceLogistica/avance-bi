@@ -4167,12 +4167,21 @@ window.importBelemMaoObraXlsx = async () => {
     headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
     const col = (n) => idx[n];
     const cMes = col("MÊS") ?? col("MES");
+    // Dois formatos de planilha são aceitos, porque as praças controlam a folha de jeitos diferentes:
+    //  (a) por colaborador  — uma linha por pessoa/mês, com NOME e TOTAL (formato usado em Belém).
+    //      Usa a coluna TOTAL, que já inclui ticket/transporte/salário, pra nada ficar de fora.
+    //  (b) por componente   — uma linha por mês, com VT + VR / AD. 40% / Salário (formato de Manaus).
+    const cNome = col("NOME"), cTotal = col("TOTAL"), cFuncao = col("FUNÇÃO") ?? col("FUNCAO");
+    const porColaborador = cNome != null && cTotal != null;
     const componentes = [
       { label:"VT + VR",       c: col("VT + VR") ?? col("VT+VR") },
       { label:"Adicional 40%", c: col("AD. 40%") ?? col("AD.40%") ?? col("AD 40%") },
       { label:"Salário",       c: col("SALÁRIO") ?? col("SALARIO") }
     ].filter(x=>x.c != null);
-    if(cMes==null || !componentes.length){ statusEl.textContent = "⚠ Faltam colunas essenciais (Mês e pelo menos uma de VT + VR / AD. 40% / Salário)."; return; }
+    if(cMes==null || (!porColaborador && !componentes.length)){
+      statusEl.textContent = "⚠ Faltam colunas essenciais: precisa de 'Mês' mais (NOME + TOTAL) ou pelo menos uma de VT + VR / AD. 40% / Salário.";
+      return;
+    }
 
     const novos = []; let ignoradas = 0;
     sheetRows.forEach(r=>{
@@ -4180,11 +4189,20 @@ window.importBelemMaoObraXlsx = async () => {
       const ref = parseMesFolha(r[cMes]);
       if(!ref){ ignoradas++; return; }
       const iso = `${ref.ano}-${String(ref.mes).padStart(2,"0")}-01`;
-      componentes.forEach(comp=>{
-        const valor = parseValorBRL(r[comp.c]);
-        if(isNaN(valor) || valor === 0) return;
-        novos.push({ id:localId(), d:iso, categoria:"mao_de_obra", descricao:comp.label, referencia:"Folha", qtd:null, v:valor });
-      });
+      if(porColaborador){
+        const valor = parseValorBRL(r[cTotal]);
+        if(isNaN(valor) || valor === 0){ ignoradas++; return; }
+        const nome = String(r[cNome]||"").trim();
+        const funcao = cFuncao!=null ? String(r[cFuncao]||"").trim() : "";
+        novos.push({ id:localId(), d:iso, categoria:"mao_de_obra",
+          descricao: funcao || "Salário", referencia: nome || "Folha", qtd:null, v:valor });
+      } else {
+        componentes.forEach(comp=>{
+          const valor = parseValorBRL(r[comp.c]);
+          if(isNaN(valor) || valor === 0) return;
+          novos.push({ id:localId(), d:iso, categoria:"mao_de_obra", descricao:comp.label, referencia:"Folha", qtd:null, v:valor });
+        });
+      }
     });
     if(!novos.length){ statusEl.textContent = "⚠ Nenhum valor de mão de obra válido encontrado na planilha."; return; }
 
