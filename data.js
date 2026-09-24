@@ -2595,6 +2595,11 @@ const DATA = {
      7. ATESTADOS - Ocorrências - Jan/25 a Mai/26
   --------------------------------------------------------------------- */
   atestados: {
+    /* Ocorrências individuais (data, colaborador, motivo/CID, categoria, horas, dias) importadas da
+       aba "LANÇAMENTOS" da planilha de Controle de Atestados. Assim que existir pelo menos uma, todo
+       o módulo passa a ser calculado a partir daqui — ver computarAtestadosStats em app.js. Os campos
+       agregados abaixo ficam só como retrato inicial, de antes da importação existir. */
+    lancamentos: [],
     labels: ["jan/25","fev/25","mar/25","abr/25","mai/25","jun/25","jul/25","ago/25","set/25","out/25","nov/25","dez/25","jan/26","fev/26","mar/26","abr/26","mai/26"],
     ocorrencias: [12,24,12,5,7,15,10,15,16,16,16,13,25,20,22,14,25],
     topColaboradores: [

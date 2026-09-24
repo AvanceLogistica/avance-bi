@@ -57,7 +57,15 @@ async function sbFetchAll(table){
     // Erro aqui quase sempre é falha de conexão (projeto Supabase pausado, sem internet, etc.), não
     // "a tabela existe mas está vazia" — guarda isso separado pra updateSyncPill() não confundir os
     // dois casos e dizer "banco vazio" quando na real os dados estão lá, só não deu pra buscar.
-    if(error){ console.warn("Erro ao buscar", table, error); SUPABASE_FALHA_CONEXAO = true; break; }
+    // Exceção: "essa tabela não existe" é pendência de instalação (um script SQL que nunca foi
+    // rodado), não queda de conexão — tratar como queda deixava o aviso vermelho aceso pra sempre.
+    if(error){
+      console.warn("Erro ao buscar", table, error);
+      const tabelaInexistente = error.code === "PGRST205" || error.code === "42P01" ||
+        /does not exist|schema cache/i.test(error.message || "");
+      if(!tabelaInexistente) SUPABASE_FALHA_CONEXAO = true;
+      break;
+    }
     all = all.concat(data);
     if(!data.length || data.length < pageSize) break;
     from += pageSize;
@@ -140,7 +148,7 @@ async function loadFromSupabase(){
   if(!sb) return false;
   SUPABASE_FALHA_CONEXAO = false; // reseta a cada tentativa — só fica true se alguma busca desta rodada falhar
   try{
-    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc, ftLanc, belemLanc, belemRec] = await Promise.all([
+    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc, ftLanc, belemLanc, belemRec, atestLanc] = await Promise.all([
       sbFetchAll("compras_lancamentos"),
       sbFetchAll("contas_pagar"),
       sbFetchAll("series_periodo"),
@@ -152,7 +160,8 @@ async function loadFromSupabase(){
       sbFetchAll("entregas_lancamentos"),
       sbFetchAll("faturamento_lancamentos"),
       sbFetchAll("belem_lancamentos"),
-      sbFetchAll("belem_receita")
+      sbFetchAll("belem_receita"),
+      sbFetchAll("atestados_lancamentos")
     ]);
 
     if(!compras.length && !contas.length && !series.length && !infLanc.length && !entLanc.length && !ftLanc.length && !belemLanc.length) return false; // banco ainda vazio
@@ -210,6 +219,13 @@ async function loadFromSupabase(){
     if(belemRec.length){
       DATA.belem.receita = {};
       belemRec.forEach(r=>{ DATA.belem.receita[r.mes] = Number(r.valor); });
+    }
+    if(atestLanc.length){
+      DATA.atestados.lancamentos = atestLanc.map(r=>({
+        id:r.id, d:r.data, colaborador:r.colaborador||"", motivo:r.motivo||"", categoria:r.categoria||"",
+        horas:r.horas!=null?Number(r.horas):null, dias:r.dias!=null?Number(r.dias):0,
+        dataRetorno:r.data_retorno||null, observacao:r.observacao||""
+      }));
     }
 
     deriveCompras();
@@ -651,6 +667,14 @@ async function executarUndo(d){
         data_vencimento:r.dataVencimento, status:r.status, data_pagamento:r.dataPagamento
       })));
     }
+  } else if(d.kind === "bulkImportAtestados"){
+    DATA.atestados.lancamentos = d.anteriores;
+    if(sb){
+      await sbSubstituirTabela("atestados_lancamentos", d.anteriores.map(r=>({
+        data:r.d, colaborador:r.colaborador, motivo:r.motivo, categoria:r.categoria,
+        horas:r.horas, dias:r.dias, data_retorno:r.dataRetorno, observacao:r.observacao
+      })));
+    }
   } else if(d.kind === "bulkImportBelem"){
     DATA.belem.lancamentos = d.anteriores;
     if(sb){
@@ -983,6 +1007,70 @@ function computarContasPagarStats(lancamentos){
     mesesLabels: MONTH_ABBR.map(m=>m[0].toUpperCase()+m.slice(1)),
     totalMes: totalMes.map(Math.round), pagoMes: pagoMes.map(Math.round), aPagarMes: aPagarMes.map(Math.round), qtdMes,
     porTipoArr, topFornecedores
+  };
+}
+
+/* ============================================================================
+   ATESTADOS — filtros (Ano, Mês) e estatísticas por ocorrência
+   ============================================================================ */
+const FILTRO_ATESTADOS = { ano:"todos", mes:"todos" };
+window.setFiltroAtestados = (campo, valor) => {
+  FILTRO_ATESTADOS[campo] = valor;
+  navigate("atestados");
+};
+
+// Mesma convenção do Contas a Pagar: os gráficos de evolução mensal chamam com skipMes:true, porque
+// filtrar por mês num gráfico que existe justamente pra comparar os meses deixaria uma barra só.
+function filtrarAtestados(lancamentos, filtros, skipMes){
+  return lancamentos.filter(i=>{
+    if(!i.d) return false;
+    const [ano, mes] = i.d.split("-");
+    if(filtros.ano !== "todos" && ano !== filtros.ano) return false;
+    if(!skipMes && filtros.mes !== "todos" && String(parseInt(mes,10)) !== filtros.mes) return false;
+    return true;
+  });
+}
+
+// Totais, evolução mensal e rankings a partir de uma LISTA de atestados — função pura.
+function computarAtestadosStats(lancamentos){
+  const atestadosMes = Array(12).fill(0), diasMes = Array(12).fill(0);
+  const porColaborador = {}, porMotivo = {}, porCategoria = {};
+  let totalDias = 0, totalHoras = 0;
+
+  lancamentos.forEach(i=>{
+    const mIdx = parseInt(i.d.slice(5,7),10) - 1;
+    if(mIdx>=0 && mIdx<12){ atestadosMes[mIdx] += 1; diasMes[mIdx] += (i.dias||0); }
+    totalDias += (i.dias||0);
+    totalHoras += (i.horas||0);
+    const acumular = (mapa, chave) => {
+      const k = chave || "Não informado";
+      if(!mapa[k]) mapa[k] = { qtd:0, dias:0 };
+      mapa[k].qtd += 1; mapa[k].dias += (i.dias||0);
+    };
+    acumular(porColaborador, i.colaborador);
+    acumular(porMotivo, i.motivo);
+    acumular(porCategoria, i.categoria);
+  });
+
+  // Rankings ordenados por DIAS perdidos (impacto real na operação), com a quantidade junto.
+  const ranking = (mapa, nomeCampo, limite) => Object.entries(mapa)
+    .sort((a,b)=> b[1].dias - a[1].dias || b[1].qtd - a[1].qtd)
+    .slice(0, limite)
+    .map(([nome,v])=>({ [nomeCampo]:nome, qtd:v.qtd, dias:+v.dias.toFixed(2) }));
+
+  const colaboradoresDistintos = Object.keys(porColaborador).length;
+  return {
+    mesesLabels: MONTH_ABBR.map(m=>m[0].toUpperCase()+m.slice(1)),
+    atestadosMes, diasMes: diasMes.map(v=>+v.toFixed(2)),
+    totalAtestados: lancamentos.length,
+    totalDias: +totalDias.toFixed(2),
+    totalHoras: +totalHoras.toFixed(2),
+    colaboradoresDistintos,
+    mediaDiasPorAtestado: lancamentos.length ? +(totalDias/lancamentos.length).toFixed(2) : 0,
+    mediaDiasPorColaborador: colaboradoresDistintos ? +(totalDias/colaboradoresDistintos).toFixed(2) : 0,
+    topColaboradores: ranking(porColaborador, "nome", 10),
+    topMotivos: ranking(porMotivo, "motivo", 10),
+    porCategoria: ranking(porCategoria, "categoria", 99)
   };
 }
 
@@ -2039,46 +2127,152 @@ initCharts.compras = () => {
 /* -------------------- ATESTADOS -------------------- */
 renderers.atestados = () => {
   const at = DATA.atestados;
+  const temLancamentos = at.lancamentos && at.lancamentos.length > 0;
+
+  // Sem nenhum lançamento importado ainda, mostra o retrato antigo (agregado do data.js) pra a tela
+  // não ficar vazia, mas convidando a importar a planilha nova, que é o que destrava tudo.
+  if(!temLancamentos){
+    return `
+    <div class="page-head"><h2>Atestados</h2><p>Ocorrências por período, colaborador e motivo</p></div>
+    <div class="panel">
+      <div class="empty-state" style="padding:24px;"><div class="glyph">🩺</div>
+        <h4>Importe a planilha de atestados pra liberar o painel completo</h4>
+        <p>Vá em <b>Entrada de Dados → Atestados</b> e importe o <b>Controle de Atestados/Afastamentos</b>
+        (aba LANÇAMENTOS). Com ela vêm dias e horas perdidas, categorias de motivo e os filtros de ano e mês.</p>
+      </div>
+    </div>`;
+  }
+
+  const anosDisponiveis = [...new Set(at.lancamentos.map(i=>i.d.slice(0,4)))].sort();
+  const opt = (valor,label,atual) => `<option value="${valor}" ${atual===valor?"selected":""}>${label}</option>`;
+
+  const itens = filtrarAtestados(at.lancamentos, FILTRO_ATESTADOS);
+  const st = computarAtestadosStats(itens);
+  // A evolução mensal ignora o filtro de Mês de propósito — ela existe pra comparar os meses entre si.
+  const stMensal = computarAtestadosStats(filtrarAtestados(at.lancamentos, FILTRO_ATESTADOS, true));
+
+  const maiorAfastamento = itens.reduce((a,b)=> (b.dias||0) > (a.dias||0) ? b : a, itens[0]);
+
   return `
-    <div class="page-head"><h2>Atestados</h2><p>Ocorrências por período, colaborador e motivo — jan/25 a mai/26</p></div>
-    <div class="kpi-grid">
-      <div class="kpi"><div class="lbl">Total do período</div><div class="val">${fmtNum(sumArr(at.ocorrencias))}</div></div>
-      <div class="kpi"><div class="lbl">Último mês (mai/26)</div><div class="val">${at.ocorrencias[at.ocorrencias.length-1]}</div></div>
-      <div class="kpi"><div class="lbl">Maior motivo</div><div class="val">${at.topMotivos[0].total}</div><div class="delta flat">${at.topMotivos[0].motivo}</div></div>
-      <div class="kpi"><div class="lbl">Colaborador c/ mais ocorrências</div><div class="val">${at.topColaboradores[0].total}</div><div class="delta flat">${at.topColaboradores[0].nome}</div></div>
-    </div>
+    <div class="page-head"><h2>Atestados</h2><p>Afastamentos por período, colaborador e motivo · ${fmtNum(at.lancamentos.length)} ocorrência(s) registrada(s)</p></div>
+
     <div class="panel" style="margin-bottom:16px;">
-      <h3>Ocorrências por mês</h3>
-      <div class="chart-wrap" style="height:260px;"><canvas id="ch-atest-mensal"></canvas></div>
-      <div class="chart-insight">${insightSerie(at.labels, at.ocorrencias, fmtNum)}</div>
+      <h3 style="margin-bottom:10px;">Filtros</h3>
+      <div class="filtro-bar">
+        <label>Ano<select onchange="setFiltroAtestados('ano',this.value)">
+          ${opt("todos","Todos",FILTRO_ATESTADOS.ano)}${anosDisponiveis.map(a=>opt(a,a,FILTRO_ATESTADOS.ano)).join("")}
+        </select></label>
+        <label>Mês<select onchange="setFiltroAtestados('mes',this.value)">
+          ${opt("todos","Todos",FILTRO_ATESTADOS.mes)}${MONTH_ABBR.map((m,i)=>opt(String(i+1), m[0].toUpperCase()+m.slice(1), FILTRO_ATESTADOS.mes)).join("")}
+        </select></label>
+      </div>
     </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Atestados</div><div class="val">${fmtNum(st.totalAtestados)}</div></div>
+      <div class="kpi"><div class="lbl">Dias Perdidos</div><div class="val">${fmtNum(st.totalDias)}</div><div class="delta flat">${fmtNum(st.mediaDiasPorColaborador)} dias por colaborador</div></div>
+      <div class="kpi"><div class="lbl">Horas Perdidas</div><div class="val">${fmtNum(st.totalHoras)}</div><div class="delta flat">inclui comparecimentos/consultas</div></div>
+      <div class="kpi"><div class="lbl">Colaboradores</div><div class="val">${fmtNum(st.colaboradoresDistintos)}</div><div class="delta flat">com atestado no período</div></div>
+      <div class="kpi"><div class="lbl">Média Dias / Atestado</div><div class="val">${fmtNum(st.mediaDiasPorAtestado)}</div>${maiorAfastamento ? `<div class="delta flat">Maior: ${fmtNum(maiorAfastamento.dias)} dias</div>` : ""}</div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Evolução mensal — atestados e dias perdidos</h3>
+      <div class="hint">Ignora o filtro de Mês acima — mostra o ano inteiro pra dar contexto</div>
+      <div class="chart-wrap" style="height:300px;"><canvas id="ch-atest-mensal"></canvas></div>
+      <div class="chart-insight">${insightSerie(stMensal.mesesLabels, stMensal.diasMes, v=>fmtNum(v)+" dias")}</div>
+    </div>
+
     <div class="grid-2">
       <div class="panel">
-        <h3>10 colaboradores com mais ocorrências</h3>
+        <h3>Dias perdidos por categoria de motivo</h3>
+        <div class="hint">Onde o afastamento realmente pesa, agrupado por tipo</div>
+        <div class="chart-wrap" style="height:320px;"><canvas id="ch-atest-categoria"></canvas></div>
+        <div class="chart-insight">${insightRanking(st.porCategoria, "categoria", "dias", v=>fmtNum(v)+" dias")}</div>
+      </div>
+      <div class="panel">
+        <h3>Top 5 motivos por dias perdidos</h3>
+        <div class="hint">Motivo/CID específico, não a categoria</div>
+        <div class="chart-wrap" style="height:320px;"><canvas id="ch-atest-motivo"></canvas></div>
+        <div class="chart-insight">${insightRanking(st.topMotivos, "motivo", "dias", v=>fmtNum(v)+" dias")}</div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>10 colaboradores com mais dias perdidos</h3>
         <table>
-          <thead><tr><th>#</th><th>Colaborador</th><th class="num">2025</th><th class="num">2026</th><th class="num">Total</th></tr></thead>
-          <tbody>${at.topColaboradores.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.nome}</td><td class="num">${t.y2025}</td><td class="num">${t.y2026}</td><td class="num"><b>${t.total}</b></td></tr>`).join("")}</tbody>
+          <thead><tr><th>#</th><th>Colaborador</th><th class="num">Atestados</th><th class="num">Dias</th></tr></thead>
+          <tbody>${st.topColaboradores.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.nome}</td><td class="num">${fmtNum(t.qtd)}</td><td class="num"><b>${fmtNum(t.dias)}</b></td></tr>`).join("")}</tbody>
         </table>
       </div>
       <div class="panel">
         <h3>10 maiores motivos</h3>
         <table>
-          <thead><tr><th>#</th><th>Motivo</th><th class="num">2025</th><th class="num">2026</th><th class="num">Total</th></tr></thead>
-          <tbody>${at.topMotivos.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.motivo}</td><td class="num">${t.y2025}</td><td class="num">${t.y2026}</td><td class="num"><b>${t.total}</b></td></tr>`).join("")}</tbody>
+          <thead><tr><th>#</th><th>Motivo / CID</th><th class="num">Atestados</th><th class="num">Dias</th><th class="num">% Dias</th></tr></thead>
+          <tbody>${st.topMotivos.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.motivo}</td><td class="num">${fmtNum(t.qtd)}</td><td class="num"><b>${fmtNum(t.dias)}</b></td><td class="num">${st.totalDias ? (t.dias/st.totalDias*100).toFixed(1) : 0}%</td></tr>`).join("")}</tbody>
         </table>
       </div>
     </div>
+
+    <div class="panel">
+      <h3>Dias por categoria</h3>
+      <div class="hint">Todas as categorias do período filtrado</div>
+      <table>
+        <thead><tr><th>Categoria</th><th class="num">Atestados</th><th class="num">Dias</th><th class="num">% Dias</th></tr></thead>
+        <tbody>${st.porCategoria.map(c=>`<tr><td>${c.categoria}</td><td class="num">${fmtNum(c.qtd)}</td><td class="num"><b>${fmtNum(c.dias)}</b></td><td class="num">${st.totalDias ? (c.dias/st.totalDias*100).toFixed(1) : 0}%</td></tr>`).join("")}</tbody>
+      </table>
+    </div>
   `;
 };
+
 initCharts.atestados = () => {
   const at = DATA.atestados;
+  if(!at.lancamentos || !at.lancamentos.length) return;
+  const st = computarAtestadosStats(filtrarAtestados(at.lancamentos, FILTRO_ATESTADOS));
+  const stMensal = computarAtestadosStats(filtrarAtestados(at.lancamentos, FILTRO_ATESTADOS, true));
+
+  // Dias (barra) e quantidade de atestados (linha) juntos: um atestado longo pesa muito em dias sem
+  // mexer na contagem, e é justamente esse descolamento que interessa enxergar.
   mkChart("ch-atest-mensal", {
-    type:"line",
-    data:{ labels:at.labels, datasets:[{ data:at.ocorrencias, borderColor:COLORS.red, backgroundColor:COLORS.red+"1A", fill:true, tension:.3, pointRadius:3, pointBackgroundColor:COLORS.red }]},
-    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
-        datalabels:{ display:true, align:"top", offset:6, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelNum } },
-      layout:{ padding:{ top:16 } },
-      scales:{ y:{grid:{color:COLORS.grid}}, x:{grid:{display:false}, ticks:{maxRotation:60, minRotation:60}} } }
+    type:"bar",
+    data:{ labels:stMensal.mesesLabels, datasets:[
+      { label:"Dias perdidos", data:stMensal.diasMes, backgroundColor:COLORS.red, borderRadius:4, yAxisID:"y" },
+      { type:"line", label:"Atestados", data:stMensal.atestadosMes, borderColor:COLORS.ink, borderWidth:2.5,
+        pointRadius:3, pointBackgroundColor:COLORS.ink, tension:.25, yAxisID:"y1",
+        datalabels:{ display:true, align:"top", offset:6, color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelNum } }
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
+        datalabels:{ display:(ctx)=>ctx.datasetIndex===1 } },
+      layout:{ padding:{ top:20 } },
+      scales:{
+        y:{ position:"left", grid:{color:COLORS.grid}, title:{display:true, text:"Dias"} },
+        y1:{ position:"right", grid:{display:false}, title:{display:true, text:"Atestados"} },
+        x:{ grid:{display:false} } } }
+  });
+
+  const cats = st.porCategoria.slice(0,10);
+  mkChart("ch-atest-categoria", {
+    type:"bar",
+    data:{ labels:cats.map(c=>c.categoria), datasets:[{ data:cats.map(c=>c.dias), backgroundColor:COLORS.ink, borderRadius:4 }]},
+    options:{ indexAxis:"y", responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false},
+        datalabels:{ display:true, anchor:"end", align:"right", color:COLORS.ink, font:{size:10, weight:700}, formatter:fmtLabelNum } },
+      layout:{ padding:{ right:40 } },
+      scales:{ x:{grid:{color:COLORS.grid}}, y:{grid:{display:false}} } }
+  });
+
+  const motivos = st.topMotivos.slice(0,5);
+  const totalMotivos = sumArr(motivos.map(m=>m.dias));
+  mkChart("ch-atest-motivo", {
+    type:"doughnut",
+    data:{ labels:motivos.map(m=>m.motivo), datasets:[{ data:motivos.map(m=>m.dias),
+      backgroundColor:[COLORS.red, COLORS.ink, COLORS.amber, "#B9BCC6", "#E58A93"], borderWidth:2, borderColor:"#fff" }]},
+    options:{ responsive:true, maintainAspectRatio:false, cutout:"58%",
+      plugins:{ legend:{position:"bottom", labels:{boxWidth:10, font:{size:10}, usePointStyle:true, pointStyle:"circle"}},
+        datalabels:{ display:(ctx)=>totalMotivos>0 && ctx.dataset.data[ctx.dataIndex]/totalMotivos > 0.03, color:"#fff", font:{size:10, weight:700},
+          formatter:(v)=> totalMotivos ? Math.round(v/totalMotivos*100)+"%" : "" } } }
   });
 };
 
@@ -2958,6 +3152,22 @@ const ENTRY_FORMS = {
     <button class="entry-submit" onclick="submitHoraExtra()">Adicionar / atualizar mês</button>
   `,
   atestados: () => `
+    <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha (.xlsx)</h4>
+      <div class="hint" style="margin-bottom:10px;">
+        Lê a aba <b>"LANÇAMENTOS"</b> do Controle de Atestados/Afastamentos. Colunas esperadas:
+        DATA, COLABORADOR, MOTIVO / CID, HORAS, DIAS, CATEGORIA, DATA RETORNO, OBSERVAÇÃO
+        (ID, ANO, MÊS Nº e MÊS são ignoradas — o painel calcula isso a partir da própria data).
+        As abas de resumo da planilha (DASHBOARD, CONTROLE MENSAL, FALTAS POR MOTIVO) também são
+        ignoradas: o painel refaz esses cálculos sozinho.<br>
+        <b>Importar substitui todo o histórico de Atestados do sistema pelo conteúdo da aba LANÇAMENTOS.</b>
+      </div>
+      <input type="file" id="eat-import-file" accept=".xlsx,.xls,.csv" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="importAtestadosXlsx()">Importar e substituir</button>
+      <div id="eat-import-status" class="hint" style="margin-top:10px;"></div>
+    </div>
+    <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+    <div class="hint" style="margin-bottom:4px;">Ou atualize só o total de ocorrências de um mês (forma antiga, sem detalhe por pessoa):</div>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
       <label>Mês (ex: jun/26)<input type="text" id="ea-mes" list="dl-atest-meses" placeholder="jun/26"></label>
       <datalist id="dl-atest-meses">${DATA.atestados.labels.map(l=>`<option value="${l}">`).join("")}</datalist>
@@ -4037,6 +4247,97 @@ window.submitFaturamento = async () => {
     salvarSessionLogLocal();
   }
   toast("Lançamento de faturamento adicionado ✓" + (sb ? " (salvo no banco)" : ""));
+};
+
+window.importAtestadosXlsx = async () => {
+  const fileInput = document.getElementById("eat-import-file");
+  const statusEl = document.getElementById("eat-import-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+    // A aba de lançamentos é a base de tudo; as outras abas da planilha (DASHBOARD, CONTROLE MENSAL,
+    // FALTAS POR MOTIVO...) são resumos calculados a partir dela, então são ignoradas de propósito —
+    // o painel refaz esses mesmos cálculos por conta própria.
+    const preferidas = wb.SheetNames.filter(n=>n.trim().toUpperCase().startsWith("LAN"));
+    let headerRow = null, sheetRows = null;
+    for(const nome of [...preferidas, ...wb.SheetNames]){
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[nome], { header:1, defval:null });
+      for(let i=0;i<Math.min(rows.length,30);i++){
+        const r = rows[i];
+        if(r && r.some(c=>c!=null && String(c).trim().toUpperCase()==="COLABORADOR")
+             && r.some(c=>c!=null && String(c).trim().toUpperCase()==="DATA")){
+          headerRow = r; sheetRows = rows.slice(i+1); break;
+        }
+      }
+      if(headerRow) break;
+    }
+    if(!headerRow){
+      statusEl.textContent = `⚠ Não encontrei em nenhuma aba a linha de cabeçalho com 'DATA' e 'COLABORADOR'. Abas encontradas: ${wb.SheetNames.join(", ")}.`;
+      return;
+    }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase()] = i; });
+    const col = (n) => idx[n];
+    const cData = col("DATA"), cColab = col("COLABORADOR"), cMotivo = col("MOTIVO / CID") ?? col("MOTIVO"),
+          cHoras = col("HORAS"), cDias = col("DIAS"), cCat = col("CATEGORIA"),
+          cRetorno = col("DATA RETORNO"), cObs = col("OBSERVAÇÃO") ?? col("OBSERVACAO");
+    if(cData==null){ statusEl.textContent = "⚠ Falta a coluna essencial DATA na aba de lançamentos."; return; }
+
+    const novos = []; let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r) return;
+      const iso = excelDateToISO(r[cData]);
+      if(!iso){ ignoradas++; return; }
+      const num = (c) => {
+        if(c == null) return null;
+        const v = parseValorBRL(r[c]);
+        return isNaN(v) ? null : v;
+      };
+      novos.push({
+        id: localId(), d: iso,
+        colaborador: cColab!=null ? String(r[cColab]||"").trim() : "",
+        motivo: cMotivo!=null ? String(r[cMotivo]||"").trim() : "",
+        categoria: cCat!=null ? String(r[cCat]||"").trim() : "",
+        horas: num(cHoras),
+        dias: num(cDias) || 0,
+        dataRetorno: cRetorno!=null ? excelDateToISO(r[cRetorno]) : null,
+        observacao: cObs!=null ? String(r[cObs]||"").trim() : ""
+      });
+    });
+    if(!novos.length){ statusEl.textContent = "⚠ Nenhum atestado válido encontrado na planilha."; return; }
+
+    const anteriores = DATA.atestados.lancamentos;
+    DATA.atestados.lancamentos = novos;
+    logEntry("Atestados (importação)", `${novos.length} ocorrências importadas de "${file.name}"`, { kind:"bulkImportAtestados", anteriores });
+    renderSessionLog();
+
+    const datas = novos.map(r=>r.d).sort();
+    const totalDias = sumArr(novos.map(r=>r.dias));
+    const statusMsg = `✓ <b>${fmtNum(novos.length)}</b> atestados importados (${fmtDataBR(datas[0])} a ${fmtDataBR(datas[datas.length-1])}), ${fmtNum(+totalDias.toFixed(2))} dias perdidos no total.` +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem data válida foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "atestados") navigate("atestados");
+
+    if(!sb){ toast(`✓ ${novos.length} atestados importados`); return; }
+    statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
+    try{
+      await sbSubstituirTabela("atestados_lancamentos", novos.map(r=>({
+        data:r.d, colaborador:r.colaborador, motivo:r.motivo, categoria:r.categoria,
+        horas:r.horas, dias:r.dias, data_retorno:r.dataRetorno, observacao:r.observacao
+      })));
+      statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+      toast(`✓ ${novos.length} atestados importados (salvo no banco)`);
+    }catch(e){
+      statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+      toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
+    }
+  }catch(e){ console.error(e); statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message; }
 };
 
 /* -------------------- IMPORTAÇÕES DA OPERAÇÃO BELÉM --------------------
