@@ -4993,6 +4993,13 @@ renderers.belem = () => {
       <div class="kpi"><div class="lbl">Margem</div><div class="val" style="color:var(--${sinal(st.resultadoTotal)});">${st.margemTotal.toFixed(1)}%</div></div>
       ${st.porCategoria.map(c=>`
       <div class="kpi"><div class="lbl">${c.nome}</div><div class="val">${fmtBRL(c.valor)}</div><div class="delta flat">${st.custoTotal ? (c.valor/st.custoTotal*100).toFixed(1) : 0}% dos custos</div></div>`).join("")}
+      ${st.linhas.length ? (() => {
+        // Projeção anual: média mensal dos meses do DRE × 12
+        const n = st.linhas.length;
+        const receitaAno = st.receitaTotal / n * 12, custoAno = st.custoTotal / n * 12, resultadoAno = st.resultadoTotal / n * 12;
+        return `
+      <div class="kpi" title="Média dos ${n} ${n===1?"mês":"meses"} do DRE × 12 · Receita ${fmtBRL(receitaAno)} − Custo ${fmtBRL(custoAno)}"><div class="lbl">Projeção 12 meses (resultado)</div><div class="val" style="color:var(--${sinal(resultadoAno)});">${fmtBRL(resultadoAno)}</div><div class="delta flat">média de ${fmtBRL(st.resultadoTotal / n)}/mês · ${n} ${n===1?"mês":"meses"} base</div><div class="delta flat">Receita ${fmtBRL(receitaAno)} · Custo ${fmtBRL(custoAno)}</div></div>`;
+      })() : ""}
     </div>
 
     <div class="panel" style="margin-bottom:16px;">
