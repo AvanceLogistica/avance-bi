@@ -430,8 +430,8 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","belem","acessos"];
-const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","belem","acessos"];
+const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","belem","ordens","acessos"];
+const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","belem","ordens","acessos"];
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -439,6 +439,7 @@ const titles = {
   faturamento: ["Faturamento","Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem"],
   acessos: ["Gestão de Acessos","Libere ou altere o perfil de cada pessoa cadastrada no sistema"],
   belem: ["Operação Belém","Combustível, mão de obra e peças — com DRE do resultado mensal"],
+  ordens: ["Ordens de Serviço","Pedido, orçamentos, aprovação, execução e pagamento de serviços de manutenção"],
   entregas: ["Entregas","Coletas e entregas — receita, viagens e ranking por motorista, cliente e transportadora"],
   manutencao: ["Manutenção de Carreta","Custos de manutenção geral, pintura e outros serviços"],
   diesel: ["Diesel","Custo de abastecimento mensal, semanal e por veículo"],
@@ -4955,6 +4956,425 @@ function aplicarRestricoesDePapel(){
     el.style.display = souDiretor ? "" : "none";
   });
 }
+
+/* -------------------- ORDENS DE SERVIÇO (PROTÓTIPO) --------------------
+   Fluxo: Solicitação → Orçamentos (mín. 2) → Aprovação do diretor → Execução (+ aditivos aprovados)
+   → Boleto (conferido contra o valor aprovado) → Pagamento.
+   Protótipo para avaliação: dados ficam só no localStorage deste navegador e o seletor "Ver como"
+   simula o que cada perfil pode fazer. Depois de aprovado, migra para tabelas no Supabase com RLS. */
+const OS_STORAGE_KEY = "avance_os_prototipo_v1";
+const OS_PERFIS = {
+  manutencao:    { label:"Manutenção",    acoes:["abrir","orcar","enviar","executar","aditivo"] },
+  administracao: { label:"Administração", acoes:["boleto","pagar"] },
+  gestao:        { label:"Gestão",        acoes:[] },
+  diretoria:     { label:"Diretoria",     acoes:["abrir","orcar","enviar","executar","aditivo","aprovar","boleto","pagar","excluir"] },
+};
+const OS_STATUS = {
+  orcamento:   { label:"Aguardando orçamentos",  cor:"gray"  },
+  aprovacao:   { label:"Aguardando aprovação",   cor:"amber" },
+  execucao:    { label:"Em execução",            cor:"amber" },
+  faturamento: { label:"Aguardando boleto",      cor:"gray"  },
+  pagamento:   { label:"Aguardando pagamento",   cor:"amber" },
+  paga:        { label:"Paga / encerrada",       cor:"green" },
+  reprovada:   { label:"Reprovada",              cor:"red"   },
+};
+const OS_COLUNAS = ["orcamento","aprovacao","execucao","faturamento","pagamento","paga"];
+const OS_ETAPAS = [["orcamento","Solicitação / Orçamentos"],["aprovacao","Aprovação"],["execucao","Execução"],["faturamento","Boleto"],["pagamento","Pagamento"],["paga","Encerrada"]];
+
+let OS_PERFIL = "diretoria";
+let OS_SEL = null; // id da OS aberta no detalhe (null = quadro)
+let OS_LISTA = null;
+
+function osEsc(s){ return String(s ?? "").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function osAgora(){ return new Date().toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" }); }
+function osPode(acao){ return OS_PERFIS[OS_PERFIL].acoes.includes(acao); }
+function osNovoId(){ return Math.random().toString(36).slice(2, 10); }
+
+function osExemplos(){
+  const h = (perfil, texto, em) => ({ em, perfil, texto });
+  return [
+    { id:osNovoId(), numero:"OS-2026-0001", criadaEm:"2026-10-01", placa:"QXA-1B23", km:"412.300", urgencia:"Urgente",
+      problema:"Vazamento de ar no sistema de freio da carreta, caminhão parado no pátio.", status:"aprovacao",
+      orcamentos:[
+        { id:osNovoId(), prestador:"Auto Mecânica Silva", valor:3850, prazo:"2 dias", descricao:"Troca de válvula relé + 2 mangueiras", anexo:"orcamento_silva.pdf" },
+        { id:osNovoId(), prestador:"Diesel Center", valor:4420, prazo:"1 dia", descricao:"Troca de válvula relé + revisão do sistema", anexo:"orc_dieselcenter.jpg" },
+      ], aditivos:[], historico:[
+        h("Manutenção","OS aberta","01/10/2026 08:12"), h("Manutenção","Orçamento de Auto Mecânica Silva anexado (R$ 3.850,00)","01/10/2026 10:40"),
+        h("Manutenção","Orçamento de Diesel Center anexado (R$ 4.420,00)","01/10/2026 11:05"), h("Manutenção","Enviada para aprovação da diretoria","01/10/2026 11:06") ] },
+    { id:osNovoId(), numero:"OS-2026-0002", criadaEm:"2026-09-28", placa:"PZK-7C45", km:"288.910", urgencia:"Normal",
+      problema:"Embreagem patinando em subida.", status:"execucao",
+      orcamentos:[
+        { id:osNovoId(), prestador:"Auto Mecânica Silva", valor:6200, prazo:"3 dias", descricao:"Kit embreagem completo + mão de obra", anexo:"orc_silva_embreagem.pdf" },
+        { id:osNovoId(), prestador:"Mecânica Rota Norte", valor:5780, prazo:"4 dias", descricao:"Kit embreagem + mão de obra", anexo:"orc_rotanorte.pdf" },
+      ],
+      aprovacao:{ orcamentoId:null, prestador:"Mecânica Rota Norte", valor:5780, em:"29/09/2026 09:30", obs:"Menor preço, prazo aceitável." },
+      aditivos:[ { id:osNovoId(), descricao:"Volante do motor com trinca, encontrado ao abrir — troca necessária", valor:1350, status:"pendente", em:"01/10/2026 15:20" } ],
+      historico:[ h("Manutenção","OS aberta","28/09/2026 14:00"), h("Diretoria","Aprovada: Mecânica Rota Norte — R$ 5.780,00","29/09/2026 09:30"),
+        h("Manutenção","Aditivo solicitado: volante do motor (R$ 1.350,00)","01/10/2026 15:20") ] },
+    { id:osNovoId(), numero:"OS-2026-0003", criadaEm:"2026-09-20", placa:"QXA-1B23", km:"409.870", urgencia:"Normal",
+      problema:"Revisão do sistema elétrico — luzes da carreta falhando.", status:"pagamento",
+      orcamentos:[
+        { id:osNovoId(), prestador:"Eletro Diesel Pará", valor:980, prazo:"1 dia", descricao:"Revisão chicote + 4 lâmpadas", anexo:"orc_eletro.pdf" },
+        { id:osNovoId(), prestador:"Diesel Center", valor:1150, prazo:"1 dia", descricao:"Revisão elétrica completa", anexo:"orc_dc_eletrica.pdf" },
+      ],
+      aprovacao:{ prestador:"Eletro Diesel Pará", valor:980, em:"21/09/2026 08:15", obs:"" },
+      aditivos:[], execucao:{ fim:"23/09/2026 17:00", obs:"Serviço concluído e testado." },
+      boleto:{ nf:"NF 4471", valor:1240, vencimento:"2026-10-10", em:"24/09/2026 10:00" },
+      historico:[ h("Manutenção","OS aberta","20/09/2026 09:00"), h("Diretoria","Aprovada: Eletro Diesel Pará — R$ 980,00","21/09/2026 08:15"),
+        h("Manutenção","Serviço concluído","23/09/2026 17:00"), h("Administração","Boleto lançado: NF 4471 — R$ 1.240,00 (DIVERGENTE)","24/09/2026 10:00") ] },
+    { id:osNovoId(), numero:"OS-2026-0004", criadaEm:"2026-10-02", placa:"RTB-3D90", km:"156.400", urgencia:"Emergência",
+      problema:"Pneu estourado e aro danificado na rodovia.", status:"orcamento",
+      orcamentos:[ { id:osNovoId(), prestador:"Borracharia BR-316", valor:1890, prazo:"Hoje", descricao:"Pneu novo + aro + socorro", anexo:"foto_orcamento.jpg" } ],
+      aditivos:[], historico:[ h("Manutenção","OS aberta","02/10/2026 06:45"), h("Manutenção","Orçamento de Borracharia BR-316 anexado (R$ 1.890,00)","02/10/2026 07:10") ] },
+  ];
+}
+
+function osCarregar(){
+  if(OS_LISTA) return OS_LISTA;
+  try{ const raw = localStorage.getItem(OS_STORAGE_KEY); OS_LISTA = raw ? JSON.parse(raw) : null; }catch(e){ OS_LISTA = null; }
+  if(!Array.isArray(OS_LISTA)){ OS_LISTA = osExemplos(); osSalvar(); }
+  return OS_LISTA;
+}
+function osSalvar(){ try{ localStorage.setItem(OS_STORAGE_KEY, JSON.stringify(OS_LISTA)); }catch(e){} }
+function osRerender(){ document.getElementById("content").innerHTML = renderers.ordens(); window.scrollTo(0,0); }
+function osGet(id){ return osCarregar().find(o=>o.id===id); }
+function osLog(os, texto){ os.historico.push({ em:osAgora(), perfil:OS_PERFIS[OS_PERFIL].label, texto }); }
+function osValorAprovado(os){
+  if(!os.aprovacao) return 0;
+  return os.aprovacao.valor + sumArr(os.aditivos.filter(a=>a.status==="aprovado").map(a=>a.valor));
+}
+function osDivergente(os){ return !!os.boleto && Math.abs(os.boleto.valor - osValorAprovado(os)) > 0.009; }
+function osCampo(id){ const el = document.getElementById(id); return el ? el.value.trim() : ""; }
+function osNum(id){
+  // aceita "1.350,00" (padrão BR) e "1350.50"
+  const s = osCampo(id).replace(/[R$\s]/g,"");
+  const v = parseFloat(s.includes(",") ? s.replace(/\./g,"").replace(",", ".") : s);
+  return isNaN(v) ? 0 : v;
+}
+
+window.osSetPerfil = (p) => { OS_PERFIL = p; osRerender(); };
+window.osAbrir = (id) => { OS_SEL = id; osRerender(); };
+window.osVoltar = () => { OS_SEL = null; osRerender(); };
+window.osNova = () => { OS_SEL = "nova"; osRerender(); };
+window.osResetarExemplos = () => {
+  if(!confirm("Apagar todas as OS deste protótipo e recarregar os exemplos?")) return;
+  OS_LISTA = osExemplos(); osSalvar(); OS_SEL = null; osRerender();
+};
+
+window.osCriar = () => {
+  const placa = osCampo("os-placa").toUpperCase(), problema = osCampo("os-problema");
+  if(!placa || !problema){ toast("Preencha a placa e a descrição do problema."); return; }
+  const lista = osCarregar(), ano = new Date().getFullYear();
+  const seq = Math.max(0, ...lista.filter(o=>o.numero.startsWith(`OS-${ano}-`)).map(o=>parseInt(o.numero.slice(-4),10))) + 1;
+  const os = { id:osNovoId(), numero:`OS-${ano}-${String(seq).padStart(4,"0")}`, criadaEm:new Date().toISOString().slice(0,10),
+    placa, km:osCampo("os-km"), urgencia:osCampo("os-urgencia") || "Normal", problema, status:"orcamento", orcamentos:[], aditivos:[], historico:[] };
+  osLog(os, "OS aberta");
+  lista.unshift(os); osSalvar(); OS_SEL = os.id; osRerender();
+  toast(`${os.numero} criada ✓`);
+};
+
+window.osAddOrcamento = (id) => {
+  const os = osGet(id), prestador = osCampo("os-orc-prestador"), valor = osNum("os-orc-valor");
+  if(!prestador || !valor){ toast("Informe o prestador e o valor do orçamento."); return; }
+  const arq = document.getElementById("os-orc-anexo");
+  os.orcamentos.push({ id:osNovoId(), prestador, valor, prazo:osCampo("os-orc-prazo"), descricao:osCampo("os-orc-desc"), anexo: arq && arq.files[0] ? arq.files[0].name : "" });
+  osLog(os, `Orçamento de ${prestador} anexado (${fmtBRL2(valor)})`);
+  osSalvar(); osRerender();
+};
+window.osRemoverOrcamento = (id, orcId) => {
+  const os = osGet(id); const o = os.orcamentos.find(x=>x.id===orcId);
+  os.orcamentos = os.orcamentos.filter(x=>x.id!==orcId);
+  osLog(os, `Orçamento de ${o.prestador} removido`); osSalvar(); osRerender();
+};
+window.osEnviarAprovacao = (id) => {
+  const os = osGet(id);
+  if(os.orcamentos.length === 0){ toast("Anexe pelo menos um orçamento."); return; }
+  if(os.orcamentos.length < 2){
+    const just = osCampo("os-just");
+    if(!just){ toast("São necessários 2 orçamentos. Para enviar com 1, escreva a justificativa da exceção."); return; }
+    os.excecao = just;
+    osLog(os, `Enviada para aprovação com 1 orçamento — exceção: ${just}`);
+  } else {
+    osLog(os, "Enviada para aprovação da diretoria");
+  }
+  os.status = "aprovacao"; osSalvar(); osRerender();
+};
+window.osAprovar = (id) => {
+  const os = osGet(id), escolhido = document.querySelector('input[name="os-escolha"]:checked');
+  if(!escolhido){ toast("Escolha qual orçamento está sendo aprovado."); return; }
+  const o = os.orcamentos.find(x=>x.id===escolhido.value);
+  os.aprovacao = { orcamentoId:o.id, prestador:o.prestador, valor:o.valor, em:osAgora(), obs:osCampo("os-aprov-obs") };
+  os.status = "execucao";
+  osLog(os, `Aprovada: ${o.prestador} — ${fmtBRL2(o.valor)}${os.aprovacao.obs ? ` (${os.aprovacao.obs})` : ""}`);
+  osSalvar(); osRerender();
+};
+window.osReprovar = (id) => {
+  const os = osGet(id), obs = osCampo("os-aprov-obs");
+  if(!obs){ toast("Escreva o motivo da reprovação no campo de observação."); return; }
+  os.status = "reprovada"; osLog(os, `Reprovada: ${obs}`); osSalvar(); osRerender();
+};
+window.osDevolver = (id) => {
+  const os = osGet(id), obs = osCampo("os-aprov-obs");
+  os.status = "orcamento"; osLog(os, `Devolvida para novos orçamentos${obs ? `: ${obs}` : ""}`); osSalvar(); osRerender();
+};
+window.osSolicitarAditivo = (id) => {
+  const os = osGet(id), descricao = osCampo("os-adit-desc"), valor = osNum("os-adit-valor");
+  if(!descricao || !valor){ toast("Descreva o serviço extra e informe o valor."); return; }
+  os.aditivos.push({ id:osNovoId(), descricao, valor, status:"pendente", em:osAgora() });
+  osLog(os, `Aditivo solicitado: ${descricao} (${fmtBRL2(valor)})`); osSalvar(); osRerender();
+};
+window.osDecidirAditivo = (id, aditId, aprovado) => {
+  const os = osGet(id), a = os.aditivos.find(x=>x.id===aditId);
+  a.status = aprovado ? "aprovado" : "reprovado"; a.decididoEm = osAgora();
+  osLog(os, `Aditivo ${aprovado ? "APROVADO" : "REPROVADO"}: ${a.descricao} (${fmtBRL2(a.valor)})`); osSalvar(); osRerender();
+};
+window.osConcluirExecucao = (id) => {
+  const os = osGet(id);
+  if(os.aditivos.some(a=>a.status==="pendente")){ toast("Há aditivo aguardando aprovação da diretoria."); return; }
+  os.execucao = { fim:osAgora(), obs:osCampo("os-exec-obs") };
+  os.status = "faturamento"; osLog(os, `Serviço concluído${os.execucao.obs ? `: ${os.execucao.obs}` : ""}`); osSalvar(); osRerender();
+};
+window.osLancarBoleto = (id) => {
+  const os = osGet(id), nf = osCampo("os-bol-nf"), valor = osNum("os-bol-valor"), vencimento = osCampo("os-bol-venc");
+  if(!nf || !valor || !vencimento){ toast("Informe a nota fiscal, o valor e o vencimento do boleto."); return; }
+  os.boleto = { nf, valor, vencimento, em:osAgora() };
+  os.status = "pagamento";
+  osLog(os, `Boleto lançado: ${nf} — ${fmtBRL2(valor)}${osDivergente(os) ? ` (DIVERGENTE do aprovado ${fmtBRL2(osValorAprovado(os))})` : " (confere com o aprovado)"}`);
+  osSalvar(); osRerender();
+};
+window.osPagar = (id) => {
+  const os = osGet(id);
+  if(osDivergente(os) && OS_PERFIL !== "diretoria"){ toast("Boleto divergente do valor aprovado — só a diretoria pode autorizar o pagamento."); return; }
+  if(osDivergente(os) && !confirm(`O boleto (${fmtBRL2(os.boleto.valor)}) é diferente do aprovado (${fmtBRL2(osValorAprovado(os))}). Autorizar o pagamento mesmo assim?`)) return;
+  os.pagamento = { data:new Date().toISOString().slice(0,10), em:osAgora() };
+  os.status = "paga";
+  osLog(os, `Pagamento registrado${osDivergente(os) ? " — divergência autorizada pela diretoria" : ""}`); osSalvar(); osRerender();
+};
+window.osExcluir = (id) => {
+  const os = osGet(id);
+  if(!confirm(`Excluir ${os.numero}?`)) return;
+  OS_LISTA = osCarregar().filter(o=>o.id!==id); osSalvar(); OS_SEL = null; osRerender();
+};
+
+function osCartao(os){
+  const pend = os.aditivos.some(a=>a.status==="pendente");
+  const valor = os.aprovacao ? osValorAprovado(os) : (os.orcamentos.length ? Math.min(...os.orcamentos.map(o=>o.valor)) : 0);
+  return `<div class="os-card" onclick="osAbrir('${os.id}')">
+    <div class="os-card-top"><b>${os.numero}</b>${os.urgencia!=="Normal" ? `<span class="badge red">${osEsc(os.urgencia)}</span>` : ""}</div>
+    <div class="os-card-placa">🚛 ${osEsc(os.placa)}</div>
+    <div class="os-card-desc">${osEsc(os.problema)}</div>
+    <div class="os-card-foot">
+      <span>${valor ? fmtBRL(valor) : "sem orçamento"}${os.aprovacao ? "" : os.orcamentos.length ? ` · ${os.orcamentos.length} orç.` : ""}</span>
+      ${pend ? `<span class="badge amber">aditivo p/ aprovar</span>` : ""}
+      ${osDivergente(os) && os.status==="pagamento" ? `<span class="badge red">boleto divergente</span>` : ""}
+      ${os.status==="reprovada" ? `<span class="badge red">reprovada</span>` : ""}
+    </div>
+  </div>`;
+}
+
+function osQuadro(){
+  const lista = osCarregar();
+  const por = (st) => lista.filter(o=>o.status===st);
+  const aguardAprov = por("aprovacao"), aditPend = lista.filter(o=>o.aditivos.some(a=>a.status==="pendente"));
+  const aguardPag = por("pagamento"), diverg = aguardPag.filter(osDivergente);
+  const abertas = lista.filter(o=>!["paga","reprovada"].includes(o.status));
+  const valorAberto = sumArr(abertas.filter(o=>o.aprovacao).map(osValorAprovado));
+  return `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">OS em aberto</div><div class="val">${abertas.length}</div><div class="delta flat">${fmtBRL(valorAberto)} já aprovados</div></div>
+      <div class="kpi"><div class="lbl">Aguardando aprovação</div><div class="val" style="color:var(--${aguardAprov.length+aditPend.length?"amber":"ink"});">${aguardAprov.length + aditPend.length}</div><div class="delta flat">${aguardAprov.length} OS · ${aditPend.length} aditivo(s)</div></div>
+      <div class="kpi"><div class="lbl">Em execução</div><div class="val">${por("execucao").length}</div></div>
+      <div class="kpi"><div class="lbl">Aguardando pagamento</div><div class="val">${fmtBRL(sumArr(aguardPag.map(o=>o.boleto.valor)))}</div><div class="delta flat">${aguardPag.length} boleto(s)</div></div>
+      <div class="kpi"><div class="lbl">Boletos divergentes</div><div class="val" style="color:var(--${diverg.length?"red":"green"});">${diverg.length}</div><div class="delta flat">valor ≠ aprovado</div></div>
+    </div>
+    ${osPode("abrir") ? `<button class="entry-submit" style="margin:0 0 16px;" onclick="osNova()">+ Nova Ordem de Serviço</button>` : ""}
+    <div class="os-board">
+      ${OS_COLUNAS.map(st=>{
+        const itens = st==="paga" ? [...por("paga"), ...por("reprovada")] : por(st);
+        return `<div class="os-col">
+          <div class="os-col-head"><span>${OS_STATUS[st].label}</span><span class="os-count">${itens.length}</span></div>
+          ${itens.length ? itens.map(osCartao).join("") : `<div class="os-vazio">—</div>`}
+        </div>`;
+      }).join("")}
+    </div>`;
+}
+
+function osFormNova(){
+  return `
+    <button class="sub-tab-btn" onclick="osVoltar()">← Voltar ao quadro</button>
+    <div class="panel os-form" style="margin-top:12px; max-width:720px;">
+      <h3>Nova Ordem de Serviço</h3>
+      <div class="hint">O número da OS é gerado agora — orçamentos, aprovação, nota e boleto ficam presos a ele.</div>
+      <div class="os-grid">
+        <label>Placa<input id="os-placa" placeholder="ABC-1D23"></label>
+        <label>KM atual<input id="os-km" placeholder="412.300"></label>
+        <label>Urgência<select id="os-urgencia"><option>Normal</option><option>Urgente</option><option>Emergência</option></select></label>
+      </div>
+      <label>Descrição do problema<textarea id="os-problema" rows="3" placeholder="O que aconteceu com o veículo?"></textarea></label>
+      <label>Fotos do problema<input type="file" multiple accept="image/*"></label>
+      <button class="entry-submit" onclick="osCriar()">Abrir OS</button>
+    </div>`;
+}
+
+function osDetalhe(os){
+  const idxAtual = os.status==="reprovada" ? -1 : OS_ETAPAS.findIndex(e=>e[0]===os.status);
+  const menor = os.orcamentos.length ? Math.min(...os.orcamentos.map(o=>o.valor)) : 0;
+  const maior = os.orcamentos.length ? Math.max(...os.orcamentos.map(o=>o.valor)) : 0;
+  const aprovado = osValorAprovado(os);
+  const podeOrcar = osPode("orcar") && os.status==="orcamento";
+  const aprovando = osPode("aprovar") && os.status==="aprovacao";
+
+  return `
+    <button class="sub-tab-btn" onclick="osVoltar()">← Voltar ao quadro</button>
+    <div class="panel" style="margin:12px 0 16px;">
+      <div class="os-head">
+        <div><h3 style="font-size:18px;">${os.numero} · 🚛 ${osEsc(os.placa)}</h3>
+          <div class="hint" style="margin:4px 0 0;">Aberta em ${fmtDataBR(os.criadaEm)}${os.km ? ` · KM ${osEsc(os.km)}` : ""} · Urgência: <b>${osEsc(os.urgencia)}</b></div></div>
+        <div style="text-align:right;"><span class="badge ${OS_STATUS[os.status].cor}" style="font-size:12px;">${OS_STATUS[os.status].label}</span>
+          ${os.aprovacao ? `<div class="hint" style="margin:6px 0 0;">Valor aprovado: <b style="color:var(--ink);">${fmtBRL2(aprovado)}</b></div>` : ""}</div>
+      </div>
+      <div class="os-steps">
+        ${OS_ETAPAS.map((e,i)=>`<div class="os-step ${i<idxAtual?"done":i===idxAtual?"now":""}"><span>${i<idxAtual?"✓":i+1}</span>${e[1]}</div>`).join("")}
+      </div>
+      <p style="font-size:13px; margin-top:12px;"><b>Problema:</b> ${osEsc(os.problema)}</p>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Orçamentos ${os.orcamentos.length<2 && !os.aprovacao ? `<span class="badge amber">${os.orcamentos.length}/2 mínimo</span>` : ""}</h3>
+      <div class="hint">${os.orcamentos.length>=2 ? `Diferença entre o maior e o menor: <b>${fmtBRL2(maior-menor)}</b> (${(maior?((maior-menor)/maior*100):0).toFixed(1)}%)` : "São necessários pelo menos 2 orçamentos para enviar à diretoria."}</div>
+      ${os.orcamentos.length ? `
+      <table>
+        <thead><tr>${aprovando?"<th></th>":""}<th>Prestador</th><th>Descrição</th><th>Prazo</th><th>Anexo</th><th class="num">Valor</th>${podeOrcar?"<th></th>":""}</tr></thead>
+        <tbody>${os.orcamentos.map(o=>{
+          const escolhido = os.aprovacao && (os.aprovacao.orcamentoId===o.id || (!os.aprovacao.orcamentoId && os.aprovacao.prestador===o.prestador));
+          return `<tr ${escolhido?'style="background:#E4F5EE;"':""}>
+            ${aprovando?`<td><input type="radio" name="os-escolha" value="${o.id}" ${o.valor===menor?"checked":""}></td>`:""}
+            <td><b>${osEsc(o.prestador)}</b>${escolhido?' <span class="badge green">aprovado</span>':""}</td>
+            <td>${osEsc(o.descricao)}</td><td>${osEsc(o.prazo)}</td>
+            <td>${o.anexo ? `📎 ${osEsc(o.anexo)}` : "—"}</td>
+            <td class="num"><b>${fmtBRL2(o.valor)}</b>${o.valor===menor && os.orcamentos.length>1?' <span class="badge green">menor</span>':""}</td>
+            ${podeOrcar?`<td><button class="os-link" onclick="osRemoverOrcamento('${os.id}','${o.id}')">remover</button></td>`:""}
+          </tr>`; }).join("")}</tbody>
+      </table>` : `<div class="empty-state" style="padding:18px;"><p>Nenhum orçamento anexado ainda.</p></div>`}
+      ${os.excecao ? `<div class="os-alerta amber">⚠️ Enviada com 1 orçamento — justificativa: <b>${osEsc(os.excecao)}</b></div>` : ""}
+
+      ${podeOrcar ? `
+      <div class="os-sub os-form">
+        <h4>Anexar orçamento</h4>
+        <div class="os-grid">
+          <label>Prestador<input id="os-orc-prestador"></label>
+          <label>Valor (R$)<input id="os-orc-valor" inputmode="decimal" placeholder="0,00"></label>
+          <label>Prazo<input id="os-orc-prazo" placeholder="ex: 2 dias"></label>
+        </div>
+        <label>Descrição (peças e mão de obra)<input id="os-orc-desc"></label>
+        <label>Arquivo do orçamento (PDF ou foto)<input type="file" id="os-orc-anexo" accept=".pdf,image/*"></label>
+        <button class="sub-tab-btn" style="margin-top:10px;" onclick="osAddOrcamento('${os.id}')">+ Adicionar orçamento</button>
+      </div>
+      ${osPode("enviar") ? `
+      <div class="os-sub os-form">
+        ${os.orcamentos.length===1 ? `<label>Justificativa para enviar com só 1 orçamento (ex: emergência na rodovia)<input id="os-just"></label>` : ""}
+        <button class="entry-submit" ${os.orcamentos.length===0?"disabled style='opacity:.5'":""} onclick="osEnviarAprovacao('${os.id}')">Enviar para aprovação da diretoria →</button>
+      </div>` : ""}` : ""}
+
+      ${aprovando ? `
+      <div class="os-sub os-form os-aprov">
+        <h4>Decisão da diretoria</h4>
+        <div class="hint">Marque na tabela o orçamento escolhido (o menor já vem marcado).</div>
+        <label>Observação<input id="os-aprov-obs" placeholder="obrigatória para reprovar"></label>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+          <button class="os-btn green" onclick="osAprovar('${os.id}')">✓ Aprovar</button>
+          <button class="os-btn" onclick="osDevolver('${os.id}')">↺ Pedir novos orçamentos</button>
+          <button class="os-btn red" onclick="osReprovar('${os.id}')">✕ Reprovar</button>
+        </div>
+      </div>` : os.status==="aprovacao" ? `<div class="os-alerta amber">⏳ Aguardando decisão da diretoria.</div>` : ""}
+    </div>
+
+    ${os.aprovacao ? `
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Execução e serviços extras (aditivos)</h3>
+      <div class="hint">Serviço extra encontrado durante a execução só pode ser feito depois de aprovado pela diretoria.</div>
+      ${os.aditivos.length ? `
+      <table>
+        <thead><tr><th>Serviço extra</th><th>Solicitado em</th><th class="num">Valor</th><th>Situação</th></tr></thead>
+        <tbody>${os.aditivos.map(a=>`<tr>
+          <td>${osEsc(a.descricao)}</td><td>${a.em}</td><td class="num">${fmtBRL2(a.valor)}</td>
+          <td>${a.status==="pendente"
+            ? (osPode("aprovar") ? `<button class="os-btn green sm" onclick="osDecidirAditivo('${os.id}','${a.id}',true)">Aprovar</button> <button class="os-btn red sm" onclick="osDecidirAditivo('${os.id}','${a.id}',false)">Reprovar</button>` : `<span class="badge amber">aguardando diretoria</span>`)
+            : `<span class="badge ${a.status==="aprovado"?"green":"red"}">${a.status}</span>`}</td>
+        </tr>`).join("")}</tbody>
+      </table>` : ""}
+      <div class="os-resumo">
+        <div>Orçamento aprovado<b>${fmtBRL2(os.aprovacao.valor)}</b><small>${osEsc(os.aprovacao.prestador)} · ${os.aprovacao.em}</small></div>
+        <div>Aditivos aprovados<b>${fmtBRL2(aprovado - os.aprovacao.valor)}</b></div>
+        <div>Total autorizado<b>${fmtBRL2(aprovado)}</b></div>
+      </div>
+      ${os.status==="execucao" && osPode("aditivo") ? `
+      <div class="os-sub os-form">
+        <h4>Solicitar serviço extra</h4>
+        <div class="os-grid"><label style="grid-column:span 2;">Descrição<input id="os-adit-desc"></label><label>Valor (R$)<input id="os-adit-valor" inputmode="decimal"></label></div>
+        <button class="sub-tab-btn" style="margin-top:10px;" onclick="osSolicitarAditivo('${os.id}')">Enviar aditivo para aprovação</button>
+      </div>` : ""}
+      ${os.status==="execucao" && osPode("executar") ? `
+      <div class="os-sub os-form">
+        <label>Observação da conclusão<input id="os-exec-obs" placeholder="ex: serviço testado, peças trocadas guardadas"></label>
+        <button class="entry-submit" onclick="osConcluirExecucao('${os.id}')">Marcar serviço como concluído →</button>
+      </div>` : ""}
+      ${os.execucao ? `<div class="os-alerta green">✓ Serviço concluído em ${os.execucao.fim}${os.execucao.obs ? ` — ${osEsc(os.execucao.obs)}` : ""}</div>` : ""}
+    </div>` : ""}
+
+    ${["faturamento","pagamento","paga"].includes(os.status) ? `
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Boleto e pagamento</h3>
+      <div class="hint">Regra: boleto sem número de OS aprovada não se paga. O valor do boleto é conferido com o total autorizado.</div>
+      ${os.boleto ? `
+      <div class="os-resumo">
+        <div>Nota / boleto<b>${osEsc(os.boleto.nf)}</b><small>lançado em ${os.boleto.em}</small></div>
+        <div>Vencimento<b>${fmtDataBR(os.boleto.vencimento)}</b></div>
+        <div>Valor do boleto<b style="color:var(--${osDivergente(os)?"red":"green"});">${fmtBRL2(os.boleto.valor)}</b><small>autorizado: ${fmtBRL2(aprovado)}</small></div>
+      </div>
+      ${osDivergente(os) ? `<div class="os-alerta red">⛔ Boleto ${fmtBRL2(os.boleto.valor - aprovado)} ${os.boleto.valor>aprovado?"acima":"abaixo"} do valor autorizado. Só a diretoria pode liberar o pagamento.</div>` : `<div class="os-alerta green">✓ Valor do boleto confere com o autorizado.</div>`}` : ""}
+      ${os.status==="faturamento" && osPode("boleto") ? `
+      <div class="os-sub os-form">
+        <h4>Lançar nota e boleto</h4>
+        <div class="os-grid">
+          <label>Nº da nota fiscal<input id="os-bol-nf"></label>
+          <label>Valor do boleto (R$)<input id="os-bol-valor" inputmode="decimal" placeholder="${String(aprovado.toFixed(2)).replace(".",",")}"></label>
+          <label>Vencimento<input type="date" id="os-bol-venc"></label>
+        </div>
+        <label>Arquivo do boleto / NF<input type="file" accept=".pdf,image/*"></label>
+        <button class="entry-submit" onclick="osLancarBoleto('${os.id}')">Lançar boleto</button>
+      </div>` : os.status==="faturamento" ? `<div class="os-alerta amber">⏳ Aguardando a administração lançar a nota e o boleto.</div>` : ""}
+      ${os.status==="pagamento" && osPode("pagar") ? `<button class="os-btn green" style="margin-top:12px;" onclick="osPagar('${os.id}')">💵 Registrar pagamento</button>` : ""}
+      ${os.pagamento ? `<div class="os-alerta green">✓ Pago em ${fmtDataBR(os.pagamento.data)} — OS encerrada.</div>` : ""}
+    </div>` : ""}
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Linha do tempo</h3>
+      <div class="hint">Tudo o que aconteceu nesta OS, quem fez e quando.</div>
+      <ul class="os-timeline">${[...os.historico].reverse().map(h=>`<li><span>${h.em}</span><b>${osEsc(h.perfil)}</b> — ${osEsc(h.texto)}</li>`).join("")}</ul>
+      ${osPode("excluir") ? `<button class="os-link" style="margin-top:10px; color:var(--red);" onclick="osExcluir('${os.id}')">Excluir esta OS</button>` : ""}
+    </div>`;
+}
+
+renderers.ordens = () => {
+  osCarregar();
+  const os = OS_SEL && OS_SEL!=="nova" ? osGet(OS_SEL) : null;
+  if(OS_SEL && OS_SEL!=="nova" && !os) OS_SEL = null;
+  return `
+    <div class="page-head">
+      <h2>Ordens de Serviço</h2>
+      <p>Pedido de serviço → orçamentos → aprovação da diretoria → execução → boleto → pagamento</p>
+    </div>
+    <div class="os-proto">
+      <div><b>🧪 Protótipo para avaliação.</b> Os dados ficam salvos só neste navegador. Use "Ver como" para testar cada perfil.</div>
+      <div class="os-perfis">
+        <span>Ver como:</span>
+        ${Object.entries(OS_PERFIS).map(([k,p])=>`<button class="sub-tab-btn ${OS_PERFIL===k?"active":""}" onclick="osSetPerfil('${k}')">${p.label}</button>`).join("")}
+        <button class="os-link" onclick="osResetarExemplos()">recarregar exemplos</button>
+      </div>
+    </div>
+    ${OS_SEL==="nova" && osPode("abrir") ? osFormNova() : os ? osDetalhe(os) : osQuadro()}`;
+};
 
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
 renderers.belem = () => {

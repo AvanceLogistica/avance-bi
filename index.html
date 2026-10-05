@@ -319,6 +319,50 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 }
 .sub-tab-btn.active{ background:var(--ink); color:#fff; border-color:var(--ink); }
 
+/* Ordens de Serviço (protótipo) */
+.os-proto{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between; background:#FCF1DE; border:1px solid #F1D29A; border-radius:12px; padding:10px 14px; margin-bottom:16px; font-size:12.5px; }
+.os-perfis{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+.os-perfis > span{ font-weight:700; margin-right:4px; }
+.os-board{ display:grid; grid-template-columns:repeat(6, minmax(190px,1fr)); gap:10px; overflow-x:auto; padding-bottom:6px; }
+.os-col{ background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:10px; min-height:140px; }
+.os-col-head{ display:flex; justify-content:space-between; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.02em; color:var(--ink-soft); margin-bottom:8px; }
+.os-count{ background:var(--ink); color:#fff; border-radius:10px; padding:0 7px; }
+.os-card{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:8px; cursor:pointer; font-size:12px; transition:box-shadow .15s; }
+.os-card:hover{ box-shadow:0 4px 14px rgba(0,0,0,.08); border-color:var(--ink-soft); }
+.os-card-top{ display:flex; justify-content:space-between; align-items:center; gap:6px; }
+.os-card-placa{ font-weight:600; margin:4px 0; }
+.os-card-desc{ color:var(--ink-soft); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.os-card-foot{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin-top:6px; font-weight:700; }
+.os-card-foot > span:first-child{ margin-right:auto; }
+.os-vazio{ text-align:center; color:var(--ink-soft); padding:20px 0; }
+.os-head{ display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.os-steps{ display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; }
+.os-step{ display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; color:var(--ink-soft); background:var(--paper); border:1px solid var(--line); border-radius:20px; padding:4px 10px 4px 4px; }
+.os-step span{ display:inline-flex; width:20px; height:20px; border-radius:50%; align-items:center; justify-content:center; background:var(--line); font-size:11px; }
+.os-step.done{ color:var(--green); } .os-step.done span{ background:var(--green); color:#fff; }
+.os-step.now{ color:var(--ink); border-color:var(--ink); } .os-step.now span{ background:var(--ink); color:#fff; }
+.os-sub{ border-top:1px dashed var(--line); margin-top:14px; padding-top:12px; }
+.os-sub h4{ font-size:13px; margin-bottom:8px; }
+.os-aprov{ background:#FCF1DE; border:1px solid #F1D29A; border-radius:10px; padding:12px; }
+.os-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(160px,1fr)); gap:10px; }
+.os-form label{ display:flex; flex-direction:column; gap:5px; font-size:11.5px; font-weight:600; color:var(--ink-soft); margin-top:10px; }
+.os-form input, .os-form select, .os-form textarea{ font-family:inherit; font-size:13px; color:var(--ink); padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--paper); outline:none; }
+.os-form input:focus, .os-form select:focus, .os-form textarea:focus{ border-color:var(--red); background:#fff; }
+.os-btn{ font-family:inherit; font-size:12.5px; font-weight:700; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+.os-btn.green{ background:var(--green); border-color:var(--green); color:#fff; }
+.os-btn.red{ background:var(--card); border-color:var(--red); color:var(--red); }
+.os-btn.sm{ padding:4px 9px; font-size:11px; }
+.os-link{ background:none; border:none; color:var(--ink-soft); text-decoration:underline; cursor:pointer; font-size:11.5px; font-family:inherit; }
+.os-alerta{ margin-top:12px; padding:10px 12px; border-radius:8px; font-size:12.5px; }
+.os-alerta.amber{ background:#FCF1DE; color:#8a5a0c; } .os-alerta.red{ background:var(--red-soft); color:var(--red-dark); } .os-alerta.green{ background:#E4F5EE; color:var(--green); }
+.os-resumo{ display:grid; grid-template-columns:repeat(auto-fit, minmax(170px,1fr)); gap:10px; margin-top:12px; }
+.os-resumo > div{ background:var(--paper); border-radius:10px; padding:10px 12px; font-size:11.5px; color:var(--ink-soft); display:flex; flex-direction:column; gap:2px; }
+.os-resumo b{ font-size:16px; color:var(--ink); } .os-resumo small{ font-size:11px; }
+.os-timeline{ list-style:none; margin:0; padding:0; }
+.os-timeline li{ font-size:12.5px; padding:7px 0 7px 14px; border-left:2px solid var(--line); position:relative; }
+.os-timeline li::before{ content:""; position:absolute; left:-5px; top:12px; width:8px; height:8px; border-radius:50%; background:var(--ink-soft); }
+.os-timeline li span{ color:var(--ink-soft); font-size:11px; margin-right:8px; }
+
 /* Barra de filtros (ex: Contas a Pagar) — mesmo visual dos campos de "Entrada de Dados", mas
    utilizável em qualquer painel, não só no formulário de lançamento. */
 .filtro-bar{ display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:10px; }
@@ -458,6 +502,9 @@ body.pending #pendingScreen{display:flex;}
 
     <div class="grp-label" data-requer="diretor">Operação Belém</div>
     <button data-page="belem" data-requer="diretor"><span class="ic">🏗️</span> Belém · Custos e DRE</button>
+
+    <div class="grp-label" data-requer="diretor">Serviços</div>
+    <button data-page="ordens" data-requer="diretor"><span class="ic">🛠️</span> Ordens de Serviço <span class="badge amber" style="margin-left:4px;">teste</span></button>
 
     <div class="grp-label" data-requer="diretor">Administração</div>
     <button data-page="acessos" data-requer="diretor"><span class="ic">🔐</span> Gestão de Acessos</button>
