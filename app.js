@@ -4962,7 +4962,8 @@ function aplicarRestricoesDePapel(){
    → Boleto (conferido contra o valor aprovado) → Pagamento.
    Protótipo para avaliação: dados ficam só no localStorage deste navegador e o seletor "Ver como"
    simula o que cada perfil pode fazer. Depois de aprovado, migra para tabelas no Supabase com RLS. */
-const OS_STORAGE_KEY = "avance_os_prototipo_v1";
+const OS_STORAGE_KEY = "avance_os_prototipo_v2";
+const OS_PREST_KEY = "avance_os_prestadores_v1";
 const OS_PERFIS = {
   manutencao:    { label:"Manutenção",    acoes:["abrir","orcar","enviar","executar","aditivo"] },
   administracao: { label:"Administração", acoes:["boleto","pagar"] },
@@ -4993,7 +4994,7 @@ function osNovoId(){ return Math.random().toString(36).slice(2, 10); }
 function osExemplos(){
   const h = (perfil, texto, em) => ({ em, perfil, texto });
   return [
-    { id:osNovoId(), numero:"OS-2026-0001", criadaEm:"2026-10-01", placa:"QXA-1B23", km:"412.300", urgencia:"Urgente",
+    { id:osNovoId(), numero:"OS-2026-0001", criadaEm:"2026-10-01", placa:"QXA1B23", frota:"F-012", km:"412.300", urgencia:"Urgente",
       problema:"Vazamento de ar no sistema de freio da carreta, caminhão parado no pátio.", status:"aprovacao",
       orcamentos:[
         { id:osNovoId(), prestador:"Auto Mecânica Silva", valor:3850, prazo:"2 dias", descricao:"Troca de válvula relé + 2 mangueiras", anexo:"orcamento_silva.pdf" },
@@ -5001,7 +5002,7 @@ function osExemplos(){
       ], aditivos:[], historico:[
         h("Manutenção","OS aberta","01/10/2026 08:12"), h("Manutenção","Orçamento de Auto Mecânica Silva anexado (R$ 3.850,00)","01/10/2026 10:40"),
         h("Manutenção","Orçamento de Diesel Center anexado (R$ 4.420,00)","01/10/2026 11:05"), h("Manutenção","Enviada para aprovação da diretoria","01/10/2026 11:06") ] },
-    { id:osNovoId(), numero:"OS-2026-0002", criadaEm:"2026-09-28", placa:"PZK-7C45", km:"288.910", urgencia:"Normal",
+    { id:osNovoId(), numero:"OS-2026-0002", criadaEm:"2026-09-28", placa:"PZK7C45", frota:"F-007", km:"288.910", urgencia:"Normal",
       problema:"Embreagem patinando em subida.", status:"execucao",
       orcamentos:[
         { id:osNovoId(), prestador:"Auto Mecânica Silva", valor:6200, prazo:"3 dias", descricao:"Kit embreagem completo + mão de obra", anexo:"orc_silva_embreagem.pdf" },
@@ -5011,7 +5012,7 @@ function osExemplos(){
       aditivos:[ { id:osNovoId(), descricao:"Volante do motor com trinca, encontrado ao abrir — troca necessária", valor:1350, status:"pendente", em:"01/10/2026 15:20" } ],
       historico:[ h("Manutenção","OS aberta","28/09/2026 14:00"), h("Diretoria","Aprovada: Mecânica Rota Norte — R$ 5.780,00","29/09/2026 09:30"),
         h("Manutenção","Aditivo solicitado: volante do motor (R$ 1.350,00)","01/10/2026 15:20") ] },
-    { id:osNovoId(), numero:"OS-2026-0003", criadaEm:"2026-09-20", placa:"QXA-1B23", km:"409.870", urgencia:"Normal",
+    { id:osNovoId(), numero:"OS-2026-0003", criadaEm:"2026-09-20", placa:"QXA1B23", frota:"F-012", km:"409.870", urgencia:"Normal",
       problema:"Revisão do sistema elétrico — luzes da carreta falhando.", status:"pagamento",
       orcamentos:[
         { id:osNovoId(), prestador:"Eletro Diesel Pará", valor:980, prazo:"1 dia", descricao:"Revisão chicote + 4 lâmpadas", anexo:"orc_eletro.pdf" },
@@ -5022,7 +5023,7 @@ function osExemplos(){
       boleto:{ nf:"NF 4471", valor:1240, vencimento:"2026-10-10", em:"24/09/2026 10:00" },
       historico:[ h("Manutenção","OS aberta","20/09/2026 09:00"), h("Diretoria","Aprovada: Eletro Diesel Pará — R$ 980,00","21/09/2026 08:15"),
         h("Manutenção","Serviço concluído","23/09/2026 17:00"), h("Administração","Boleto lançado: NF 4471 — R$ 1.240,00 (DIVERGENTE)","24/09/2026 10:00") ] },
-    { id:osNovoId(), numero:"OS-2026-0004", criadaEm:"2026-10-02", placa:"RTB-3D90", km:"156.400", urgencia:"Emergência",
+    { id:osNovoId(), numero:"OS-2026-0004", criadaEm:"2026-10-02", placa:"RTB3D90", frota:"F-021", km:"156.400", urgencia:"Emergência",
       problema:"Pneu estourado e aro danificado na rodovia.", status:"orcamento",
       orcamentos:[ { id:osNovoId(), prestador:"Borracharia BR-316", valor:1890, prazo:"Hoje", descricao:"Pneu novo + aro + socorro", anexo:"foto_orcamento.jpg" } ],
       aditivos:[], historico:[ h("Manutenção","OS aberta","02/10/2026 06:45"), h("Manutenção","Orçamento de Borracharia BR-316 anexado (R$ 1.890,00)","02/10/2026 07:10") ] },
@@ -5036,6 +5037,35 @@ function osCarregar(){
   return OS_LISTA;
 }
 function osSalvar(){ try{ localStorage.setItem(OS_STORAGE_KEY, JSON.stringify(OS_LISTA)); }catch(e){} }
+
+// Cadastro de prestadores de serviço (usado no campo Prestador do orçamento)
+let OS_PRESTADORES = null;
+let OS_PREST_FORM = false;   // mostra o formulário de novo prestador dentro do orçamento
+let OS_PREST_ULTIMO = "";    // prestador recém-cadastrado, já vem selecionado
+function osPrestadores(){
+  if(OS_PRESTADORES) return OS_PRESTADORES;
+  try{ const raw = localStorage.getItem(OS_PREST_KEY); OS_PRESTADORES = raw ? JSON.parse(raw) : null; }catch(e){ OS_PRESTADORES = null; }
+  if(!Array.isArray(OS_PRESTADORES)){
+    OS_PRESTADORES = [
+      { id:osNovoId(), nome:"Auto Mecânica Silva",  cnpj:"", telefone:"", especialidade:"Mecânica geral" },
+      { id:osNovoId(), nome:"Borracharia BR-316",   cnpj:"", telefone:"", especialidade:"Pneus" },
+      { id:osNovoId(), nome:"Diesel Center",        cnpj:"", telefone:"", especialidade:"Motor diesel" },
+      { id:osNovoId(), nome:"Eletro Diesel Pará",   cnpj:"", telefone:"", especialidade:"Elétrica" },
+      { id:osNovoId(), nome:"Mecânica Rota Norte",  cnpj:"", telefone:"", especialidade:"Mecânica geral" },
+    ];
+    osSalvarPrestadores();
+  }
+  return OS_PRESTADORES;
+}
+function osSalvarPrestadores(){ try{ localStorage.setItem(OS_PREST_KEY, JSON.stringify(OS_PRESTADORES)); }catch(e){} }
+
+// Máscara de moeda: o usuário digita só números e o campo vira "R$ 1.234,56"
+window.osMascaraBRL = (el) => {
+  const d = el.value.replace(/\D/g, "").replace(/^0+/, "");
+  el.value = d ? "R$ " + (parseInt(d, 10) / 100).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }) : "";
+};
+// Placa: só letras maiúsculas e números, sem traço (ex: GCV0114)
+window.osMascaraPlaca = (el) => { el.value = el.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 7); };
 function osRerender(){ document.getElementById("content").innerHTML = renderers.ordens(); window.scrollTo(0,0); }
 function osGet(id){ return osCarregar().find(o=>o.id===id); }
 function osLog(os, texto){ os.historico.push({ em:osAgora(), perfil:OS_PERFIS[OS_PERFIL].label, texto }); }
@@ -5062,12 +5092,13 @@ window.osResetarExemplos = () => {
 };
 
 window.osCriar = () => {
-  const placa = osCampo("os-placa").toUpperCase(), problema = osCampo("os-problema");
-  if(!placa || !problema){ toast("Preencha a placa e a descrição do problema."); return; }
+  const placa = osCampo("os-placa").toUpperCase().replace(/[^A-Z0-9]/g, ""), frota = osCampo("os-frota").toUpperCase(), problema = osCampo("os-problema");
+  if(!placa || !frota || !problema){ toast("Preencha a placa, a frota e a descrição do problema."); return; }
+  if(placa.length !== 7){ toast("A placa deve ter 7 caracteres, ex: GCV0114."); return; }
   const lista = osCarregar(), ano = new Date().getFullYear();
   const seq = Math.max(0, ...lista.filter(o=>o.numero.startsWith(`OS-${ano}-`)).map(o=>parseInt(o.numero.slice(-4),10))) + 1;
   const os = { id:osNovoId(), numero:`OS-${ano}-${String(seq).padStart(4,"0")}`, criadaEm:new Date().toISOString().slice(0,10),
-    placa, km:osCampo("os-km"), urgencia:osCampo("os-urgencia") || "Normal", problema, status:"orcamento", orcamentos:[], aditivos:[], historico:[] };
+    placa, frota, km:osCampo("os-km"), urgencia:osCampo("os-urgencia") || "Normal", problema, status:"orcamento", orcamentos:[], aditivos:[], historico:[] };
   osLog(os, "OS aberta");
   lista.unshift(os); osSalvar(); OS_SEL = os.id; osRerender();
   toast(`${os.numero} criada ✓`);
@@ -5079,8 +5110,33 @@ window.osAddOrcamento = (id) => {
   const arq = document.getElementById("os-orc-anexo");
   os.orcamentos.push({ id:osNovoId(), prestador, valor, prazo:osCampo("os-orc-prazo"), descricao:osCampo("os-orc-desc"), anexo: arq && arq.files[0] ? arq.files[0].name : "" });
   osLog(os, `Orçamento de ${prestador} anexado (${fmtBRL2(valor)})`);
+  OS_PREST_ULTIMO = "";
   osSalvar(); osRerender();
 };
+// Re-renderiza mantendo o que já foi digitado no orçamento (valor, prazo, descrição)
+function osRerenderMantendo(){
+  const ids = ["os-orc-valor","os-orc-prazo","os-orc-desc"], vals = ids.map(osCampo);
+  osRerender();
+  ids.forEach((id,i)=>{ const el = document.getElementById(id); if(el) el.value = vals[i]; });
+}
+window.osTogglePrestForm = () => { OS_PREST_FORM = !OS_PREST_FORM; osRerenderMantendo(); };
+window.osCadastrarPrestador = () => {
+  const nome = osCampo("os-prest-nome");
+  if(!nome){ toast("Informe o nome do prestador."); return; }
+  if(osPrestadores().some(p=>p.nome.toLowerCase()===nome.toLowerCase())){ toast("Esse prestador já está cadastrado."); return; }
+  osPrestadores().push({ id:osNovoId(), nome, cnpj:osCampo("os-prest-cnpj"), telefone:osCampo("os-prest-tel"), especialidade:osCampo("os-prest-esp") });
+  osPrestadores().sort((a,b)=>a.nome.localeCompare(b.nome, "pt-BR"));
+  osSalvarPrestadores();
+  OS_PREST_ULTIMO = nome; OS_PREST_FORM = false;
+  if(OS_SEL === "prestadores") osRerender(); else osRerenderMantendo();
+  toast(`Prestador ${nome} cadastrado ✓`);
+};
+window.osRemoverPrestador = (pid) => {
+  const p = osPrestadores().find(x=>x.id===pid);
+  if(!p || !confirm(`Remover ${p.nome} do cadastro de prestadores?`)) return;
+  OS_PRESTADORES = osPrestadores().filter(x=>x.id!==pid); osSalvarPrestadores(); osRerender();
+};
+window.osVerPrestadores = () => { OS_SEL = "prestadores"; osRerender(); };
 window.osRemoverOrcamento = (id, orcId) => {
   const os = osGet(id); const o = os.orcamentos.find(x=>x.id===orcId);
   os.orcamentos = os.orcamentos.filter(x=>x.id!==orcId);
@@ -5161,7 +5217,7 @@ function osCartao(os){
   const valor = os.aprovacao ? osValorAprovado(os) : (os.orcamentos.length ? Math.min(...os.orcamentos.map(o=>o.valor)) : 0);
   return `<div class="os-card" onclick="osAbrir('${os.id}')">
     <div class="os-card-top"><b>${os.numero}</b>${os.urgencia!=="Normal" ? `<span class="badge red">${osEsc(os.urgencia)}</span>` : ""}</div>
-    <div class="os-card-placa">🚛 ${osEsc(os.placa)}</div>
+    <div class="os-card-placa">🚛 ${osEsc(os.placa)}${os.frota ? ` · Frota ${osEsc(os.frota)}` : ""}</div>
     <div class="os-card-desc">${osEsc(os.problema)}</div>
     <div class="os-card-foot">
       <span>${valor ? fmtBRL(valor) : "sem orçamento"}${os.aprovacao ? "" : os.orcamentos.length ? ` · ${os.orcamentos.length} orç.` : ""}</span>
@@ -5187,7 +5243,10 @@ function osQuadro(){
       <div class="kpi"><div class="lbl">Aguardando pagamento</div><div class="val">${fmtBRL(sumArr(aguardPag.map(o=>o.boleto.valor)))}</div><div class="delta flat">${aguardPag.length} boleto(s)</div></div>
       <div class="kpi"><div class="lbl">Boletos divergentes</div><div class="val" style="color:var(--${diverg.length?"red":"green"});">${diverg.length}</div><div class="delta flat">valor ≠ aprovado</div></div>
     </div>
-    ${osPode("abrir") ? `<button class="entry-submit" style="margin:0 0 16px;" onclick="osNova()">+ Nova Ordem de Serviço</button>` : ""}
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:16px;">
+      ${osPode("abrir") ? `<button class="entry-submit" style="margin:0;" onclick="osNova()">+ Nova Ordem de Serviço</button>` : ""}
+      <button class="os-btn" onclick="osVerPrestadores()">👷 Prestadores cadastrados (${osPrestadores().length})</button>
+    </div>
     <div class="os-board">
       ${OS_COLUNAS.map(st=>{
         const itens = st==="paga" ? [...por("paga"), ...por("reprovada")] : por(st);
@@ -5206,7 +5265,8 @@ function osFormNova(){
       <h3>Nova Ordem de Serviço</h3>
       <div class="hint">O número da OS é gerado agora — orçamentos, aprovação, nota e boleto ficam presos a ele.</div>
       <div class="os-grid">
-        <label>Placa<input id="os-placa" placeholder="ABC-1D23"></label>
+        <label>Placa<input id="os-placa" placeholder="GCV0114" maxlength="7" style="text-transform:uppercase;" oninput="osMascaraPlaca(this)"></label>
+        <label>Frota<input id="os-frota" placeholder="ex: F-012" style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase()"></label>
         <label>KM atual<input id="os-km" placeholder="412.300"></label>
         <label>Urgência<select id="os-urgencia"><option>Normal</option><option>Urgente</option><option>Emergência</option></select></label>
       </div>
@@ -5228,7 +5288,7 @@ function osDetalhe(os){
     <button class="sub-tab-btn" onclick="osVoltar()">← Voltar ao quadro</button>
     <div class="panel" style="margin:12px 0 16px;">
       <div class="os-head">
-        <div><h3 style="font-size:18px;">${os.numero} · 🚛 ${osEsc(os.placa)}</h3>
+        <div><h3 style="font-size:18px;">${os.numero} · 🚛 ${osEsc(os.placa)}${os.frota ? ` · Frota ${osEsc(os.frota)}` : ""}</h3>
           <div class="hint" style="margin:4px 0 0;">Aberta em ${fmtDataBR(os.criadaEm)}${os.km ? ` · KM ${osEsc(os.km)}` : ""} · Urgência: <b>${osEsc(os.urgencia)}</b></div></div>
         <div style="text-align:right;"><span class="badge ${OS_STATUS[os.status].cor}" style="font-size:12px;">${OS_STATUS[os.status].label}</span>
           ${os.aprovacao ? `<div class="hint" style="margin:6px 0 0;">Valor aprovado: <b style="color:var(--ink);">${fmtBRL2(aprovado)}</b></div>` : ""}</div>
@@ -5262,10 +5322,25 @@ function osDetalhe(os){
       <div class="os-sub os-form">
         <h4>Anexar orçamento</h4>
         <div class="os-grid">
-          <label>Prestador<input id="os-orc-prestador"></label>
-          <label>Valor (R$)<input id="os-orc-valor" inputmode="decimal" placeholder="0,00"></label>
+          <label>Prestador<select id="os-orc-prestador">
+            <option value="">Selecione o prestador</option>
+            ${osPrestadores().map(p=>`<option ${p.nome===OS_PREST_ULTIMO?"selected":""}>${osEsc(p.nome)}</option>`).join("")}
+          </select></label>
+          <label>Valor<input id="os-orc-valor" inputmode="numeric" placeholder="R$ 0,00" oninput="osMascaraBRL(this)"></label>
           <label>Prazo<input id="os-orc-prazo" placeholder="ex: 2 dias"></label>
         </div>
+        <button class="os-link" style="margin-top:6px;" onclick="osTogglePrestForm()">${OS_PREST_FORM ? "✕ cancelar cadastro" : "+ cadastrar novo prestador"}</button>
+        ${OS_PREST_FORM ? `
+        <div class="os-prest-form">
+          <h4>Novo prestador de serviço</h4>
+          <div class="os-grid">
+            <label>Nome / Razão social<input id="os-prest-nome"></label>
+            <label>CNPJ<input id="os-prest-cnpj" placeholder="00.000.000/0000-00"></label>
+            <label>Telefone<input id="os-prest-tel" placeholder="(91) 90000-0000"></label>
+            <label>Especialidade<input id="os-prest-esp" placeholder="ex: elétrica, pneus, motor"></label>
+          </div>
+          <button class="sub-tab-btn" style="margin-top:10px;" onclick="osCadastrarPrestador()">Salvar prestador</button>
+        </div>` : ""}
         <label>Descrição (peças e mão de obra)<input id="os-orc-desc"></label>
         <label>Arquivo do orçamento (PDF ou foto)<input type="file" id="os-orc-anexo" accept=".pdf,image/*"></label>
         <button class="sub-tab-btn" style="margin-top:10px;" onclick="osAddOrcamento('${os.id}')">+ Adicionar orçamento</button>
@@ -5311,7 +5386,7 @@ function osDetalhe(os){
       ${os.status==="execucao" && osPode("aditivo") ? `
       <div class="os-sub os-form">
         <h4>Solicitar serviço extra</h4>
-        <div class="os-grid"><label style="grid-column:span 2;">Descrição<input id="os-adit-desc"></label><label>Valor (R$)<input id="os-adit-valor" inputmode="decimal"></label></div>
+        <div class="os-grid"><label style="grid-column:span 2;">Descrição<input id="os-adit-desc"></label><label>Valor<input id="os-adit-valor" inputmode="numeric" placeholder="R$ 0,00" oninput="osMascaraBRL(this)"></label></div>
         <button class="sub-tab-btn" style="margin-top:10px;" onclick="osSolicitarAditivo('${os.id}')">Enviar aditivo para aprovação</button>
       </div>` : ""}
       ${os.status==="execucao" && osPode("executar") ? `
@@ -5338,7 +5413,7 @@ function osDetalhe(os){
         <h4>Lançar nota e boleto</h4>
         <div class="os-grid">
           <label>Nº da nota fiscal<input id="os-bol-nf"></label>
-          <label>Valor do boleto (R$)<input id="os-bol-valor" inputmode="decimal" placeholder="${String(aprovado.toFixed(2)).replace(".",",")}"></label>
+          <label>Valor do boleto<input id="os-bol-valor" inputmode="numeric" placeholder="${fmtBRL2(aprovado)}" oninput="osMascaraBRL(this)"></label>
           <label>Vencimento<input type="date" id="os-bol-venc"></label>
         </div>
         <label>Arquivo do boleto / NF<input type="file" accept=".pdf,image/*"></label>
@@ -5356,10 +5431,41 @@ function osDetalhe(os){
     </div>`;
 }
 
+function osTelaPrestadores(){
+  const podeEditar = osPode("orcar");
+  const usos = (nome) => osCarregar().filter(o=>o.orcamentos.some(x=>x.prestador===nome)).length;
+  return `
+    <button class="sub-tab-btn" onclick="osVoltar()">← Voltar ao quadro</button>
+    <div class="panel" style="margin-top:12px;">
+      <h3>Prestadores de serviço</h3>
+      <div class="hint">Lista usada no campo "Prestador" dos orçamentos.</div>
+      <table>
+        <thead><tr><th>Nome</th><th>CNPJ</th><th>Telefone</th><th>Especialidade</th><th class="num">OS com orçamento</th>${podeEditar?"<th></th>":""}</tr></thead>
+        <tbody>${osPrestadores().map(p=>`<tr>
+          <td><b>${osEsc(p.nome)}</b></td><td>${osEsc(p.cnpj)||"—"}</td><td>${osEsc(p.telefone)||"—"}</td><td>${osEsc(p.especialidade)||"—"}</td>
+          <td class="num">${usos(p.nome)}</td>
+          ${podeEditar?`<td><button class="os-link" onclick="osRemoverPrestador('${p.id}')">remover</button></td>`:""}
+        </tr>`).join("")}</tbody>
+      </table>
+      ${podeEditar ? `
+      <div class="os-sub os-form">
+        <h4>Cadastrar novo prestador</h4>
+        <div class="os-grid">
+          <label>Nome / Razão social<input id="os-prest-nome"></label>
+          <label>CNPJ<input id="os-prest-cnpj" placeholder="00.000.000/0000-00"></label>
+          <label>Telefone<input id="os-prest-tel" placeholder="(91) 90000-0000"></label>
+          <label>Especialidade<input id="os-prest-esp" placeholder="ex: elétrica, pneus, motor"></label>
+        </div>
+        <button class="entry-submit" onclick="osCadastrarPrestador()">Salvar prestador</button>
+      </div>` : ""}
+    </div>`;
+}
+
 renderers.ordens = () => {
   osCarregar();
-  const os = OS_SEL && OS_SEL!=="nova" ? osGet(OS_SEL) : null;
-  if(OS_SEL && OS_SEL!=="nova" && !os) OS_SEL = null;
+  const telaEspecial = OS_SEL==="nova" || OS_SEL==="prestadores";
+  const os = OS_SEL && !telaEspecial ? osGet(OS_SEL) : null;
+  if(OS_SEL && !telaEspecial && !os) OS_SEL = null;
   return `
     <div class="page-head">
       <h2>Ordens de Serviço</h2>
@@ -5373,7 +5479,7 @@ renderers.ordens = () => {
         <button class="os-link" onclick="osResetarExemplos()">recarregar exemplos</button>
       </div>
     </div>
-    ${OS_SEL==="nova" && osPode("abrir") ? osFormNova() : os ? osDetalhe(os) : osQuadro()}`;
+    ${OS_SEL==="nova" && osPode("abrir") ? osFormNova() : OS_SEL==="prestadores" ? osTelaPrestadores() : os ? osDetalhe(os) : osQuadro()}`;
 };
 
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
