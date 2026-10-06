@@ -430,8 +430,8 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","belem","ordens","acessos"];
-const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","belem","ordens","acessos"];
+const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","belem","ordens","frota","acessos"];
+const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","belem","ordens","frota","acessos"];
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -439,6 +439,7 @@ const titles = {
   faturamento: ["Faturamento","Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem"],
   acessos: ["Gestão de Acessos","Libere ou altere o perfil de cada pessoa cadastrada no sistema"],
   belem: ["Operação Belém","Combustível, mão de obra e peças — com DRE do resultado mensal"],
+  frota: ["Status da Frota","Atividade, motorista e status de cada caminhão no dia"],
   ordens: ["Ordens de Serviço","Pedido, orçamentos, aprovação, execução e pagamento de serviços de manutenção"],
   entregas: ["Entregas","Coletas e entregas — receita, viagens e ranking por motorista, cliente e transportadora"],
   manutencao: ["Manutenção de Carreta","Custos de manutenção geral, pintura e outros serviços"],
@@ -5480,6 +5481,288 @@ renderers.ordens = () => {
       </div>
     </div>
     ${OS_SEL==="nova" && osPode("abrir") ? osFormNova() : OS_SEL==="prestadores" ? osTelaPrestadores() : os ? osDetalhe(os) : osQuadro()}`;
+};
+
+/* -------------------- STATUS DA FROTA (PROTÓTIPO) --------------------
+   Substitui a mensagem diária de WhatsApp: cada líder, no tablet, confirma atividade, motorista e
+   status de cada caminhão; o diretor vê o resumo do dia por atividade e clica para ver os caminhões.
+   Protótipo: dados no localStorage deste navegador (depois migra para o Supabase). */
+const FROTA_KEY = "avance_frota_status_v1";
+const FROTA_ATIVIDADES = [
+  { chave:"honda",    label:"Operação Honda",        cor:"#D0021B" },
+  { chave:"entregas", label:"Entregas / Coletas",    cor:"#2E6DB0" },
+  { chave:"manobra",  label:"Manobra Pátio Externo", cor:"#8E2EB0" },
+  { chave:"porto",    label:"Porto",                 cor:"#1C9A6C" },
+  { chave:"oficina",  label:"Oficina",               cor:"#E1971F" },
+  { chave:"reserva",  label:"Reserva / Sem escala",  cor:"#5B5F6B" },
+];
+const FROTA_STATUS = [
+  { chave:"operando",   label:"Operando",       badge:"green" },
+  { chave:"manutencao", label:"Em manutenção",  badge:"amber" },
+  { chave:"parado",     label:"Parado",         badge:"red"   },
+  { chave:"semmot",     label:"Sem motorista",  badge:"gray"  },
+];
+
+let FROTA = null;              // { veiculos:[...], dias:{ "AAAA-MM-DD": { [id]: registro } } }
+let FROTA_ABA = "painel";      // painel | lider | cadastro
+let FROTA_DATA = new Date().toISOString().slice(0,10);
+let FROTA_ATIV_SEL = null;     // atividade clicada no painel
+let FROTA_FILTRO_LIDER = "todas";
+let FROTA_BUSCA = "";
+
+function frotaSeed(){
+  const lista = [
+    ["honda",["GCV0C68","JORGE"],["GCV3D41","ANDREY"],["GCV3D98","JOÃO PAULO"],["GCV3D93","IZAMAR"],["GCV3D79","IVALDIR"],["GCV0G21","OSVALDO"],
+      ["GCV3G01","EDILAN"],["GCV3D31","ADALBERTO"],["GCV3A07","FABRÍCIO"],["GCV3B43","JOSIAS"],["GCVOF34","MARCO"],["GCV3E41","LUCAS"],
+      ["GCV3C03","MICAEL"],["GCV3243","MANOEL"],["GCV3D54","NILTON"],["GCV3J65","STÊNIO"]],
+    ["entregas",["GCV3D82","TOMÉ"],["GCV3B62","JACKSON"],["GCV3284","WALTER"],["GCV3E24","MARCOS RAFAEL"],["GCV3D62","ALLAN"],["GCV3247","BRUNO"],
+      ["0C41","AMILDO"],["GCV3E51","ALEXANDRE"],["GCV3D62","ALLAN"],["GCV3A13","ALEX"],["GCV0C74","GABRIEL"],["GHA3A01","EDUARDO"]],
+    ["manobra",["NSI1680","NILSON"]],
+    ["porto",["HHK5E27","MESSIAS"],["NOS0950","JEREMIAS"],["NOS3230","DELANE"],["CDM3D19","THIAGO"],["CLU5945","ZEQUINHA"],["NEL5F78","NALDO"],["GCV3C74","GOUVEIA"]],
+    ["oficina",["EPU9E14",""],["GCV3D63",""],["GCV3D75",""],["ATP3057","","Curuba"],["ATP3089","","Manut. Avance"],["TUG MASTER",""]],
+  ];
+  const veiculos = [], dia = {};
+  let ordem = 1;
+  lista.forEach(([ativ, ...itens])=>{
+    itens.forEach(([placa, motorista, obs])=>{
+      const id = osNovoId();
+      veiculos.push({ id, ordem:ordem++, placa, motorista, atividadePadrao:ativ });
+      dia[id] = { atividade:ativ, motorista, status: ativ==="oficina" ? "manutencao" : "operando", obs: obs||"", confirmado:false };
+    });
+  });
+  return { veiculos, dias:{} , modelo:dia };
+}
+function frotaCarregar(){
+  if(FROTA) return FROTA;
+  try{ const raw = localStorage.getItem(FROTA_KEY); FROTA = raw ? JSON.parse(raw) : null; }catch(e){ FROTA = null; }
+  if(!FROTA || !Array.isArray(FROTA.veiculos)){ FROTA = frotaSeed(); frotaSalvar(); }
+  return FROTA;
+}
+function frotaSalvar(){ try{ localStorage.setItem(FROTA_KEY, JSON.stringify(FROTA)); }catch(e){} }
+function frotaRerender(){ const y = window.scrollY; document.getElementById("content").innerHTML = renderers.frota(); window.scrollTo(0,y); }
+function frotaAtiv(ch){ return FROTA_ATIVIDADES.find(a=>a.chave===ch) || FROTA_ATIVIDADES[FROTA_ATIVIDADES.length-1]; }
+function frotaStatus(ch){ return FROTA_STATUS.find(s=>s.chave===ch) || FROTA_STATUS[0]; }
+function frotaDataBR(iso){ const [a,m,d] = iso.split("-"); return `${d}/${m}/${a.slice(2)}`; }
+
+// Registro do dia de um caminhão: se ainda não foi lançado nesse dia, parte do último dia anterior
+// lançado (ou do cadastro), marcado como "não confirmado".
+function frotaRegistro(v, data){
+  const F = frotaCarregar();
+  if(F.dias[data] && F.dias[data][v.id]) return F.dias[data][v.id];
+  const anteriores = Object.keys(F.dias).filter(d=>d<data && F.dias[d][v.id]).sort();
+  const base = anteriores.length ? F.dias[anteriores[anteriores.length-1]][v.id]
+             : (F.modelo && F.modelo[v.id]) || { atividade:v.atividadePadrao, motorista:v.motorista, status:"operando", obs:"" };
+  return { atividade:base.atividade, motorista:base.motorista, status:base.status, obs:base.obs, confirmado:false };
+}
+function frotaVeiculosOrdenados(){ return [...frotaCarregar().veiculos].sort((a,b)=>a.ordem-b.ordem); }
+function frotaDoDia(data){ return frotaVeiculosOrdenados().map(v=>({ v, r:frotaRegistro(v, data) })); }
+
+window.frotaSetAba = (a) => { FROTA_ABA = a; frotaRerender(); };
+window.frotaSetData = (d) => { if(d){ FROTA_DATA = d; frotaRerender(); } };
+window.frotaSelAtiv = (a) => { FROTA_ATIV_SEL = FROTA_ATIV_SEL===a ? null : a; frotaRerender(); };
+window.frotaFiltroLider = (a) => { FROTA_FILTRO_LIDER = a; frotaRerender(); };
+window.frotaBuscar = (t) => { FROTA_BUSCA = t; frotaRerender(); const el = document.getElementById("frota-busca"); if(el){ el.focus(); el.setSelectionRange(t.length,t.length); } };
+
+window.frotaAtualizar = (id, campo, valor) => {
+  const F = frotaCarregar(), v = F.veiculos.find(x=>x.id===id);
+  F.dias[FROTA_DATA] = F.dias[FROTA_DATA] || {};
+  const r = F.dias[FROTA_DATA][id] || frotaRegistro(v, FROTA_DATA);
+  r[campo] = valor;
+  if(campo==="atividade" && valor==="oficina" && r.status==="operando") r.status = "manutencao";
+  r.confirmado = true; r.em = new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" });
+  F.dias[FROTA_DATA][id] = r;
+  frotaSalvar(); frotaRerender();
+};
+window.frotaConfirmarTodos = () => {
+  const lista = frotaDoDia(FROTA_DATA).filter(({r})=>!r.confirmado && (FROTA_FILTRO_LIDER==="todas" || r.atividade===FROTA_FILTRO_LIDER));
+  if(!lista.length){ toast("Todos já estão confirmados."); return; }
+  if(!confirm(`Confirmar ${lista.length} caminhão(ões) sem alteração?`)) return;
+  const F = frotaCarregar(); F.dias[FROTA_DATA] = F.dias[FROTA_DATA] || {};
+  const hora = new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" });
+  lista.forEach(({v,r})=>{ F.dias[FROTA_DATA][v.id] = { ...r, confirmado:true, em:hora }; });
+  frotaSalvar(); frotaRerender();
+};
+
+window.frotaTextoWhatsApp = () => {
+  const itens = frotaDoDia(FROTA_DATA);
+  let txt = `OPERAÇÃO DO DIA ${frotaDataBR(FROTA_DATA)}\n`;
+  FROTA_ATIVIDADES.forEach(a=>{
+    const doGrupo = itens.filter(({r})=>r.atividade===a.chave);
+    if(!doGrupo.length) return;
+    txt += `\n#${a.label.toUpperCase()}#\n`;
+    doGrupo.forEach(({v,r})=>{
+      const st = r.status!=="operando" && !(a.chave==="oficina" && r.status==="manutencao") ? ` — ${frotaStatus(r.status).label.toUpperCase()}` : "";
+      txt += `${String(v.ordem).padStart(2,"0")} ${v.placa} ${r.motorista || (a.chave==="oficina" ? "MANUTENÇÃO" : "")}${st}${r.obs ? ` (${r.obs})` : ""}\n`;
+    });
+  });
+  return txt.trim();
+};
+window.frotaCopiarWhatsApp = async () => {
+  const txt = frotaTextoWhatsApp();
+  try{ await navigator.clipboard.writeText(txt); toast("Texto copiado ✓ — é só colar no WhatsApp"); }
+  catch(e){ const ta = document.getElementById("frota-wpp"); if(ta){ ta.style.display="block"; ta.select(); } toast("Selecione o texto abaixo e copie (Ctrl+C)."); }
+};
+
+window.frotaAddVeiculo = () => {
+  const placa = osCampo("frota-novo-placa").toUpperCase().replace(/[^A-Z0-9 ]/g,""), motorista = osCampo("frota-novo-mot").toUpperCase(), ativ = osCampo("frota-novo-ativ");
+  if(!placa){ toast("Informe a placa."); return; }
+  const F = frotaCarregar();
+  F.veiculos.push({ id:osNovoId(), ordem:Math.max(0,...F.veiculos.map(v=>v.ordem))+1, placa, motorista, atividadePadrao:ativ||"reserva" });
+  frotaSalvar(); frotaRerender(); toast(`${placa} cadastrado ✓`);
+};
+window.frotaEditarCadastro = (id, campo, valor) => {
+  const v = frotaCarregar().veiculos.find(x=>x.id===id);
+  v[campo] = campo==="ordem" ? (parseInt(valor,10)||v.ordem) : campo==="placa" ? valor.toUpperCase().replace(/[^A-Z0-9 ]/g,"") : valor.toUpperCase();
+  frotaSalvar(); frotaRerender();
+};
+window.frotaRemoverVeiculo = (id) => {
+  const F = frotaCarregar(), v = F.veiculos.find(x=>x.id===id);
+  if(!confirm(`Remover ${v.placa} da frota?`)) return;
+  F.veiculos = F.veiculos.filter(x=>x.id!==id); frotaSalvar(); frotaRerender();
+};
+window.frotaResetar = () => {
+  if(!confirm("Apagar todos os lançamentos do protótipo e voltar para a lista inicial de 42 caminhões?")) return;
+  FROTA = frotaSeed(); frotaSalvar(); frotaRerender();
+};
+
+function frotaPainel(itens){
+  const total = itens.length, confirmados = itens.filter(i=>i.r.confirmado).length;
+  const porStatus = FROTA_STATUS.map(s=>({ ...s, qtd:itens.filter(i=>i.r.status===s.chave).length }));
+  const sel = FROTA_ATIV_SEL ? itens.filter(i=>i.r.atividade===FROTA_ATIV_SEL) : [];
+  return `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Caminhões na frota</div><div class="val">${total}</div></div>
+      ${porStatus.map(s=>`<div class="kpi"><div class="lbl">${s.label}</div><div class="val" style="color:var(--${s.badge==="green"?"green":s.badge==="amber"?"amber":s.badge==="red"?"red":"ink-soft"});">${s.qtd}</div><div class="delta flat">${total?(s.qtd/total*100).toFixed(0):0}% da frota</div></div>`).join("")}
+      <div class="kpi"><div class="lbl">Confirmados pelos líderes</div><div class="val" style="color:var(--${confirmados===total?"green":"amber"});">${confirmados}/${total}</div><div class="delta flat">${confirmados===total?"todos atualizados":`${total-confirmados} pendente(s)`}</div></div>
+    </div>
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Atividades do dia</h3>
+      <div class="hint">Clique numa atividade para ver os caminhões.</div>
+      <div class="frota-ativs">
+        ${FROTA_ATIVIDADES.map(a=>{
+          const doGrupo = itens.filter(i=>i.r.atividade===a.chave);
+          const alerta = doGrupo.filter(i=>["parado","semmot"].includes(i.r.status)).length;
+          return `<button class="frota-ativ ${FROTA_ATIV_SEL===a.chave?"sel":""}" style="--c:${a.cor};" onclick="frotaSelAtiv('${a.chave}')">
+            <span class="frota-ativ-lbl">${a.label}</span>
+            <span class="frota-ativ-qtd">${doGrupo.length}</span>
+            <span class="frota-ativ-sub">${doGrupo.length ? `${(doGrupo.length/total*100).toFixed(0)}% da frota` : "nenhum"}${alerta ? ` · <b style="color:var(--red);">${alerta} parado(s)</b>` : ""}</span>
+          </button>`;
+        }).join("")}
+      </div>
+      ${FROTA_ATIV_SEL ? `
+      <div class="os-sub">
+        <h4 style="font-size:14px; margin-bottom:8px;">${frotaAtiv(FROTA_ATIV_SEL).label} — ${sel.length} caminhão(ões)</h4>
+        ${sel.length ? `<table>
+          <thead><tr><th>#</th><th>Placa</th><th>Motorista</th><th>Status</th><th>Observação</th><th>Atualizado</th></tr></thead>
+          <tbody>${sel.map(({v,r})=>`<tr>
+            <td>${String(v.ordem).padStart(2,"0")}</td><td><b>${osEsc(v.placa)}</b></td><td>${osEsc(r.motorista)||"—"}</td>
+            <td><span class="badge ${frotaStatus(r.status).badge}">${frotaStatus(r.status).label}</span></td>
+            <td>${osEsc(r.obs)||"—"}</td>
+            <td>${r.confirmado ? `✓ ${r.em||""}` : `<span class="badge gray">não confirmado</span>`}</td>
+          </tr>`).join("")}</tbody></table>` : `<div class="hint">Nenhum caminhão nessa atividade hoje.</div>`}
+      </div>` : ""}
+    </div>
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Mensagem do dia para o WhatsApp</h3>
+      <div class="hint">Gerada automaticamente no mesmo formato que você usa hoje.</div>
+      <button class="entry-submit" style="margin-top:0;" onclick="frotaCopiarWhatsApp()">📋 Copiar texto para o WhatsApp</button>
+      <textarea id="frota-wpp" readonly class="frota-wpp">${osEsc(frotaTextoWhatsApp())}</textarea>
+    </div>`;
+}
+
+function frotaLider(itens){
+  const busca = FROTA_BUSCA.trim().toUpperCase();
+  const filtrados = itens.filter(({v,r})=>(FROTA_FILTRO_LIDER==="todas" || r.atividade===FROTA_FILTRO_LIDER)
+    && (!busca || v.placa.includes(busca) || (r.motorista||"").toUpperCase().includes(busca)));
+  const pend = filtrados.filter(i=>!i.r.confirmado).length;
+  const motoristas = [...new Set(frotaCarregar().veiculos.map(v=>v.motorista).filter(Boolean))].sort();
+  return `
+    <div class="panel" style="margin-bottom:12px;">
+      <div class="frota-filtros">
+        <button class="sub-tab-btn ${FROTA_FILTRO_LIDER==="todas"?"active":""}" onclick="frotaFiltroLider('todas')">Todas (${itens.length})</button>
+        ${FROTA_ATIVIDADES.map(a=>`<button class="sub-tab-btn ${FROTA_FILTRO_LIDER===a.chave?"active":""}" onclick="frotaFiltroLider('${a.chave}')">${a.label} (${itens.filter(i=>i.r.atividade===a.chave).length})</button>`).join("")}
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;" class="os-form">
+        <input id="frota-busca" placeholder="🔎 Buscar placa ou motorista" value="${osEsc(FROTA_BUSCA)}" oninput="frotaBuscar(this.value)" style="flex:1; min-width:200px;">
+        <button class="os-btn green" onclick="frotaConfirmarTodos()">✓ Confirmar os ${pend} sem alteração</button>
+      </div>
+    </div>
+    <datalist id="frota-motoristas">${motoristas.map(m=>`<option value="${osEsc(m)}">`).join("")}</datalist>
+    <div class="frota-cards">
+      ${filtrados.map(({v,r})=>{
+        const a = frotaAtiv(r.atividade);
+        return `<div class="frota-card ${r.confirmado?"ok":""}" style="--c:${a.cor};">
+          <div class="frota-card-top">
+            <span class="frota-num">${String(v.ordem).padStart(2,"0")}</span>
+            <span class="frota-placa">${osEsc(v.placa)}</span>
+            ${r.confirmado ? `<span class="badge green">✓ ${r.em||""}</span>` : `<button class="os-btn sm" onclick="frotaAtualizar('${v.id}','confirmado',true)">Confirmar</button>`}
+          </div>
+          <div class="os-form">
+            <label>Motorista<input list="frota-motoristas" value="${osEsc(r.motorista)}" onchange="frotaAtualizar('${v.id}','motorista',this.value.toUpperCase())"></label>
+            <label>Atividade<select onchange="frotaAtualizar('${v.id}','atividade',this.value)">
+              ${FROTA_ATIVIDADES.map(x=>`<option value="${x.chave}" ${x.chave===r.atividade?"selected":""}>${x.label}</option>`).join("")}
+            </select></label>
+          </div>
+          <div class="frota-status">
+            ${FROTA_STATUS.map(s=>`<button class="frota-st ${r.status===s.chave?"sel "+s.badge:""}" onclick="frotaAtualizar('${v.id}','status','${s.chave}')">${s.label}</button>`).join("")}
+          </div>
+          <div class="os-form"><input placeholder="Observação (opcional)" value="${osEsc(r.obs)}" onchange="frotaAtualizar('${v.id}','obs',this.value)"></div>
+        </div>`;
+      }).join("") || `<div class="empty-state"><p>Nenhum caminhão encontrado.</p></div>`}
+    </div>`;
+}
+
+function frotaCadastro(){
+  const veiculos = frotaVeiculosOrdenados();
+  const cont = {}; veiculos.forEach(v=>{ cont[v.placa] = (cont[v.placa]||0)+1; });
+  const placaSuspeita = (p) => cont[p]>1 ? "placa repetida" : (p.length!==7 && p!=="TUG MASTER") ? "placa incompleta" : /^[A-Z]{3}O/.test(p) ? "letra O no lugar do zero?" : "";
+  const problemas = veiculos.filter(v=>placaSuspeita(v.placa)).length;
+  return `
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Caminhões cadastrados (${veiculos.length})</h3>
+      <div class="hint">Número, placa, motorista fixo e atividade de costume. A atividade do dia é ajustada pelo líder.</div>
+      ${problemas ? `<div class="os-alerta amber" style="margin:0 0 12px;">⚠️ ${problemas} placa(s) para conferir — destacadas em amarelo na tabela.</div>` : ""}
+      <table class="os-form">
+        <thead><tr><th>#</th><th>Placa</th><th>Motorista fixo</th><th>Atividade de costume</th><th></th></tr></thead>
+        <tbody>${veiculos.map(v=>{ const s = placaSuspeita(v.placa); return `<tr ${s?'style="background:#FCF1DE;"':""}>
+          <td><input value="${v.ordem}" style="width:52px;" onchange="frotaEditarCadastro('${v.id}','ordem',this.value)"></td>
+          <td><input value="${osEsc(v.placa)}" style="width:120px; text-transform:uppercase;" onchange="frotaEditarCadastro('${v.id}','placa',this.value)">${s?` <span class="badge amber">${s}</span>`:""}</td>
+          <td><input value="${osEsc(v.motorista)}" style="text-transform:uppercase;" onchange="frotaEditarCadastro('${v.id}','motorista',this.value)"></td>
+          <td><select onchange="frotaEditarCadastro('${v.id}','atividadePadrao',this.value)">${FROTA_ATIVIDADES.map(a=>`<option value="${a.chave}" ${a.chave===v.atividadePadrao?"selected":""}>${a.label}</option>`).join("")}</select></td>
+          <td><button class="os-link" onclick="frotaRemoverVeiculo('${v.id}')">remover</button></td>
+        </tr>`; }).join("")}</tbody>
+      </table>
+      <div class="os-sub os-form">
+        <h4>Cadastrar caminhão</h4>
+        <div class="os-grid">
+          <label>Placa<input id="frota-novo-placa" placeholder="GCV0114" style="text-transform:uppercase;"></label>
+          <label>Motorista fixo<input id="frota-novo-mot" style="text-transform:uppercase;"></label>
+          <label>Atividade de costume<select id="frota-novo-ativ">${FROTA_ATIVIDADES.map(a=>`<option value="${a.chave}">${a.label}</option>`).join("")}</select></label>
+        </div>
+        <button class="entry-submit" onclick="frotaAddVeiculo()">+ Cadastrar</button>
+      </div>
+    </div>`;
+}
+
+renderers.frota = () => {
+  const itens = frotaDoDia(FROTA_DATA);
+  const aba = (k,l) => `<button class="tab-btn ${FROTA_ABA===k?"active":""}" onclick="frotaSetAba('${k}')">${l}</button>`;
+  return `
+    <div class="page-head">
+      <h2>Status da Frota</h2>
+      <p>Atividade, motorista e status de cada caminhão no dia — preenchido pelos líderes no tablet</p>
+    </div>
+    <div class="os-proto">
+      <div><b>🧪 Protótipo para avaliação.</b> Os dados ficam salvos só neste navegador.</div>
+      <button class="os-link" onclick="frotaResetar()">voltar à lista inicial</button>
+    </div>
+    <div class="frota-topo">
+      <div class="tabs" style="margin:0;">
+        ${aba("painel","📊 Painel do dia")}${aba("lider","📝 Lançamento do líder")}${aba("cadastro","🚛 Caminhões")}
+      </div>
+      <label class="frota-data">Dia <input type="date" value="${FROTA_DATA}" onchange="frotaSetData(this.value)"></label>
+    </div>
+    ${FROTA_ABA==="lider" ? frotaLider(itens) : FROTA_ABA==="cadastro" ? frotaCadastro() : frotaPainel(itens)}`;
 };
 
 /* -------------------- OPERAÇÃO BELÉM -------------------- */

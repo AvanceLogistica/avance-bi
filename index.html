@@ -343,6 +343,35 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .os-step.now{ color:var(--ink); border-color:var(--ink); } .os-step.now span{ background:var(--ink); color:#fff; }
 .os-sub{ border-top:1px dashed var(--line); margin-top:14px; padding-top:12px; }
 .os-sub h4{ font-size:13px; margin-bottom:8px; }
+/* Status da Frota (protótipo) */
+.frota-topo{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+.frota-data{ display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; color:var(--ink-soft); }
+.frota-data input{ font-family:inherit; font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); }
+.frota-ativs{ display:grid; grid-template-columns:repeat(auto-fit, minmax(170px,1fr)); gap:10px; }
+.frota-ativ{ text-align:left; font-family:inherit; background:var(--card); border:1px solid var(--line); border-left:5px solid var(--c); border-radius:12px; padding:12px 14px; cursor:pointer; display:flex; flex-direction:column; gap:2px; }
+.frota-ativ:hover{ box-shadow:0 4px 14px rgba(0,0,0,.08); }
+.frota-ativ.sel{ background:var(--paper); box-shadow:0 0 0 2px var(--c); }
+.frota-ativ-lbl{ font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.02em; color:var(--ink-soft); }
+.frota-ativ-qtd{ font-size:30px; font-weight:800; color:var(--c); line-height:1.1; }
+.frota-ativ-sub{ font-size:11.5px; color:var(--ink-soft); }
+.frota-wpp{ display:block; width:100%; min-height:220px; margin-top:12px; font-family:ui-monospace,Consolas,monospace; font-size:12px; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--paper); resize:vertical; box-sizing:border-box; }
+.frota-filtros{ display:flex; flex-wrap:wrap; gap:6px; }
+.frota-filtros .sub-tab-btn{ padding:9px 14px; font-size:13px; margin:0; }
+.frota-cards{ display:grid; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); gap:12px; }
+.frota-card{ background:var(--card); border:1px solid var(--line); border-top:5px solid var(--c); border-radius:12px; padding:12px; }
+.frota-card.ok{ background:#FAFFFC; }
+.frota-card-top{ display:flex; align-items:center; gap:8px; }
+.frota-num{ background:var(--ink); color:#fff; border-radius:6px; padding:2px 7px; font-weight:700; font-size:12px; }
+.frota-placa{ font-weight:800; font-size:17px; margin-right:auto; letter-spacing:.03em; }
+.frota-card .os-form label{ margin-top:8px; }
+.frota-card .os-form input, .frota-card .os-form select{ font-size:14px; padding:10px; }
+.frota-card > .os-form:last-child input{ width:100%; box-sizing:border-box; margin-top:8px; }
+.frota-status{ display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:10px; }
+.frota-st{ font-family:inherit; font-size:12.5px; font-weight:700; padding:10px 6px; border-radius:8px; border:1px solid var(--line); background:var(--paper); color:var(--ink-soft); cursor:pointer; }
+.frota-st.sel.green{ background:var(--green); border-color:var(--green); color:#fff; }
+.frota-st.sel.amber{ background:var(--amber); border-color:var(--amber); color:#fff; }
+.frota-st.sel.red{ background:var(--red); border-color:var(--red); color:#fff; }
+.frota-st.sel.gray{ background:var(--ink-soft); border-color:var(--ink-soft); color:#fff; }
 .os-prest-form{ background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:12px; margin-top:8px; }
 .os-prest-form h4{ font-size:12.5px; margin-bottom:0; }
 .os-aprov{ background:#FCF1DE; border:1px solid #F1D29A; border-radius:10px; padding:12px; }
@@ -507,6 +536,7 @@ body.pending #pendingScreen{display:flex;}
 
     <div class="grp-label" data-requer="diretor">Serviços</div>
     <button data-page="ordens" data-requer="diretor"><span class="ic">🛠️</span> Ordens de Serviço <span class="badge amber" style="margin-left:4px;">teste</span></button>
+    <button data-page="frota" data-requer="diretor"><span class="ic">🚛</span> Status da Frota <span class="badge amber" style="margin-left:4px;">teste</span></button>
 
     <div class="grp-label" data-requer="diretor">Administração</div>
     <button data-page="acessos" data-requer="diretor"><span class="ic">🔐</span> Gestão de Acessos</button>
