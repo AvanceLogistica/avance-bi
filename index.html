@@ -343,6 +343,34 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .os-step.now{ color:var(--ink); border-color:var(--ink); } .os-step.now span{ background:var(--ink); color:#fff; }
 .os-sub{ border-top:1px dashed var(--line); margin-top:14px; padding-top:12px; }
 .os-sub h4{ font-size:13px; margin-bottom:8px; }
+/* Hora Extra */
+.delta.sm{ font-size:11px; white-space:nowrap; }
+.he-faixa-tit{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.02em; color:var(--ink-soft); margin:14px 0 6px; }
+.he-faixa{ display:grid; grid-template-columns:repeat(auto-fit, minmax(72px,1fr)); gap:6px; }
+.he-faixa-item{ background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:6px 4px; text-align:center; cursor:pointer; display:flex; flex-direction:column; gap:1px; font-size:12px; }
+.he-faixa-item:hover{ border-color:var(--ink-soft); }
+.he-faixa-item.sel{ border-color:var(--ink); box-shadow:0 0 0 1px var(--ink); background:#fff; }
+.he-faixa-item .m{ font-size:10.5px; text-transform:uppercase; color:var(--ink-soft); font-weight:700; }
+.he-faixa-item .p{ font-size:11px; font-weight:700; }
+.he-faixa-item .p.up, .he-seta.up{ color:var(--red-dark); }
+.he-faixa-item .p.down, .he-seta.down{ color:var(--green); }
+.he-faixa-item .p.flat, .he-seta.flat{ color:var(--ink-soft); }
+.he-seta{ font-size:9px; margin-left:2px; }
+.he-matriz td, .he-matriz th{ white-space:nowrap; }
+.he-matriz td.he-max{ color:var(--red-dark); font-weight:800; }
+.he-lider-row td{ background:var(--paper); font-size:11px; }
+.he-lider{ line-height:1.3; }
+.he-alertas{ display:grid; gap:10px; }
+.he-alerta{ border:1px solid var(--line); border-left:4px solid var(--ink-soft); border-radius:10px; padding:10px 12px; }
+.he-alerta.red{ border-left-color:var(--red); } .he-alerta.amber{ border-left-color:var(--amber); } .he-alerta.green{ border-left-color:var(--green); }
+.he-alerta-top{ display:flex; justify-content:space-between; align-items:center; font-size:13px; }
+.he-alerta-qtd{ font-weight:800; font-size:16px; }
+.he-alerta.red .he-alerta-qtd{ color:var(--red); } .he-alerta.amber .he-alerta-qtd{ color:var(--amber); } .he-alerta.green .he-alerta-qtd{ color:var(--green); }
+.he-alerta-lista{ list-style:none; margin:0; padding:0; font-size:12px; }
+.he-alerta-lista li{ display:flex; justify-content:space-between; gap:10px; padding:3px 0; border-bottom:1px dashed var(--line); }
+.he-alerta-lista li span{ color:var(--ink-soft); text-align:right; }
+.he-alerta-lista li.mais{ color:var(--ink-soft); border:none; }
+
 /* Status da Frota (protótipo) */
 .frota-topo{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
 .frota-data{ display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; color:var(--ink-soft); }

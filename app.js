@@ -148,7 +148,7 @@ async function loadFromSupabase(){
   if(!sb) return false;
   SUPABASE_FALHA_CONEXAO = false; // reseta a cada tentativa — só fica true se alguma busca desta rodada falhar
   try{
-    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc, ftLanc, belemLanc, belemRec, atestLanc] = await Promise.all([
+    const [compras, contas, series, diarios, acoes, manutLanc, dieselLanc, infLanc, entLanc, ftLanc, belemLanc, belemRec, atestLanc, heLancDb] = await Promise.all([
       sbFetchAll("compras_lancamentos"),
       sbFetchAll("contas_pagar"),
       sbFetchAll("series_periodo"),
@@ -161,7 +161,8 @@ async function loadFromSupabase(){
       sbFetchAll("faturamento_lancamentos"),
       sbFetchAll("belem_lancamentos"),
       sbFetchAll("belem_receita"),
-      sbFetchAll("atestados_lancamentos")
+      sbFetchAll("atestados_lancamentos"),
+      sbFetchAll("horaextra_lancamentos")
     ]);
 
     if(!compras.length && !contas.length && !series.length && !infLanc.length && !entLanc.length && !ftLanc.length && !belemLanc.length) return false; // banco ainda vazio
@@ -226,6 +227,14 @@ async function loadFromSupabase(){
         horas:r.horas!=null?Number(r.horas):null, dias:r.dias!=null?Number(r.dias):0,
         dataRetorno:r.data_retorno||null, observacao:r.observacao||""
       }));
+    }
+
+    if(heLancDb.length){
+      DATA.horaExtra.lancamentos = heLancDb.map(r=>({
+        id:r.id, colaborador:r.colaborador||"", funcao:r.funcao||"", mes:String(r.mes).slice(0,7), total:Number(r.total)||0,
+        he20:Number(r.he20)||0, he50:Number(r.he50)||0, he100:Number(r.he100)||0, dissidio:Number(r.dissidio)||0
+      }));
+      deriveHoraExtra();
     }
 
     deriveCompras();
@@ -677,6 +686,10 @@ async function executarUndo(d){
         horas:r.horas, dias:r.dias, data_retorno:r.dataRetorno, observacao:r.observacao
       })));
     }
+  } else if(d.kind === "bulkImportHoraExtra"){
+    DATA.horaExtra.lancamentos = d.anteriores;
+    deriveHoraExtra();
+    if(sb) await sbSubstituirTabela("horaextra_lancamentos", d.anteriores.map(heParaBanco));
   } else if(d.kind === "bulkImportBelem"){
     DATA.belem.lancamentos = d.anteriores;
     if(sb){
@@ -1961,87 +1974,313 @@ initCharts.folha = () => {
   });
 };
 
-/* -------------------- HORA EXTRA -------------------- */
+/* -------------------- HORA EXTRA --------------------
+   Tudo é calculado a partir de DATA.horaExtra.lancamentos (uma linha por colaborador e mês, em R$),
+   importados da planilha de Hora Extra. Filtros de Ano, Mês e Função valem para a página inteira;
+   as comparações são sempre contra o MESMO período do ano anterior (ex: jan–set/26 x jan–set/25). */
+const MESES_HE = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
+const FILTRO_HE = { ano:null, mes:"todos", funcao:"todas" };
+
+window.setFiltroHE = (campo, valor) => { FILTRO_HE[campo] = valor; navigate("horaextra"); };
+
+function heLanc(){ return (DATA.horaExtra && DATA.horaExtra.lancamentos) || []; }
+function heAnos(){ return [...new Set(heLanc().map(r=>r.mes.slice(0,4)))].sort(); }
+function heMesNum(r){ return parseInt(r.mes.slice(5,7), 10); }
+
+// Seta + % de variação. Para custo, subir é ruim (vermelho) e cair é bom (verde).
+function heSeta(atual, anterior, sufixo){
+  if(!anterior) return `<span class="delta flat">— sem base de comparação</span>`;
+  const pct = (atual - anterior) / anterior * 100;
+  if(Math.abs(pct) < 0.05) return `<span class="delta flat">→ 0% ${sufixo||""}</span>`;
+  return `<span class="delta ${pct>0?"up":"down"}">${pct>0?"▲":"▼"} ${Math.abs(pct).toFixed(1)}% ${sufixo||""}</span>`;
+}
+function heSetaMini(atual, anterior){
+  if(!anterior || !atual) return "";
+  const pct = (atual - anterior) / anterior * 100;
+  if(Math.abs(pct) < 0.5) return `<span class="he-seta flat">→</span>`;
+  return `<span class="he-seta ${pct>0?"up":"down"}" title="${pct>0?"+":""}${pct.toFixed(1)}% vs. mês anterior">${pct>0?"▲":"▼"}</span>`;
+}
+
+function heAgrupar(linhas, chaveFn){
+  const m = {};
+  linhas.forEach(r=>{ const k = chaveFn(r); m[k] = (m[k]||0) + (r.total||0); });
+  return m;
+}
+
+// Estatísticas do período filtrado + mesmo período do ano anterior
+function heStats(){
+  const anos = heAnos();
+  if(!FILTRO_HE.ano || !anos.includes(FILTRO_HE.ano)) FILTRO_HE.ano = anos[anos.length-1];
+  const ano = FILTRO_HE.ano, anoAnt = String(Number(ano)-1);
+  const porFuncao = heLanc().filter(r=>FILTRO_HE.funcao==="todas" || r.funcao===FILTRO_HE.funcao);
+  const doAno = porFuncao.filter(r=>r.mes.startsWith(ano));
+  const mesesComDado = [...new Set(doAno.map(heMesNum))].sort((a,b)=>a-b);
+  const meses = FILTRO_HE.mes==="todos" ? mesesComDado : [Number(FILTRO_HE.mes)];
+  const noPeriodo = (r, a) => r.mes.startsWith(a) && meses.includes(heMesNum(r));
+  const atual = porFuncao.filter(r=>noPeriodo(r, ano) && r.total);
+  const anterior = porFuncao.filter(r=>noPeriodo(r, anoAnt) && r.total);
+
+  const resumo = (linhas) => {
+    const total = sumArr(linhas.map(r=>r.total));
+    const porColab = heAgrupar(linhas, r=>r.colaborador);
+    const ranking = Object.entries(porColab).map(([nome,valor])=>({ nome, valor })).sort((a,b)=>b.valor-a.valor);
+    const nMeses = new Set(linhas.map(r=>r.mes)).size;
+    return { total, ranking, colabs:ranking.length, nMeses, mediaMensal: nMeses ? total/nMeses : 0,
+             porColabMedia: ranking.length ? total/ranking.length : 0,
+             top10Pct: total ? sumArr(ranking.slice(0,10).map(r=>r.valor))/total*100 : 0 };
+  };
+  const funcaoDe = {};
+  heLanc().forEach(r=>{ if(r.funcao) funcaoDe[r.colaborador] = r.funcao; });
+  return { ano, anoAnt, meses, mesesComDado, porFuncao, atual, anterior, A:resumo(atual), B:resumo(anterior), funcaoDe };
+}
+
+// Alertas de RH — olham a série completa, independentes do filtro de mês
+function heAlertas(porFuncao){
+  const mesesTodos = [...new Set(porFuncao.map(r=>r.mes))].sort();
+  if(!mesesTodos.length) return [];
+  const ultimo = mesesTodos[mesesTodos.length-1];
+  const ult12 = mesesTodos.slice(-12), ant3 = mesesTodos.slice(-4, -1);
+  const porColabMes = {};
+  porFuncao.forEach(r=>{ if(!r.total) return; (porColabMes[r.colaborador] = porColabMes[r.colaborador] || {})[r.mes] = (porColabMes[r.colaborador][r.mes]||0) + r.total; });
+  const nomeMes = (m) => `${MESES_HE[parseInt(m.slice(5),10)-1]}/${m.slice(2,4)}`;
+
+  const recorrentes = Object.entries(porColabMes)
+    .map(([nome, ms])=>({ nome, n: ult12.filter(m=>ms[m]).length, total: sumArr(ult12.map(m=>ms[m]||0)) }))
+    .filter(x=>x.n >= Math.min(10, ult12.length)).sort((a,b)=>b.total-a.total);
+
+  const bruscos = Object.entries(porColabMes).map(([nome, ms])=>{
+    const media = ant3.length ? sumArr(ant3.map(m=>ms[m]||0))/ant3.length : 0;
+    return { nome, atual: ms[ultimo]||0, media };
+  }).filter(x=>x.media>0 && x.atual >= 500 && x.atual > x.media*1.5).sort((a,b)=>(b.atual/b.media)-(a.atual/a.media));
+
+  const doUltimo = Object.entries(porColabMes).map(([nome, ms])=>({ nome, v: ms[ultimo]||0 })).filter(x=>x.v);
+  const mediaUlt = doUltimo.length ? sumArr(doUltimo.map(x=>x.v))/doUltimo.length : 0;
+  const acima = doUltimo.filter(x=>x.v > mediaUlt*2).sort((a,b)=>b.v-a.v);
+
+  const totUlt = sumArr(doUltimo.map(x=>x.v));
+  const top10Ult = sumArr([...doUltimo].sort((a,b)=>b.v-a.v).slice(0,10).map(x=>x.v));
+  const concPct = totUlt ? top10Ult/totUlt*100 : 0;
+
+  const lista = (itens, fmt) => itens.length
+    ? `<ul class="he-alerta-lista">${itens.slice(0,8).map(fmt).join("")}${itens.length>8?`<li class="mais">+ ${itens.length-8} colaborador(es)</li>`:""}</ul>`
+    : `<div class="hint" style="margin:0;">Nenhum caso. ✓</div>`;
+  return [
+    { cor:"red", titulo:"Hora extra recorrente", desc:`HE em ${Math.min(10, ult12.length)} ou mais dos últimos ${ult12.length} meses`, qtd:recorrentes.length,
+      corpo: lista(recorrentes, x=>`<li><b>${x.nome}</b><span>${x.n} de ${ult12.length} meses · ${fmtBRL(x.total)}</span></li>`) },
+    { cor:"amber", titulo:"Aumento brusco", desc:`${nomeMes(ultimo)} mais de 50% acima da média dos 3 meses anteriores`, qtd:bruscos.length,
+      corpo: lista(bruscos, x=>`<li><b>${x.nome}</b><span>${fmtBRL(x.atual)} · média ${fmtBRL(x.media)} (▲ ${((x.atual/x.media-1)*100).toFixed(0)}%)</span></li>`) },
+    { cor:"amber", titulo:"Custo acima do dobro da média", desc:`${nomeMes(ultimo)} · média por colaborador: ${fmtBRL(mediaUlt)}`, qtd:acima.length,
+      corpo: lista(acima, x=>`<li><b>${x.nome}</b><span>${fmtBRL(x.v)}</span></li>`) },
+    { cor: concPct>30 ? "red" : "green", titulo:"Concentração nos 10 maiores", desc:`${nomeMes(ultimo)} · referência de alerta: acima de 30%`, qtd:`${concPct.toFixed(0)}%`,
+      corpo: `<div class="hint" style="margin:0;">Os 10 colaboradores com mais HE somam <b>${fmtBRL(top10Ult)}</b> de ${fmtBRL(totUlt)} no mês.</div>` },
+  ];
+}
+
 renderers.horaextra = () => {
-  const he = DATA.horaExtraCusto, hq = DATA.horaExtraQtd;
+  const lanc = heLanc();
+  if(!lanc.length){
+    return `<div class="page-head"><h2>Hora Extra</h2></div>
+      <div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏱️</div><h4>Nenhum dado de hora extra</h4>
+      <p>Vá em <b>Entrada de Dados → Hora Extra</b> e importe a planilha "Controle de Hora Extra".</p></div></div>`;
+  }
+  const st = heStats(), { A, B, ano, anoAnt } = st;
+  const funcoes = [...new Set(lanc.map(r=>r.funcao).filter(Boolean))].sort();
+  const opt = (v,l,atual) => `<option value="${v}" ${String(atual)===String(v)?"selected":""}>${l}</option>`;
+  const periodoTxt = FILTRO_HE.mes==="todos"
+    ? (st.meses.length ? `${MESES_HE[st.meses[0]-1]}–${MESES_HE[st.meses[st.meses.length-1]-1]}/${ano.slice(2)}` : ano)
+    : `${MESES_HE[Number(FILTRO_HE.mes)-1]}/${ano.slice(2)}`;
+  const periodoAnt = periodoTxt.replace(`/${ano.slice(2)}`, `/${anoAnt.slice(2)}`);
+  const maior = A.ranking[0];
+  const recorrentesAno = (() => {
+    const porColab = {};
+    st.porFuncao.filter(r=>r.mes.startsWith(ano) && r.total).forEach(r=>{ (porColab[r.colaborador] = porColab[r.colaborador] || new Set()).add(r.mes); });
+    const minimo = Math.max(3, Math.ceil(st.mesesComDado.length*0.75));
+    return Object.values(porColab).filter(s=>s.size>=minimo).length;
+  })();
+
+  // Faixa mês a mês do ano selecionado (seta vs. mês anterior)
+  const mensal = heAgrupar(st.porFuncao, r=>r.mes);
+  const faixa = st.mesesComDado.map(m=>{
+    const k = `${ano}-${String(m).padStart(2,"0")}`;
+    const kAnt = m===1 ? `${anoAnt}-12` : `${ano}-${String(m-1).padStart(2,"0")}`;
+    const v = mensal[k]||0, vAnt = mensal[kAnt]||0;
+    const pct = vAnt ? (v-vAnt)/vAnt*100 : null;
+    return `<div class="he-faixa-item ${FILTRO_HE.mes==String(m)?"sel":""}" onclick="setFiltroHE('mes','${FILTRO_HE.mes==String(m)?"todos":m}')">
+      <span class="m">${MESES_HE[m-1]}</span><b>${fmtMil(v)}</b>
+      ${pct==null ? `<span class="p flat">—</span>` : `<span class="p ${pct>0?"up":"down"}">${pct>0?"▲":"▼"} ${Math.abs(pct).toFixed(0)}%</span>`}
+    </div>`;
+  }).join("");
+
+  // Ranking (Pareto) do período
+  let acum = 0;
+  const antPorColab = Object.fromEntries(B.ranking.map(r=>[r.nome, r.valor]));
+  const ranking = A.ranking.slice(0,10).map((r,i)=>{
+    acum += r.valor;
+    return `<tr><td class="rank">${i+1}</td><td><b>${r.nome}</b></td><td>${st.funcaoDe[r.nome]||"—"}</td>
+      <td class="num"><b>${fmtBRL2(r.valor)}</b></td><td class="num">${A.total?(r.valor/A.total*100).toFixed(1):0}%</td>
+      <td class="num">${A.total?(acum/A.total*100).toFixed(1):0}%</td>
+      <td class="num">${antPorColab[r.nome] ? heSeta(r.valor, antPorColab[r.nome]).replace('class="delta','class="delta sm') : '<span class="delta flat sm">novo</span>'}</td></tr>`;
+  }).join("");
+
+  // Maiores por mês (top 10 do ano × meses)
+  const doAno = st.porFuncao.filter(r=>r.mes.startsWith(ano) && r.total);
+  const matriz = {};
+  doAno.forEach(r=>{ const m = heMesNum(r); (matriz[r.colaborador] = matriz[r.colaborador] || {})[m] = (matriz[r.colaborador][m]||0) + r.total; });
+  const top10Ano = Object.entries(matriz).map(([nome, ms])=>({ nome, ms, total:sumArr(Object.values(ms)) })).sort((a,b)=>b.total-a.total).slice(0,10);
+  const maxMes = {};
+  st.mesesComDado.forEach(m=>{ maxMes[m] = Math.max(...Object.values(matriz).map(ms=>ms[m]||0)); });
+  const liderMes = st.mesesComDado.map(m=>{
+    const lider = Object.entries(matriz).sort((a,b)=>(b[1][m]||0)-(a[1][m]||0))[0];
+    return `<td class="num he-lider">${lider ? `${lider[0].split(" ")[0]}<br><b>${fmtBRL(lider[1][m]||0)}</b>` : "—"}</td>`;
+  }).join("");
+
+  // Por função (sempre todas as funções, no período)
+  const todasNoPeriodo = lanc.filter(r=>r.mes.startsWith(ano) && st.meses.includes(heMesNum(r)) && r.total);
+  const todasAnt = lanc.filter(r=>r.mes.startsWith(anoAnt) && st.meses.includes(heMesNum(r)) && r.total);
+  const totFuncao = sumArr(todasNoPeriodo.map(r=>r.total));
+  const porFuncaoArr = funcoes.map(f=>{
+    const ls = todasNoPeriodo.filter(r=>r.funcao===f);
+    const colabs = new Set(ls.map(r=>r.colaborador)).size;
+    const v = sumArr(ls.map(r=>r.total)), vAnt = sumArr(todasAnt.filter(r=>r.funcao===f).map(r=>r.total));
+    return { funcao:f, colabs, v, vAnt };
+  }).filter(x=>x.v || x.vAnt).sort((a,b)=>b.v-a.v);
+  DATA.horaExtra._porFuncao = porFuncaoArr;
+
   return `
-    <div class="page-head"><h2>Hora Extra</h2><p>Custo (R$) e quantidade (horas), 2025 vs 2026</p></div>
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="custo">Custo (R$)</button>
-      <button class="tab-btn" data-tab="qtd">Quantidade (Horas)</button>
+    <div class="page-head"><h2>Hora Extra</h2><p>Custo em R$ por colaborador, mês e função — ${fmtNum(lanc.length)} lançamento(s) importados</p></div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="filtro-bar">
+        <label>Ano<select onchange="setFiltroHE('ano',this.value)">${heAnos().map(a=>opt(a,a,ano)).join("")}</select></label>
+        <label>Mês<select onchange="setFiltroHE('mes',this.value)">${opt("todos","Todos os meses",FILTRO_HE.mes)}${st.mesesComDado.map(m=>opt(m, MESES_HE[m-1][0].toUpperCase()+MESES_HE[m-1].slice(1), FILTRO_HE.mes)).join("")}</select></label>
+        <label>Função<select onchange="setFiltroHE('funcao',this.value)">${opt("todas","Todas",FILTRO_HE.funcao)}${funcoes.map(f=>opt(f,f,FILTRO_HE.funcao)).join("")}</select></label>
+      </div>
+      <div class="hint" style="margin:10px 0 0;">Período: <b>${periodoTxt}</b> · comparado com <b>${periodoAnt}</b>${FILTRO_HE.funcao!=="todas" ? ` · função <b>${FILTRO_HE.funcao}</b>` : ""}</div>
     </div>
 
-    <div class="subtab active" id="tab-custo">
-      <div class="kpi-grid">
-        <div class="kpi"><div class="lbl">Jan–Jun 2025</div><div class="val">${fmtBRL(he.janJun2025)}</div></div>
-        <div class="kpi"><div class="lbl">Jan–Jun 2026</div><div class="val">${fmtBRL(he.janJun2026)}</div></div>
-        <div class="kpi"><div class="lbl">Variação</div><div class="val">+${he.crescimentoPct}%</div><span class="delta up">↑ período a período</span></div>
-        <div class="kpi"><div class="lbl">Top 10 colaboradores</div><div class="val">${fmtBRL(he.top10TotalGeral)}</div><div class="delta flat">${he.top10Pct}% do total</div></div>
-      </div>
-      <div class="panel" style="margin-bottom:16px;">
-        <h3>Custo mensal — 2025 vs 2026</h3>
-        <div class="chart-wrap" style="height:280px;"><canvas id="ch-he-custo"></canvas></div>
-        <div class="chart-insight">${insightSerie(he.labels, he.y2026, fmtBRL)}</div>
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">💰 Custo total de HE</div><div class="val">${fmtBRL(A.total)}</div>${heSeta(A.total, B.total, `vs. ${periodoAnt}`)}</div>
+      <div class="kpi"><div class="lbl">👥 Colaboradores com HE</div><div class="val">${A.colabs}</div>${heSeta(A.colabs, B.colabs, `vs. ${periodoAnt}`)}</div>
+      <div class="kpi"><div class="lbl">🏆 Maior custo individual</div><div class="val">${maior ? fmtBRL(maior.valor) : "—"}</div><div class="delta flat">${maior ? maior.nome : ""}</div></div>
+      <div class="kpi"><div class="lbl">📈 Média mensal de HE</div><div class="val">${fmtBRL(A.mediaMensal)}</div>${heSeta(A.mediaMensal, B.mediaMensal, `vs. ${anoAnt}`)}</div>
+      <div class="kpi"><div class="lbl">📊 HE x ano anterior</div><div class="val" style="color:var(--${A.total>B.total?"red":"green"});">${B.total ? `${A.total>B.total?"▲":"▼"} ${Math.abs((A.total-B.total)/B.total*100).toFixed(1)}%` : "—"}</div><div class="delta flat">${B.total ? `${A.total>B.total?"+":"−"}${fmtBRL(Math.abs(A.total-B.total))}` : "sem dados do ano anterior"}</div></div>
+      <div class="kpi"><div class="lbl">🔴 Funcionários recorrentes</div><div class="val">${recorrentesAno}</div><div class="delta flat">com HE em 75%+ dos meses de ${ano}</div></div>
+      <div class="kpi"><div class="lbl">⚠️ Concentração</div><div class="val" style="color:var(--${A.top10Pct>30?"red":"ink"});">${A.top10Pct.toFixed(1)}%</div><div class="delta flat">do custo nos 10 maiores</div></div>
+      <div class="kpi"><div class="lbl">🧮 Custo por colaborador</div><div class="val">${fmtBRL(A.porColabMedia)}</div>${heSeta(A.porColabMedia, B.porColabMedia, `vs. ${periodoAnt}`)}</div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Evolução mensal — ${anoAnt} x ${ano}</h3>
+      <div class="hint">A seta em cada ponto de ${ano} compara com o mesmo mês de ${anoAnt}: <span style="color:var(--red-dark);">▲ aumento</span> · <span style="color:var(--green);">▼ queda</span></div>
+      <div class="chart-wrap" style="height:300px;"><canvas id="ch-he-evolucao"></canvas></div>
+      <div class="he-faixa-tit">Mês a mês em ${ano} — seta compara com o mês anterior (clique para filtrar)</div>
+      <div class="he-faixa">${faixa}</div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Top 10 maiores geradores de HE — ${periodoTxt}</h3>
+        <div class="hint">Pareto: % acumulado mostra quanto do custo total os primeiros concentram</div>
+        <table>
+          <thead><tr><th>#</th><th>Colaborador</th><th>Função</th><th class="num">HE (R$)</th><th class="num">% total</th><th class="num">% acum.</th><th class="num">vs. ${anoAnt}</th></tr></thead>
+          <tbody>${ranking || `<tr><td colspan="7">Sem dados no período.</td></tr>`}</tbody>
+        </table>
       </div>
       <div class="panel">
-        <h3>10 maiores em 2026 (R$)</h3>
-        <table>
-          <thead><tr><th>#</th><th>Colaborador</th><th class="num">Jan</th><th class="num">Fev</th><th class="num">Mar</th><th class="num">Abr</th><th class="num">Mai</th><th class="num">Jun</th><th class="num">Total</th></tr></thead>
-          <tbody>
-            ${he.top10.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.nome}</td><td class="num">${fmtBRL2(t.jan)}</td><td class="num">${fmtBRL2(t.fev)}</td><td class="num">${fmtBRL2(t.mar)}</td><td class="num">${fmtBRL2(t.abr)}</td><td class="num">${fmtBRL2(t.mai)}</td><td class="num">${fmtBRL2(t.jun)}</td><td class="num"><b>${fmtBRL2(t.total)}</b></td></tr>`).join("")}
-          </tbody>
-        </table>
+        <h3>Custo de HE por função — ${periodoTxt}</h3>
+        <div class="chart-wrap" style="height:${Math.max(160, porFuncaoArr.length*44)}px;"><canvas id="ch-he-funcao"></canvas></div>
+        <div style="overflow-x:auto;"><table style="margin-top:10px;">
+          <thead><tr><th>Função</th><th class="num">Colab.</th><th class="num">Total</th><th class="num">%</th><th class="num">Média/colab.</th><th class="num">vs. ${anoAnt}</th></tr></thead>
+          <tbody>${porFuncaoArr.map(f=>`<tr><td><b>${f.funcao}</b></td><td class="num">${f.colabs}</td><td class="num">${fmtBRL(f.v)}</td>
+            <td class="num">${totFuncao?(f.v/totFuncao*100).toFixed(1):0}%</td><td class="num">${f.colabs?fmtBRL(f.v/f.colabs):"—"}</td>
+            <td class="num">${heSeta(f.v, f.vAnt).replace('class="delta','class="delta sm')}</td></tr>`).join("")}</tbody>
+        </table></div>
       </div>
     </div>
 
-    <div class="subtab" id="tab-qtd">
-      <div class="kpi-grid">
-        <div class="kpi"><div class="lbl">Total horas (jan–jun/26)</div><div class="val">${fmtNum(hq.totalJanMai2026)} h</div></div>
-        <div class="kpi"><div class="lbl">Variação mensal</div><div class="val">+${hq.crescimentoPct}%</div></div>
-        <div class="kpi"><div class="lbl">Maior colaborador</div><div class="val">${hq.top10[0].total} h</div><div class="delta flat">${hq.top10[0].nome}</div></div>
-        <div class="kpi"><div class="lbl">Média mensal top 10</div><div class="val">${Math.round(hq.top10.reduce((a,t)=>a+t.total,0)/10/6)} h</div></div>
-      </div>
-      <div class="panel" style="margin-bottom:16px;">
-        <h3>Quantidade de horas extras — 2025 vs 2026</h3>
-        <div class="chart-wrap" style="height:280px;"><canvas id="ch-he-qtd"></canvas></div>
-        <div class="chart-insight">${insightSerie(hq.labels, hq.y2026, v=>fmtNum(v)+"h")}</div>
-      </div>
-      <div class="panel">
-        <h3>10 maiores em 2026 (horas)</h3>
-        <table>
-          <thead><tr><th>#</th><th>Colaborador</th><th class="num">Jan</th><th class="num">Fev</th><th class="num">Mar</th><th class="num">Abr</th><th class="num">Mai</th><th class="num">Jun</th><th class="num">Total</th></tr></thead>
-          <tbody>
-            ${hq.top10.map((t,i)=>`<tr><td class="rank">${i+1}</td><td>${t.nome}</td><td class="num">${t.jan}</td><td class="num">${t.fev}</td><td class="num">${t.mar}</td><td class="num">${t.abr}</td><td class="num">${t.mai}</td><td class="num">${t.jun}</td><td class="num"><b>${t.total}</b></td></tr>`).join("")}
-          </tbody>
-        </table>
+    <div class="panel" style="margin:16px 0;">
+      <h3>Maiores por mês em ${ano} (R$)</h3>
+      <div class="hint">Os 10 colaboradores com mais HE no ano. Em vermelho, o maior valor de cada mês; a seta compara com o mês anterior do próprio colaborador.</div>
+      <div style="overflow-x:auto;">
+      <table class="he-matriz">
+        <thead><tr><th>#</th><th>Colaborador</th>${st.mesesComDado.map(m=>`<th class="num">${MESES_HE[m-1]}</th>`).join("")}<th class="num">Total</th></tr></thead>
+        <tbody>
+          <tr class="he-lider-row"><td></td><td><b>Maior do mês</b></td>${liderMes}<td></td></tr>
+          ${top10Ano.map((t,i)=>`<tr><td class="rank">${i+1}</td><td><b>${t.nome}</b><div class="hint" style="margin:0;">${st.funcaoDe[t.nome]||""}</div></td>
+            ${st.mesesComDado.map((m,j)=>{ const v = t.ms[m]||0, vAnt = j>0 ? (t.ms[st.mesesComDado[j-1]]||0) : 0;
+              return `<td class="num ${v && v===maxMes[m]?"he-max":""}">${v ? fmtBRL(v) : "—"} ${j>0?heSetaMini(v, vAnt):""}</td>`; }).join("")}
+            <td class="num"><b>${fmtBRL(t.total)}</b></td></tr>`).join("")}
+        </tbody>
+      </table>
       </div>
     </div>
-  `;
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Composição do custo — ${periodoTxt}</h3>
+        <div class="hint">Quanto de cada tipo de hora extra compõe o total</div>
+        <div class="chart-wrap" style="height:240px;"><canvas id="ch-he-tipo"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>🚨 Alertas de RH</h3>
+        <div class="hint">Calculados sobre o último mês com dados${FILTRO_HE.funcao!=="todas" ? ` · função ${FILTRO_HE.funcao}` : ""}</div>
+        <div class="he-alertas">
+          ${heAlertas(st.porFuncao).map(a=>`<div class="he-alerta ${a.cor}">
+            <div class="he-alerta-top"><b>${a.titulo}</b><span class="he-alerta-qtd">${a.qtd}</span></div>
+            <div class="hint" style="margin:2px 0 6px;">${a.desc}</div>${a.corpo}</div>`).join("")}
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <h3>Quantidade de horas extras — 2025 x 2026</h3>
+      <div class="hint">Lançamento manual mensal (Entrada de Dados → Hora Extra → Quantidade). A planilha de R$ não traz horas.</div>
+      <div class="chart-wrap" style="height:240px;"><canvas id="ch-he-qtd"></canvas></div>
+    </div>`;
 };
+
 initCharts.horaextra = () => {
-  const he = DATA.horaExtraCusto, hq = DATA.horaExtraQtd;
+  if(!heLanc().length) return;
+  const st = heStats(), { ano, anoAnt } = st;
+  const mensal = heAgrupar(st.porFuncao, r=>r.mes);
+  const serie = (a) => MESES_HE.map((_,i)=>{ const v = mensal[`${a}-${String(i+1).padStart(2,"0")}`]; return v ? Math.round(v) : null; });
+  const sAtual = serie(ano), sAnt = serie(anoAnt);
+  const varPct = (i) => (sAtual[i]!=null && sAnt[i]) ? (sAtual[i]-sAnt[i])/sAnt[i]*100 : null;
 
-  document.querySelectorAll(".tab-btn").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      document.querySelectorAll(".tab-btn").forEach(b=>b.classList.remove("active"));
-      btn.classList.add("active");
-      document.querySelectorAll(".subtab").forEach(s=>s.classList.remove("active"));
-      document.getElementById("tab-"+btn.dataset.tab).classList.add("active");
-    });
-  });
-
-  mkChart("ch-he-custo", {
-    type:"bar",
-    data:{ labels:he.labels, datasets:[
-      { label:"2025", data:he.y2025, backgroundColor:"#D8D9E0", borderRadius:4 },
-      { label:"2026", data:he.y2026, backgroundColor:COLORS.red, borderRadius:4 }
+  mkChart("ch-he-evolucao", {
+    type:"line",
+    data:{ labels:MESES_HE, datasets:[
+      { label:anoAnt, data:sAnt, borderColor:"#B9BBC6", backgroundColor:"#B9BBC6", borderWidth:2, pointRadius:3, tension:.3,
+        datalabels:{ display:false } },
+      { label:ano, data:sAtual, borderColor:COLORS.red, backgroundColor:COLORS.red, borderWidth:3, pointRadius:4, tension:.3,
+        datalabels:{
+          display:(ctx)=>sAtual[ctx.dataIndex]!=null,
+          align:"top", anchor:"end", offset:4, font:{ size:9, weight:700 },
+          color:(ctx)=>{ const p = varPct(ctx.dataIndex); return p==null ? COLORS.ink : p>0 ? COLORS.red : COLORS.green; },
+          formatter:(v,ctx)=>{ const p = varPct(ctx.dataIndex); return `${fmtMil(v)}${p==null ? "" : `\n${p>0?"▲":"▼"} ${Math.abs(p).toFixed(0)}%`}`; }
+        } }
     ]},
     options:{ responsive:true, maintainAspectRatio:false,
-      plugins:{legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
-        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]!=null, anchor:"end", align:"top", offset:1, color:COLORS.ink, font:{size:8, weight:700}, formatter:fmtLabelBRL } },
-      layout:{ padding:{ top:14 } },
-      scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}} } }
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"circle" } },
+        tooltip:{ callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${fmtBRL(ctx.parsed.y)}`,
+          afterLabel:(ctx)=>{ if(ctx.datasetIndex!==1) return ""; const p = varPct(ctx.dataIndex); return p==null ? "" : `${p>0?"▲":"▼"} ${Math.abs(p).toFixed(1)}% vs. ${anoAnt}`; } } } },
+      layout:{ padding:{ top:30, right:10 } },
+      scales:{ y:{ grid:{ color:COLORS.grid }, ticks:{ callback:v=>fmtMil(v) }, beginAtZero:true }, x:{ grid:{ display:false } } } }
   });
+
+  const pf = DATA.horaExtra._porFuncao || [];
+  mkChart("ch-he-funcao", {
+    type:"bar",
+    data:{ labels:pf.map(f=>f.funcao), datasets:[{ label:ano, data:pf.map(f=>Math.round(f.v)), backgroundColor:COLORS.red, borderRadius:4 }] },
+    options:{ indexAxis:"y", responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false },
+        datalabels:{ anchor:"end", align:"end", color:COLORS.ink, font:{ size:10, weight:700 },
+          formatter:(v,ctx)=>{ const f = pf[ctx.dataIndex]; const p = f.vAnt ? (f.v-f.vAnt)/f.vAnt*100 : null; return `${fmtMil(v)}${p==null?"":`  ${p>0?"▲":"▼"}${Math.abs(p).toFixed(0)}%`}`; } } },
+      layout:{ padding:{ right:80 } },
+      scales:{ x:{ grid:{ color:COLORS.grid }, ticks:{ callback:v=>fmtMil(v) } }, y:{ grid:{ display:false } } } }
+  });
+
+  const hq = DATA.horaExtraQtd;
   mkChart("ch-he-qtd", {
     type:"bar",
     data:{ labels:hq.labels, datasets:[
@@ -2054,7 +2293,32 @@ initCharts.horaextra = () => {
       layout:{ padding:{ top:14 } },
       scales:{ y:{grid:{color:COLORS.grid}}, x:{grid:{display:false}} } }
   });
+
+  const tipos = [["H.E 20%","he20"],["H.E 50%","he50"],["H.E 100%","he100"],["Dissídio","dissidio"]]
+    .map(([l,k])=>({ l, v: sumArr(st.atual.map(r=>r[k]||0)) })).filter(t=>t.v>0);
+  const totTipos = sumArr(tipos.map(t=>t.v));
+  mkChart("ch-he-tipo", {
+    type:"doughnut",
+    data:{ labels:tipos.map(t=>t.l), datasets:[{ data:tipos.map(t=>Math.round(t.v)), backgroundColor:[COLORS.amber, COLORS.red, COLORS.redDark, COLORS.inkSoft], borderWidth:2 }] },
+    options:{ responsive:true, maintainAspectRatio:false, cutout:"58%",
+      plugins:{ legend:{ position:"right", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"circle",
+          generateLabels:(chart)=>chart.data.labels.map((l,i)=>({ text:`${l} — ${fmtBRL(chart.data.datasets[0].data[i])}`, fillStyle:chart.data.datasets[0].backgroundColor[i], strokeStyle:"#fff", index:i })) } },
+        datalabels:{ color:"#fff", font:{ size:11, weight:700 }, formatter:(v)=>totTipos ? `${(v/totTipos*100).toFixed(0)}%` : "" } } }
+  });
 };
+
+// Mantém DATA.horaExtraCusto (usado no Painel Executivo) em sincronia com os lançamentos importados
+function deriveHoraExtra(){
+  const lanc = heLanc();
+  if(!lanc.length) return;
+  const he = DATA.horaExtraCusto;
+  const mensal = heAgrupar(lanc, r=>r.mes);
+  ["2025","2026"].forEach(a=>{
+    he[`y${a}`] = MESES_HE.map((_,i)=>{ const v = mensal[`${a}-${String(i+1).padStart(2,"0")}`]; return v ? Math.round(v) : null; });
+  });
+  recomputeHoraExtraCusto();
+}
+deriveHoraExtra();
 
 /* -------------------- COMPRAS DE PEÇAS -------------------- */
 renderers.compras = () => {
@@ -3137,6 +3401,19 @@ const ENTRY_FORMS = {
     <button class="entry-submit" onclick="submitFolha()">Adicionar / atualizar mês</button>
   `,
   horaextra: () => `
+    <div style="background:var(--red-soft); border:1px solid #F0B9C0; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">📤 Importar planilha de Hora Extra (.xlsx)</h4>
+      <div class="hint" style="margin-bottom:10px;">
+        Lê a aba <b>"DADOS 2025-2026"</b> do Controle de Hora Extra (em R$). Colunas esperadas:
+        COLABORADOR, MÊS, FUNÇÃO, H.E 20%, H.E 50%, H.E 100%, DISSIDIO MAIO, DISSIDIO 50%, TOTAL e Ano.
+        O ano vem da coluna <b>Ano</b> (a data da coluna MÊS é usada só para o mês).
+        <b>Importar substitui todo o histórico de hora extra do sistema.</b>
+      </div>
+      <input type="file" id="ehe-import-file" accept=".xlsx,.xls" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="importHoraExtraXlsx()">Importar e substituir</button>
+      <div id="ehe-import-status" class="hint" style="margin-top:10px;"></div>
+    </div>
+    <h4 style="font-size:13px; margin-top:18px;">Lançamento manual mensal</h4>
     <div class="tabs" style="margin-top:12px;">
       <button class="sub-tab-btn active" data-sub="custo" onclick="toggleSub(this,'he-custo','he-qtd')">Custo (R$)</button>
       <button class="sub-tab-btn" data-sub="qtd" onclick="toggleSub(this,'he-qtd','he-custo')">Quantidade (horas)</button>
@@ -4335,6 +4612,90 @@ window.importAtestadosXlsx = async () => {
       })));
       statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
       toast(`✓ ${novos.length} atestados importados (salvo no banco)`);
+    }catch(e){
+      statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
+      toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
+    }
+  }catch(e){ console.error(e); statusEl.textContent = "⚠ Erro ao ler o arquivo: " + e.message; }
+};
+
+function heParaBanco(r){
+  return { colaborador:r.colaborador, funcao:r.funcao, mes:`${r.mes}-01`, total:r.total,
+           he20:r.he20, he50:r.he50, he100:r.he100, dissidio:r.dissidio };
+}
+
+window.importHoraExtraXlsx = async () => {
+  const fileInput = document.getElementById("ehe-import-file");
+  const statusEl = document.getElementById("ehe-import-status");
+  const file = fileInput.files[0];
+  if(!file){ statusEl.textContent = "⚠ Selecione um arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ statusEl.textContent = "⚠ Biblioteca de planilhas não carregada."; return; }
+
+  statusEl.textContent = "Lendo planilha...";
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array", cellDates:true });
+    // Procura a aba com cabeçalho COLABORADOR (a planilha escreve "COLOBORADOR") + MÊS + TOTAL,
+    // começando pelas que se chamam "DADOS..." — as demais abas (CADASTRO, CONTROLE FOLHA) são ignoradas.
+    const ehColab = (c) => c!=null && /^COL[OA]BORADOR$/.test(String(c).trim().toUpperCase());
+    const preferidas = wb.SheetNames.filter(n=>n.trim().toUpperCase().startsWith("DADOS"));
+    let headerRow = null, sheetRows = null;
+    for(const nome of [...preferidas, ...wb.SheetNames]){
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[nome], { header:1, defval:null });
+      for(let i=0;i<Math.min(rows.length,30);i++){
+        const r = rows[i];
+        if(r && r.some(ehColab) && r.some(c=>c!=null && String(c).trim().toUpperCase()==="TOTAL")){ headerRow = r; sheetRows = rows.slice(i+1); break; }
+      }
+      if(headerRow) break;
+    }
+    if(!headerRow){ statusEl.textContent = `⚠ Não encontrei a linha de cabeçalho com 'COLABORADOR' e 'TOTAL'. Abas: ${wb.SheetNames.join(", ")}.`; return; }
+
+    const idx = {};
+    headerRow.forEach((h,i)=>{ if(h!=null) idx[String(h).trim().toUpperCase().replace(/\s+/g," ")] = i; });
+    const cColab = headerRow.findIndex(ehColab), cMes = idx["MÊS"] ?? idx["MES"], cFuncao = idx["FUNÇÃO"] ?? idx["FUNCAO"],
+          c20 = idx["H.E 20%"], c50 = idx["H.E 50%"], c100 = idx["H.E 100%"],
+          cDm = idx["DISSIDIO MAIO"] ?? idx["DISSÍDIO MAIO"], cD50 = idx["DISSIDIO 50%"] ?? idx["DISSÍDIO 50%"],
+          cTotal = idx["TOTAL"], cAno = idx["ANO"];
+    if(cMes==null){ statusEl.textContent = "⚠ Falta a coluna MÊS na planilha."; return; }
+
+    const num = (r,c) => { if(c==null || r[c]==null || r[c]==="") return 0; const v = typeof r[c]==="number" ? r[c] : parseValorBRL(r[c]); return isNaN(v) ? 0 : Math.round(v*100)/100; };
+    const novos = []; let ignoradas = 0;
+    sheetRows.forEach(r=>{
+      if(!r || !r[cColab] || ehColab(r[cColab])) return;          // linha vazia ou cabeçalho repetido
+      let mesNum = null, anoData = null;
+      const d = r[cMes];
+      if(d instanceof Date && !isNaN(d)){ const dd = new Date(d.getTime() + 12*3600*1000); mesNum = dd.getMonth()+1; anoData = dd.getFullYear(); }
+      else { const iso = excelDateToISO(d); if(iso){ mesNum = Number(iso.slice(5,7)); anoData = Number(iso.slice(0,4)); } }
+      const ano = (cAno!=null && Number(r[cAno])>2000) ? Number(r[cAno]) : anoData;
+      if(!mesNum || !ano){ ignoradas++; return; }
+      const he20 = num(r,c20), he50 = num(r,c50), he100 = num(r,c100), dissidio = Math.round((num(r,cDm)+num(r,cD50))*100)/100;
+      const total = (cTotal!=null && r[cTotal]!=null && r[cTotal]!=="") ? num(r,cTotal) : Math.round((he20+he50+he100+dissidio)*100)/100;
+      novos.push({ id:localId(), colaborador:String(r[cColab]).trim().toUpperCase(), funcao:cFuncao!=null ? String(r[cFuncao]||"").trim().toUpperCase() : "",
+        mes:`${ano}-${String(mesNum).padStart(2,"0")}`, total, he20, he50, he100, dissidio });
+    });
+    if(!novos.length){ statusEl.textContent = "⚠ Nenhum lançamento válido encontrado na planilha."; return; }
+
+    const anteriores = DATA.horaExtra.lancamentos;
+    DATA.horaExtra.lancamentos = novos;
+    deriveHoraExtra();
+    logEntry("Hora Extra (importação)", `${novos.length} lançamentos importados de "${file.name}"`, { kind:"bulkImportHoraExtra", anteriores });
+    renderSessionLog();
+
+    const meses = novos.map(r=>r.mes).sort();
+    const nomeMes = (m) => `${MESES_HE[Number(m.slice(5))-1]}/${m.slice(2,4)}`;
+    const porAno = {}; novos.forEach(r=>{ const a = r.mes.slice(0,4); porAno[a] = (porAno[a]||0) + r.total; });
+    const statusMsg = `✓ <b>${fmtNum(novos.length)}</b> lançamentos importados (${nomeMes(meses[0])} a ${nomeMes(meses[meses.length-1])}) — ` +
+      Object.entries(porAno).map(([a,v])=>`${a}: <b>${fmtBRL(v)}</b>`).join(" · ") +
+      (ignoradas>0 ? `<br>${ignoradas} linha(s) sem mês válido foram ignoradas.` : "");
+    statusEl.innerHTML = statusMsg;
+    if(document.querySelector('nav.menu button.active')?.dataset.page === "horaextra") navigate("horaextra");
+
+    if(!sb){ toast(`✓ ${novos.length} lançamentos de hora extra importados`); return; }
+    statusEl.innerHTML = statusMsg + "<br>Gravando no banco de dados...";
+    try{
+      await sbSubstituirTabela("horaextra_lancamentos", novos.map(heParaBanco));
+      statusEl.innerHTML = statusMsg + "<br>✓ Banco de dados atualizado — todo mundo que abrir o link já vê essa importação.";
+      toast(`✓ ${novos.length} lançamentos de hora extra importados (salvo no banco)`);
     }catch(e){
       statusEl.innerHTML = statusMsg + avisoFalhaGravacao(e);
       toast("⚠ A importação NÃO foi salva no banco — veja o aviso na tela");
