@@ -440,7 +440,9 @@ function insightComposicao(items, nomeKey, valorKey){
 
 /* ---------- Navegação ---------- */
 const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","belem","ordens","frota","acessos"];
-const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","belem","ordens","frota","acessos"];
+const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","belem","ordens","acessos"];
+// Perfil "lider": entra no sistema e só enxerga o Status da Frota
+const PAGINAS_LIDER = ["frota"];
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -478,6 +480,7 @@ function navigate(page){
   // Reforço além de esconder os botões no menu: mesmo se alguém forçar a navegação (ex: console do
   // navegador), quem não é Diretor cai de volta no Painel Executivo.
   if(PAGINAS_SO_DIRETOR.includes(page) && MEU_PAPEL !== "diretor") page = "overview";
+  if(MEU_PAPEL === "lider" && !PAGINAS_LIDER.includes(page)) page = PAGINAS_LIDER[0];
   document.getElementById("pageTitle").textContent = titles[page][0];
   document.getElementById("pageSub").textContent = titles[page][1];
   document.querySelectorAll("nav.menu button").forEach(b=>{
@@ -5226,6 +5229,7 @@ async function iniciarPainel(){
   deriveEntregas();
   recomputeFolha();
   carregarSessionLogLocal();
+  if(MEU_PAPEL === "lider"){ navigate("frota"); return; } // líder não carrega nenhum outro dado do sistema
   navigate("overview"); // mostra algo na tela já, com os dados locais/baseline, sem esperar o Supabase
   // loadFromSupabase() é assíncrono e pode demorar (rede lenta no celular, por exemplo). Nesse meio
   // tempo o usuário pode já ter navegado pra outra página, importado uma planilha etc. — navegar de
@@ -5248,7 +5252,8 @@ async function iniciarPainel(){
    ============================================================================ */
 let AUTH_MODE = "login"; // ou "signup"
 let painelIniciado = false;
-let MEU_PAPEL = null; // "diretor" | "operacional" | null (ainda sem perfil atribuído)
+let MEU_PAPEL = null; // "diretor" | "operacional" | "lider" | null (ainda sem perfil atribuído)
+let MEU_EMAIL = "";
 
 function traduzErroAuth(msg){
   const m = (msg||"").toLowerCase();
@@ -5317,6 +5322,13 @@ function aplicarRestricoesDePapel(){
   document.querySelectorAll('[data-requer="diretor"]').forEach(el=>{
     el.style.display = souDiretor ? "" : "none";
   });
+  // Líder: o menu mostra só o Status da Frota; some também o botão de exportar dados do topo
+  const souLider = MEU_PAPEL === "lider";
+  document.querySelectorAll("nav.menu button[data-page], nav.menu .grp-label").forEach(el=>{
+    if(souLider) el.style.display = (el.dataset.page && PAGINAS_LIDER.includes(el.dataset.page)) ? "" : "none";
+  });
+  document.querySelectorAll('button[onclick="exportDataJs()"]').forEach(el=>{ el.style.display = souLider ? "none" : ""; });
+  document.body.classList.toggle("papel-lider", souLider);
 }
 
 /* -------------------- ORDENS DE SERVIÇO (PROTÓTIPO) --------------------
@@ -5866,44 +5878,101 @@ const FROTA_STATUS = [
 
 let FROTA = null;              // { veiculos:[...], dias:{ "AAAA-MM-DD": { [id]: registro } } }
 let FROTA_ABA = "painel";      // painel | lider | cadastro
-let FROTA_DATA = new Date().toISOString().slice(0,10);
+let FROTA_DATA = frotaHojeISO();
 let FROTA_ATIV_SEL = null;     // atividade clicada no painel
 let FROTA_FILTRO_LIDER = "todas";
 let FROTA_BUSCA = "";
 
-function frotaSeed(){
-  const lista = [
-    ["honda",["GCV0C68","JORGE"],["GCV3D41","ANDREY"],["GCV3D98","JOÃO PAULO"],["GCV3D93","IZAMAR"],["GCV3D79","IVALDIR"],["GCV0G21","OSVALDO"],
-      ["GCV3G01","EDILAN"],["GCV3D31","ADALBERTO"],["GCV3A07","FABRÍCIO"],["GCV3B43","JOSIAS"],["GCVOF34","MARCO"],["GCV3E41","LUCAS"],
-      ["GCV3C03","MICAEL"],["GCV3243","MANOEL"],["GCV3D54","NILTON"],["GCV3J65","STÊNIO"]],
-    ["entregas",["GCV3D82","TOMÉ"],["GCV3B62","JACKSON"],["GCV3284","WALTER"],["GCV3E24","MARCOS RAFAEL"],["GCV3D62","ALLAN"],["GCV3247","BRUNO"],
-      ["0C41","AMILDO"],["GCV3E51","ALEXANDRE"],["GCV3D62","ALLAN"],["GCV3A13","ALEX"],["GCV0C74","GABRIEL"],["GHA3A01","EDUARDO"]],
-    ["manobra",["NSI1680","NILSON"]],
-    ["porto",["HHK5E27","MESSIAS"],["NOS0950","JEREMIAS"],["NOS3230","DELANE"],["CDM3D19","THIAGO"],["CLU5945","ZEQUINHA"],["NEL5F78","NALDO"],["GCV3C74","GOUVEIA"]],
-    ["oficina",["EPU9E14",""],["GCV3D63",""],["GCV3D75",""],["ATP3057","","Curuba"],["ATP3089","","Manut. Avance"],["TUG MASTER",""]],
-  ];
-  const veiculos = [], dia = {};
-  let ordem = 1;
-  lista.forEach(([ativ, ...itens])=>{
-    itens.forEach(([placa, motorista, obs])=>{
-      const id = osNovoId();
-      veiculos.push({ id, ordem:ordem++, placa, motorista, atividadePadrao:ativ });
-      dia[id] = { atividade:ativ, motorista, status: ativ==="oficina" ? "manutencao" : "operando", obs: obs||"", confirmado:false };
-    });
-  });
-  return { veiculos, dias:{} , modelo:dia };
+// Lista inicial (mensagem de WhatsApp de 06/10/26) — usada para popular o cadastro na primeira vez
+const FROTA_LISTA_INICIAL = [
+  ["honda",["GCV0C68","JORGE"],["GCV3D41","ANDREY"],["GCV3D98","JOÃO PAULO"],["GCV3D93","IZAMAR"],["GCV3D79","IVALDIR"],["GCV0G21","OSVALDO"],
+    ["GCV3G01","EDILAN"],["GCV3D31","ADALBERTO"],["GCV3A07","FABRÍCIO"],["GCV3B43","JOSIAS"],["GCVOF34","MARCO"],["GCV3E41","LUCAS"],
+    ["GCV3C03","MICAEL"],["GCV3243","MANOEL"],["GCV3D54","NILTON"],["GCV3J65","STÊNIO"]],
+  ["entregas",["GCV3D82","TOMÉ"],["GCV3B62","JACKSON"],["GCV3284","WALTER"],["GCV3E24","MARCOS RAFAEL"],["GCV3D62","ALLAN"],["GCV3247","BRUNO"],
+    ["0C41","AMILDO"],["GCV3E51","ALEXANDRE"],["GCV3D62","ALLAN"],["GCV3A13","ALEX"],["GCV0C74","GABRIEL"],["GHA3A01","EDUARDO"]],
+  ["manobra",["NSI1680","NILSON"]],
+  ["porto",["HHK5E27","MESSIAS"],["NOS0950","JEREMIAS"],["NOS3230","DELANE"],["CDM3D19","THIAGO"],["CLU5945","ZEQUINHA"],["NEL5F78","NALDO"],["GCV3C74","GOUVEIA"]],
+  ["oficina",["EPU9E14",""],["GCV3D63",""],["GCV3D75",""],["ATP3057","","Curuba"],["ATP3089","","Manut. Avance"],["TUG MASTER",""]],
+];
+function frotaListaInicial(){
+  const veiculos = []; let ordem = 1;
+  FROTA_LISTA_INICIAL.forEach(([ativ, ...itens])=>itens.forEach(([placa, motorista, obs])=>{
+    veiculos.push({ id:osNovoId(), ordem:ordem++, placa, motorista, atividadePadrao:ativ, obsPadrao:obs||"" });
+  }));
+  return veiculos;
 }
+function frotaHojeISO(){ const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
+function frotaHora(ts){ const d = ts ? new Date(ts) : new Date(); return d.toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }); }
+
+// Com Supabase configurado, tudo vive nas tabelas frota_veiculos / frota_status e é compartilhado
+// entre os usuários (líder lança no tablet, diretor vê no computador). Sem banco, cai para o
+// localStorage deste navegador (modo local de testes).
+const FROTA_DB = !!sb;
+let FROTA_ASSINATURA = "";
+let FROTA_PENDENTE_RERENDER = false;
+
 function frotaCarregar(){
   if(FROTA) return FROTA;
+  if(FROTA_DB){
+    FROTA = { veiculos:[], dias:{}, carregando:true };
+    frotaBuscarDb();
+    return FROTA;
+  }
   try{ const raw = localStorage.getItem(FROTA_KEY); FROTA = raw ? JSON.parse(raw) : null; }catch(e){ FROTA = null; }
-  if(!FROTA || !Array.isArray(FROTA.veiculos)){ FROTA = frotaSeed(); frotaSalvar(); }
+  if(!FROTA || !Array.isArray(FROTA.veiculos)){ FROTA = { veiculos:frotaListaInicial(), dias:{} }; frotaSalvar(); }
   return FROTA;
 }
-function frotaSalvar(){ try{ localStorage.setItem(FROTA_KEY, JSON.stringify(FROTA)); }catch(e){} }
+function frotaSalvar(){ if(FROTA_DB) return; try{ localStorage.setItem(FROTA_KEY, JSON.stringify(FROTA)); }catch(e){} }
+
+async function frotaBuscarDb(silencioso){
+  if(!FROTA_DB) return;
+  const desde = new Date(FROTA_DATA + "T12:00:00"); desde.setDate(desde.getDate() - 45);
+  const desdeISO = desde.toISOString().slice(0,10);
+  const [veic, st] = await Promise.all([
+    sb.from("frota_veiculos").select("*").order("ordem"),
+    sb.from("frota_status").select("*").gte("data", desdeISO).lte("data", FROTA_DATA),
+  ]);
+  const erro = veic.error || st.error;
+  if(erro){
+    FROTA = { veiculos:[], dias:{}, carregando:false, erro: erro.message };
+    if(!silencioso) frotaRerenderSeguro();
+    return;
+  }
+  const dias = {};
+  st.data.forEach(r=>{
+    (dias[r.data] = dias[r.data] || {})[r.veiculo_id] = { atividade:r.atividade, motorista:r.motorista||"", status:r.status, obs:r.obs||"",
+      confirmado:true, em:frotaHora(r.atualizado_em), por:(r.atualizado_por||"").split("@")[0] };
+  });
+  const novo = { veiculos: veic.data.map(v=>({ id:v.id, ordem:v.ordem, placa:v.placa, motorista:v.motorista||"", atividadePadrao:v.atividade_padrao||"reserva", obsPadrao:v.obs||"" })),
+                 dias, carregando:false, atualizadoEm:frotaHora(), dataCarregada:FROTA_DATA };
+  const assinatura = JSON.stringify([novo.veiculos, novo.dias]);
+  const mudou = assinatura !== FROTA_ASSINATURA;
+  FROTA_ASSINATURA = assinatura;
+  FROTA = novo;
+  if(!silencioso || mudou) frotaRerenderSeguro();
+  else { const el = document.getElementById("frota-sync"); if(el) el.textContent = `atualizado às ${frotaHora()}`; }
+}
+
+// Não redesenha a tela enquanto alguém está digitando (perderia o texto); tenta de novo ao sair do campo
+function frotaRerenderSeguro(){
+  if(document.querySelector('nav.menu button.active')?.dataset.page !== "frota") return;
+  const foco = document.activeElement;
+  if(foco && foco.closest && foco.closest("#content") && /INPUT|TEXTAREA|SELECT/.test(foco.tagName) && foco.id !== "frota-busca"){
+    FROTA_PENDENTE_RERENDER = true; return;
+  }
+  FROTA_PENDENTE_RERENDER = false;
+  frotaRerender();
+}
+document.addEventListener("focusout", ()=>{ if(FROTA_PENDENTE_RERENDER) setTimeout(frotaRerenderSeguro, 50); });
+setInterval(()=>{
+  if(FROTA_DB && document.visibilityState === "visible" && document.querySelector('nav.menu button.active')?.dataset.page === "frota") frotaBuscarDb(true);
+}, 30000);
+
 function frotaRerender(){ const y = window.scrollY; document.getElementById("content").innerHTML = renderers.frota(); window.scrollTo(0,y); }
 function frotaAtiv(ch){ return FROTA_ATIVIDADES.find(a=>a.chave===ch) || FROTA_ATIVIDADES[FROTA_ATIVIDADES.length-1]; }
 function frotaStatus(ch){ return FROTA_STATUS.find(s=>s.chave===ch) || FROTA_STATUS[0]; }
 function frotaDataBR(iso){ const [a,m,d] = iso.split("-"); return `${d}/${m}/${a.slice(2)}`; }
+function frotaPodeCadastrar(){ return !FROTA_DB || MEU_PAPEL === "diretor"; }
 
 // Registro do dia de um caminhão: se ainda não foi lançado nesse dia, parte do último dia anterior
 // lançado (ou do cadastro), marcado como "não confirmado".
@@ -5912,36 +5981,50 @@ function frotaRegistro(v, data){
   if(F.dias[data] && F.dias[data][v.id]) return F.dias[data][v.id];
   const anteriores = Object.keys(F.dias).filter(d=>d<data && F.dias[d][v.id]).sort();
   const base = anteriores.length ? F.dias[anteriores[anteriores.length-1]][v.id]
-             : (F.modelo && F.modelo[v.id]) || { atividade:v.atividadePadrao, motorista:v.motorista, status:"operando", obs:"" };
+             : { atividade:v.atividadePadrao, motorista:v.motorista, status: v.atividadePadrao==="oficina" ? "manutencao" : "operando", obs:v.obsPadrao||"" };
   return { atividade:base.atividade, motorista:base.motorista, status:base.status, obs:base.obs, confirmado:false };
 }
 function frotaVeiculosOrdenados(){ return [...frotaCarregar().veiculos].sort((a,b)=>a.ordem-b.ordem); }
 function frotaDoDia(data){ return frotaVeiculosOrdenados().map(v=>({ v, r:frotaRegistro(v, data) })); }
 
+async function frotaGravarStatus(regs){
+  if(!FROTA_DB) return true;
+  const agora = new Date().toISOString();
+  const { error } = await sb.from("frota_status").upsert(regs.map(({ id, r })=>({
+    data:FROTA_DATA, veiculo_id:id, atividade:r.atividade, motorista:r.motorista||null, status:r.status, obs:r.obs||null,
+    atualizado_por:MEU_EMAIL, atualizado_em:agora
+  })), { onConflict:"data,veiculo_id" });
+  if(error){ toast("⚠ Não salvou no banco: " + error.message); frotaBuscarDb(); return false; }
+  return true;
+}
+
 window.frotaSetAba = (a) => { FROTA_ABA = a; frotaRerender(); };
-window.frotaSetData = (d) => { if(d){ FROTA_DATA = d; frotaRerender(); } };
+window.frotaSetData = (d) => { if(d){ FROTA_DATA = d; if(FROTA_DB){ FROTA.carregando = true; frotaRerender(); frotaBuscarDb(); } else frotaRerender(); } };
+window.frotaAtualizarAgora = () => { frotaBuscarDb(); toast("Atualizando..."); };
 window.frotaSelAtiv = (a) => { FROTA_ATIV_SEL = FROTA_ATIV_SEL===a ? null : a; frotaRerender(); };
 window.frotaFiltroLider = (a) => { FROTA_FILTRO_LIDER = a; frotaRerender(); };
 window.frotaBuscar = (t) => { FROTA_BUSCA = t; frotaRerender(); const el = document.getElementById("frota-busca"); if(el){ el.focus(); el.setSelectionRange(t.length,t.length); } };
 
-window.frotaAtualizar = (id, campo, valor) => {
+window.frotaAtualizar = async (id, campo, valor) => {
   const F = frotaCarregar(), v = F.veiculos.find(x=>x.id===id);
   F.dias[FROTA_DATA] = F.dias[FROTA_DATA] || {};
-  const r = F.dias[FROTA_DATA][id] || frotaRegistro(v, FROTA_DATA);
-  r[campo] = valor;
+  const r = { ...(F.dias[FROTA_DATA][id] || frotaRegistro(v, FROTA_DATA)) };
+  if(campo !== "confirmado") r[campo] = valor;
   if(campo==="atividade" && valor==="oficina" && r.status==="operando") r.status = "manutencao";
-  r.confirmado = true; r.em = new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" });
+  r.confirmado = true; r.em = frotaHora(); r.por = (MEU_EMAIL||"").split("@")[0];
   F.dias[FROTA_DATA][id] = r;
   frotaSalvar(); frotaRerender();
+  await frotaGravarStatus([{ id, r }]);
 };
-window.frotaConfirmarTodos = () => {
+window.frotaConfirmarTodos = async () => {
   const lista = frotaDoDia(FROTA_DATA).filter(({r})=>!r.confirmado && (FROTA_FILTRO_LIDER==="todas" || r.atividade===FROTA_FILTRO_LIDER));
   if(!lista.length){ toast("Todos já estão confirmados."); return; }
   if(!confirm(`Confirmar ${lista.length} caminhão(ões) sem alteração?`)) return;
   const F = frotaCarregar(); F.dias[FROTA_DATA] = F.dias[FROTA_DATA] || {};
-  const hora = new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" });
-  lista.forEach(({v,r})=>{ F.dias[FROTA_DATA][v.id] = { ...r, confirmado:true, em:hora }; });
+  const hora = frotaHora(), por = (MEU_EMAIL||"").split("@")[0];
+  lista.forEach(({v,r})=>{ F.dias[FROTA_DATA][v.id] = { ...r, confirmado:true, em:hora, por }; });
   frotaSalvar(); frotaRerender();
+  if(await frotaGravarStatus(lista.map(({v,r})=>({ id:v.id, r })))) toast(`${lista.length} caminhão(ões) confirmados ✓`);
 };
 
 window.frotaTextoWhatsApp = () => {
@@ -5964,26 +6047,49 @@ window.frotaCopiarWhatsApp = async () => {
   catch(e){ const ta = document.getElementById("frota-wpp"); if(ta){ ta.style.display="block"; ta.select(); } toast("Selecione o texto abaixo e copie (Ctrl+C)."); }
 };
 
-window.frotaAddVeiculo = () => {
+function frotaVeiculoParaBanco(v){
+  return { ordem:v.ordem, placa:v.placa, motorista:v.motorista||null, atividade_padrao:v.atividadePadrao, obs:v.obsPadrao||null };
+}
+window.frotaAddVeiculo = async () => {
   const placa = osCampo("frota-novo-placa").toUpperCase().replace(/[^A-Z0-9 ]/g,""), motorista = osCampo("frota-novo-mot").toUpperCase(), ativ = osCampo("frota-novo-ativ");
   if(!placa){ toast("Informe a placa."); return; }
   const F = frotaCarregar();
-  F.veiculos.push({ id:osNovoId(), ordem:Math.max(0,...F.veiculos.map(v=>v.ordem))+1, placa, motorista, atividadePadrao:ativ||"reserva" });
-  frotaSalvar(); frotaRerender(); toast(`${placa} cadastrado ✓`);
+  const v = { id:osNovoId(), ordem:Math.max(0,...F.veiculos.map(v=>v.ordem))+1, placa, motorista, atividadePadrao:ativ||"reserva", obsPadrao:"" };
+  if(FROTA_DB){
+    const { error } = await sb.from("frota_veiculos").insert(frotaVeiculoParaBanco(v));
+    if(error){ toast("⚠ Não salvou: " + error.message); return; }
+    await frotaBuscarDb();
+  } else { F.veiculos.push(v); frotaSalvar(); frotaRerender(); }
+  toast(`${placa} cadastrado ✓`);
 };
-window.frotaEditarCadastro = (id, campo, valor) => {
+window.frotaEditarCadastro = async (id, campo, valor) => {
   const v = frotaCarregar().veiculos.find(x=>x.id===id);
-  v[campo] = campo==="ordem" ? (parseInt(valor,10)||v.ordem) : campo==="placa" ? valor.toUpperCase().replace(/[^A-Z0-9 ]/g,"") : valor.toUpperCase();
-  frotaSalvar(); frotaRerender();
+  v[campo] = campo==="ordem" ? (parseInt(valor,10)||v.ordem)
+           : campo==="placa" ? valor.toUpperCase().replace(/[^A-Z0-9 ]/g,"")
+           : campo==="motorista" ? valor.toUpperCase() : valor;
+  if(FROTA_DB){
+    const { error } = await sb.from("frota_veiculos").update(frotaVeiculoParaBanco(v)).eq("id", id);
+    if(error){ toast("⚠ Não salvou: " + error.message); }
+    await frotaBuscarDb();
+  } else { frotaSalvar(); frotaRerender(); }
 };
-window.frotaRemoverVeiculo = (id) => {
+window.frotaRemoverVeiculo = async (id) => {
   const F = frotaCarregar(), v = F.veiculos.find(x=>x.id===id);
-  if(!confirm(`Remover ${v.placa} da frota?`)) return;
-  F.veiculos = F.veiculos.filter(x=>x.id!==id); frotaSalvar(); frotaRerender();
+  if(!confirm(`Remover ${v.placa} da frota? O histórico de status dele também é apagado.`)) return;
+  if(FROTA_DB){
+    const { error } = await sb.from("frota_veiculos").delete().eq("id", id);
+    if(error){ toast("⚠ Não removeu: " + error.message); return; }
+    await frotaBuscarDb();
+  } else { F.veiculos = F.veiculos.filter(x=>x.id!==id); frotaSalvar(); frotaRerender(); }
 };
-window.frotaResetar = () => {
-  if(!confirm("Apagar todos os lançamentos do protótipo e voltar para a lista inicial de 42 caminhões?")) return;
-  FROTA = frotaSeed(); frotaSalvar(); frotaRerender();
+window.frotaCarregarListaInicial = async () => {
+  if(!confirm("Cadastrar os 42 caminhões da lista inicial (mensagem de 06/10/26)?")) return;
+  if(FROTA_DB){
+    const { error } = await sb.from("frota_veiculos").insert(frotaListaInicial().map(frotaVeiculoParaBanco));
+    if(error){ toast("⚠ Não salvou: " + error.message); return; }
+    await frotaBuscarDb();
+  } else { FROTA = { veiculos:frotaListaInicial(), dias:{} }; frotaSalvar(); frotaRerender(); }
+  toast("Caminhões cadastrados ✓");
 };
 
 function frotaPainel(itens){
@@ -6019,7 +6125,7 @@ function frotaPainel(itens){
             <td>${String(v.ordem).padStart(2,"0")}</td><td><b>${osEsc(v.placa)}</b></td><td>${osEsc(r.motorista)||"—"}</td>
             <td><span class="badge ${frotaStatus(r.status).badge}">${frotaStatus(r.status).label}</span></td>
             <td>${osEsc(r.obs)||"—"}</td>
-            <td>${r.confirmado ? `✓ ${r.em||""}` : `<span class="badge gray">não confirmado</span>`}</td>
+            <td>${r.confirmado ? `✓ ${r.em||""}${r.por ? ` · ${osEsc(r.por)}` : ""}` : `<span class="badge gray">não confirmado</span>`}</td>
           </tr>`).join("")}</tbody></table>` : `<div class="hint">Nenhum caminhão nessa atividade hoje.</div>`}
       </div>` : ""}
     </div>
@@ -6106,24 +6212,38 @@ function frotaCadastro(){
 }
 
 renderers.frota = () => {
+  const F = frotaCarregar();
+  if(!frotaPodeCadastrar() && FROTA_ABA==="cadastro") FROTA_ABA = "painel";
+  // O líder abre direto na tela de lançamento
+  if(MEU_PAPEL==="lider" && !renderers.frota._abriu){ FROTA_ABA = "lider"; renderers.frota._abriu = true; }
   const itens = frotaDoDia(FROTA_DATA);
   const aba = (k,l) => `<button class="tab-btn ${FROTA_ABA===k?"active":""}" onclick="frotaSetAba('${k}')">${l}</button>`;
+  let corpo;
+  if(F.carregando) corpo = `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando a frota...</p></div></div>`;
+  else if(F.erro) corpo = `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar a frota</h4>
+      <p>${osEsc(F.erro)}</p><p>Se o erro falar em tabela inexistente ("frota_veiculos"), rode o SQL da frota no Supabase.</p></div></div>`;
+  else if(!F.veiculos.length) corpo = `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">🚛</div><h4>Nenhum caminhão cadastrado</h4>
+      ${frotaPodeCadastrar() ? `<p>Cadastre um por um na aba Caminhões, ou carregue a lista inicial de 42 caminhões.</p>
+      <button class="entry-submit" onclick="frotaCarregarListaInicial()">Carregar os 42 caminhões da lista inicial</button>` : `<p>Peça ao diretor para cadastrar os caminhões.</p>`}</div></div>`;
+  else corpo = FROTA_ABA==="lider" ? frotaLider(itens) : FROTA_ABA==="cadastro" ? frotaCadastro() : frotaPainel(itens);
   return `
     <div class="page-head">
       <h2>Status da Frota</h2>
       <p>Atividade, motorista e status de cada caminhão no dia — preenchido pelos líderes no tablet</p>
     </div>
-    <div class="os-proto">
-      <div><b>🧪 Protótipo para avaliação.</b> Os dados ficam salvos só neste navegador.</div>
-      <button class="os-link" onclick="frotaResetar()">voltar à lista inicial</button>
-    </div>
+    ${FROTA_DB ? `
+    <div class="frota-sync-bar">
+      <span>🟢 Compartilhado em tempo real — atualiza sozinho a cada 30 segundos · <span id="frota-sync">${F.atualizadoEm ? `atualizado às ${F.atualizadoEm}` : ""}</span></span>
+      <button class="os-link" onclick="frotaAtualizarAgora()">↻ atualizar agora</button>
+    </div>` : `
+    <div class="os-proto"><div><b>🧪 Modo local.</b> Sem banco de dados configurado — os dados ficam só neste navegador.</div></div>`}
     <div class="frota-topo">
       <div class="tabs" style="margin:0;">
-        ${aba("painel","📊 Painel do dia")}${aba("lider","📝 Lançamento do líder")}${aba("cadastro","🚛 Caminhões")}
+        ${aba("painel","📊 Painel do dia")}${aba("lider","📝 Lançamento do líder")}${frotaPodeCadastrar() ? aba("cadastro","🚛 Caminhões") : ""}
       </div>
       <label class="frota-data">Dia <input type="date" value="${FROTA_DATA}" onchange="frotaSetData(this.value)"></label>
     </div>
-    ${FROTA_ABA==="lider" ? frotaLider(itens) : FROTA_ABA==="cadastro" ? frotaCadastro() : frotaPainel(itens)}`;
+    ${corpo}`;
 };
 
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
@@ -6337,6 +6457,7 @@ async function carregarGestaoAcessos(){
             <select id="papel-${u.user_id}">
               <option value="sem_perfil" ${u.papel==="sem_perfil"?"selected":""}>Sem perfil (aguardando)</option>
               <option value="operacional" ${u.papel==="operacional"?"selected":""}>Operacional</option>
+              <option value="lider" ${u.papel==="lider"?"selected":""}>Líder (só Status da Frota)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
           </td>
@@ -6357,7 +6478,7 @@ window.salvarPapelUsuario = async (userId, email) => {
   } else {
     const { error } = await sb.from("user_roles").upsert({ user_id:userId, email, papel });
     if(error){ toast("⚠ Falha ao salvar: " + error.message); return; }
-    toast(`${email} agora é ${papel === "diretor" ? "Diretor" : "Operacional"} ✓`);
+    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)" })[papel]} ✓`);
   }
   carregarGestaoAcessos();
 };
@@ -6388,6 +6509,7 @@ window.salvarPapelUsuario = async (userId, email) => {
       return;
     }
     MEU_PAPEL = roleRow.papel;
+    MEU_EMAIL = session.user.email || "";
     document.body.classList.remove("pending");
     document.body.classList.add("authed");
     document.getElementById("authUserEmail").textContent = session.user.email;
