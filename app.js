@@ -6082,6 +6082,58 @@ window.frotaRemoverVeiculo = async (id) => {
     await frotaBuscarDb();
   } else { F.veiculos = F.veiculos.filter(x=>x.id!==id); frotaSalvar(); frotaRerender(); }
 };
+// Dados lançados na versão de teste (antes do banco) ficaram no localStorage deste navegador.
+// Isso lê esses dados e envia para o banco: atualiza/insere o cadastro (casando pelo número de
+// ordem) e grava o status de cada dia lançado, sem apagar nada do que já estiver no banco.
+function frotaTesteLocal(){
+  try{
+    const raw = localStorage.getItem(FROTA_KEY); if(!raw) return null;
+    const d = JSON.parse(raw);
+    if(!d || !Array.isArray(d.veiculos) || !d.veiculos.length) return null;
+    const lanc = Object.values(d.dias||{}).reduce((n,dia)=>n+Object.keys(dia).length, 0);
+    if(d.migradoEm) return null;
+    return { d, lanc, dias:Object.keys(d.dias||{}).sort() };
+  }catch(e){ return null; }
+}
+window.frotaRecuperarTeste = async () => {
+  const t = frotaTesteLocal(); if(!t || !FROTA_DB) return;
+  if(!confirm(`Enviar para o banco os dados do teste deste navegador?\n\n• ${t.d.veiculos.length} caminhões (com as placas e motoristas que você ajustou)\n• ${t.lanc} lançamento(s) de status${t.dias.length ? ` (${t.dias.map(frotaDataBR).join(", ")})` : ""}\n\nNada do que já está no banco é apagado.`)) return;
+  try{
+    const { data:atuais, error:e1 } = await sb.from("frota_veiculos").select("*");
+    if(e1) throw e1;
+    const porOrdem = Object.fromEntries(atuais.map(v=>[v.ordem, v]));
+    const mapaId = {};
+    for(const v of t.d.veiculos){
+      const linha = { ordem:v.ordem, placa:v.placa, motorista:v.motorista||null, atividade_padrao:(v.atividadePadrao||"reserva").toLowerCase(),
+        obs:(v.obsPadrao || (t.d.modelo && t.d.modelo[v.id] && t.d.modelo[v.id].obs) || null) };
+      const existente = porOrdem[v.ordem];
+      if(existente){
+        const { error } = await sb.from("frota_veiculos").update(linha).eq("id", existente.id);
+        if(error) throw error;
+        mapaId[v.id] = existente.id;
+      } else {
+        const { data, error } = await sb.from("frota_veiculos").insert(linha).select().single();
+        if(error) throw error;
+        mapaId[v.id] = data.id;
+      }
+    }
+    const linhas = [];
+    Object.entries(t.d.dias||{}).forEach(([data, regs])=>Object.entries(regs).forEach(([idLocal, r])=>{
+      if(!mapaId[idLocal] || !r.confirmado) return;
+      linhas.push({ data, veiculo_id:mapaId[idLocal], atividade:r.atividade, motorista:r.motorista||null, status:r.status, obs:r.obs||null,
+        atualizado_por:MEU_EMAIL || "teste local", atualizado_em:new Date(`${data}T${(r.em||"08:00")}:00`).toISOString() });
+    }));
+    for(let i=0;i<linhas.length;i+=200){
+      const { error } = await sb.from("frota_status").upsert(linhas.slice(i,i+200), { onConflict:"data,veiculo_id" });
+      if(error) throw error;
+    }
+    t.d.migradoEm = new Date().toISOString();
+    try{ localStorage.setItem(FROTA_KEY, JSON.stringify(t.d)); }catch(e){}
+    toast(`✓ ${t.d.veiculos.length} caminhões e ${linhas.length} lançamento(s) enviados para o banco`);
+    await frotaBuscarDb();
+  }catch(e){ toast("⚠ Não consegui enviar: " + (e.message||e)); }
+};
+
 window.frotaCarregarListaInicial = async () => {
   if(!confirm("Cadastrar os 42 caminhões da lista inicial (mensagem de 06/10/26)?")) return;
   if(FROTA_DB){
@@ -6226,6 +6278,12 @@ renderers.frota = () => {
       ${frotaPodeCadastrar() ? `<p>Cadastre um por um na aba Caminhões, ou carregue a lista inicial de 42 caminhões.</p>
       <button class="entry-submit" onclick="frotaCarregarListaInicial()">Carregar os 42 caminhões da lista inicial</button>` : `<p>Peça ao diretor para cadastrar os caminhões.</p>`}</div></div>`;
   else corpo = FROTA_ABA==="lider" ? frotaLider(itens) : FROTA_ABA==="cadastro" ? frotaCadastro() : frotaPainel(itens);
+  const teste = FROTA_DB && !F.carregando && !F.erro && MEU_PAPEL==="diretor" ? frotaTesteLocal() : null;
+  if(teste) corpo = `
+    <div class="os-alerta amber" style="margin:0 0 16px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between;">
+      <span>💾 <b>Encontrei os dados do teste salvos neste navegador:</b> ${teste.d.veiculos.length} caminhões e ${teste.lanc} lançamento(s) de status${teste.dias.length ? ` (${teste.dias.map(frotaDataBR).join(", ")})` : ""}.</span>
+      <button class="os-btn green" onclick="frotaRecuperarTeste()">Enviar esses dados para o banco</button>
+    </div>` + corpo;
   return `
     <div class="page-head">
       <h2>Status da Frota</h2>
