@@ -5970,7 +5970,62 @@ setInterval(()=>{
   if(FROTA_DB && document.visibilityState === "visible" && document.querySelector('nav.menu button.active')?.dataset.page === "frota") frotaBuscarDb(true);
 }, 30000);
 
-function frotaRerender(){ const y = window.scrollY; document.getElementById("content").innerHTML = renderers.frota(); window.scrollTo(0,y); }
+function frotaRerender(){ const y = window.scrollY; document.getElementById("content").innerHTML = renderers.frota(); window.scrollTo(0,y); requestAnimationFrame(frotaGraficoDiario); }
+
+// Colunas empilhadas: uma coluna por dia (até 15 dias com lançamento, terminando no dia
+// selecionado), um bloco por atividade nas mesmas cores dos cartões, quantidade dentro do bloco
+// e o total no topo.
+function frotaGraficoDiario(){
+  const el = document.getElementById("ch-frota-diario");
+  if(!el || typeof Chart === "undefined") return;
+  const F = frotaCarregar();
+  const dias = [...new Set([...Object.keys(F.dias).filter(d=>d<=FROTA_DATA), FROTA_DATA])].sort().slice(-15);
+  const SEM = ["dom","seg","ter","qua","qui","sex","sáb"];
+  const rotulo = (d) => { const dt = new Date(d+"T12:00:00"); return [`${d.slice(8,10)}/${d.slice(5,7)}`, SEM[dt.getDay()]]; };
+  const porDia = dias.map(d=>{ const its = frotaDoDia(d); const c = {}; its.forEach(({r})=>{ c[r.atividade] = (c[r.atividade]||0)+1; }); return { c, total:its.length }; });
+  const totais = porDia.map(p=>p.total);
+
+  const totalNoTopo = {
+    id:"frotaTotais",
+    afterDatasetsDraw(chart){
+      const { ctx } = chart, meta = chart.getDatasetMeta(chart.data.datasets.length-1);
+      ctx.save(); ctx.font = "700 11px Inter, system-ui, sans-serif"; ctx.fillStyle = COLORS.ink; ctx.textAlign = "center";
+      meta.data.forEach((bar,i)=>{
+        let topo = Infinity;
+        chart.data.datasets.forEach((_,di)=>{ const b = chart.getDatasetMeta(di).data[i]; if(b && chart.data.datasets[di].data[i]) topo = Math.min(topo, b.y); });
+        if(topo < Infinity) ctx.fillText(totais[i], bar.x, topo - 6);
+      });
+      ctx.restore();
+    }
+  };
+
+  mkChart("ch-frota-diario", {
+    type:"bar",
+    data:{ labels:dias.map(rotulo), datasets:FROTA_ATIVIDADES.map(a=>({
+      label:a.label, data:porDia.map(p=>p.c[a.chave]||0), backgroundColor:a.cor,
+      borderColor:"#fff", borderWidth:2, borderSkipped:false, borderRadius:5, maxBarThickness:48,
+    })) },
+    options:{ responsive:true, maintainAspectRatio:false,
+      onClick:(_e, els)=>{ if(els.length) frotaSetData(dias[els[0].index]); },
+      onHover:(e, els)=>{ e.native.target.style.cursor = els.length ? "pointer" : "default"; },
+      plugins:{
+        legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"rectRounded", padding:14 } },
+        tooltip:{ mode:"index", filter:(it)=>it.raw>0,
+          callbacks:{ title:(its)=>`${its[0].label.join(" · ")} — ${totais[its[0].dataIndex]} caminhões`, label:(it)=>` ${it.dataset.label}: ${it.raw}` } },
+        datalabels:{ color:"#fff", font:{ size:11, weight:700 },
+          // só escreve o número quando o bloco tem altura para ele (o resto aparece no tooltip)
+          display:(ctx)=>{ const v = ctx.dataset.data[ctx.dataIndex]; const b = ctx.chart.getDatasetMeta(ctx.datasetIndex).data[ctx.dataIndex]; return v > 0 && b && Math.abs(b.base - b.y) >= 16; },
+          formatter:(v)=>v }
+      },
+      layout:{ padding:{ top:20 } },
+      scales:{
+        x:{ stacked:true, grid:{ display:false }, ticks:{ font:(c)=>({ weight: dias[c.index]===FROTA_DATA ? 700 : 400 }) } },
+        y:{ stacked:true, beginAtZero:true, grid:{ color:COLORS.grid }, ticks:{ precision:0 } }
+      } },
+    plugins:[totalNoTopo]
+  });
+}
+initCharts.frota = frotaGraficoDiario;
 function frotaAtiv(ch){ return FROTA_ATIVIDADES.find(a=>a.chave===ch) || FROTA_ATIVIDADES.find(a=>a.chave==="reserva"); }
 function frotaStatus(ch){ return FROTA_STATUS.find(s=>s.chave===ch) || FROTA_STATUS[0]; }
 function frotaDataBR(iso){ const [a,m,d] = iso.split("-"); return `${d}/${m}/${a.slice(2)}`; }
@@ -6275,6 +6330,11 @@ function frotaPainel(itens){
             <td>${r.confirmado ? `✓ ${r.em||""}${r.por ? ` · ${osEsc(r.por)}` : ""}` : `<span class="badge gray">não confirmado</span>`}</td>
           </tr>`).join("")}</tbody></table>` : `<div class="hint">Nenhum caminhão nessa atividade hoje.</div>`}
       </div>` : ""}
+    </div>
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Atividades por dia</h3>
+      <div class="hint">Caminhões em cada atividade, dia a dia (últimos dias com lançamento). Clique numa coluna para abrir aquele dia.</div>
+      <div class="chart-wrap" style="height:340px;"><canvas id="ch-frota-diario"></canvas></div>
     </div>
     <div class="panel" style="margin-bottom:16px;">
       <h3>Mensagem do dia para o WhatsApp</h3>
