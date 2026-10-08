@@ -6014,7 +6014,7 @@ function frotaGraficoDiario(){
           callbacks:{ title:(its)=>`${its[0].label.join(" · ")} — ${totais[its[0].dataIndex]} caminhões`, label:(it)=>` ${it.dataset.label}: ${it.raw}` } },
         datalabels:{ color:"#fff", font:{ size:11, weight:700 },
           // só escreve o número quando o bloco tem altura para ele (o resto aparece no tooltip)
-          display:(ctx)=>{ const v = ctx.dataset.data[ctx.dataIndex]; const b = ctx.chart.getDatasetMeta(ctx.datasetIndex).data[ctx.dataIndex]; return v > 0 && b && Math.abs(b.base - b.y) >= 16; },
+          display:(ctx)=>{ const v = ctx.dataset.data[ctx.dataIndex]; const y = ctx.chart.scales.y; return v > 0 && Math.abs(y.getPixelForValue(0) - y.getPixelForValue(v)) >= 16; },
           formatter:(v)=>v }
       },
       layout:{ padding:{ top:20 } },
