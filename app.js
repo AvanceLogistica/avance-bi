@@ -1736,17 +1736,40 @@ renderers.manutencao = () => {
 };
 initCharts.manutencao = () => {
   const m = manutencaoView || DATA.manutencao;
+  // Total do mês escrito em preto acima de cada coluna, sem "R$" (ex: 146,5K)
+  const totMes = m.labels.map((_,i)=>(m.manutencaoGeral[i]||0)+(m.pinturaTeto[i]||0)+(m.outrosServicos[i]||0));
+  const fmtTopo = (v) => fmtLabelBRL(v).replace("R$ ","");
+  const totalNoTopo = {
+    id:"manutTotais",
+    afterDatasetsDraw(chart){
+      const { ctx } = chart;
+      ctx.save(); ctx.font = "700 11.5px Inter, system-ui, sans-serif"; ctx.fillStyle = COLORS.ink; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+      totMes.forEach((v,i)=>{
+        if(!v) return;
+        let topo = Infinity, x = null;
+        chart.data.datasets.forEach((ds,di)=>{ const meta = chart.getDatasetMeta(di); if(meta.hidden) return; const b = meta.data[i]; if(b && ds.data[i]){ topo = Math.min(topo, b.y); x = b.x; } });
+        if(x!=null) ctx.fillText(fmtTopo(v), x, topo - 5);
+      });
+      ctx.restore();
+    }
+  };
+  const segmento = { stack:"a", borderColor:"#fff", borderWidth:{ top:2 }, borderSkipped:"bottom", borderRadius:5, maxBarThickness:46 };
   mkChart("ch-manut-mensal", {
     type:"bar",
     data:{ labels:m.labels, datasets:[
-      { label:"Manutenção Geral", data:m.manutencaoGeral, backgroundColor:COLORS.red, stack:"a", borderRadius:3 },
-      { label:"Pintura do Teto", data:m.pinturaTeto, backgroundColor:COLORS.ink, stack:"a", borderRadius:3 },
-      { label:"Outros", data:m.outrosServicos, backgroundColor:COLORS.amber, stack:"a", borderRadius:3 }
+      { label:"Manutenção Geral", data:m.manutencaoGeral, backgroundColor:COLORS.red, ...segmento },
+      { label:"Pintura do Teto", data:m.pinturaTeto, backgroundColor:COLORS.ink, ...segmento },
+      { label:"Outros", data:m.outrosServicos, backgroundColor:COLORS.amber, ...segmento }
     ]},
     options:{ responsive:true, maintainAspectRatio:false,
-      plugins:{legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
-        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex] > 8000, color:"#fff", font:{size:13, weight:700}, formatter:fmtLabelBRL } },
-      scales:{ x:{stacked:true, grid:{display:false}}, y:{stacked:true, grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}} } }
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"circle", padding:14 } },
+        tooltip:{ mode:"index", filter:(it)=>it.raw>0,
+          callbacks:{ title:(its)=>`${its[0].label} — total ${fmtBRL(totMes[its[0].dataIndex])}`, label:(it)=>` ${it.dataset.label}: ${fmtBRL(it.raw)}` } },
+        datalabels:{ display:false } },
+      layout:{ padding:{ top:22 } },
+      scales:{ x:{ stacked:true, grid:{ display:false }, border:{ display:false } },
+               y:{ stacked:true, grid:{ color:COLORS.grid }, border:{ display:false }, ticks:{ callback:v=>fmtMil(v), color:COLORS.inkSoft } } } },
+    plugins:[totalNoTopo]
   });
   const totalComp = sumArr(m.composicao.map(c=>c.valor));
   mkChart("ch-manut-comp", {
