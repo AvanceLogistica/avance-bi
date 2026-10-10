@@ -443,6 +443,8 @@ const pages = ["overview","entrada","entregas","manutencao","diesel","folha","ho
 const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","belem","ordens","acessos"];
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
+// Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"] };
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -480,7 +482,8 @@ function navigate(page){
   // Reforço além de esconder os botões no menu: mesmo se alguém forçar a navegação (ex: console do
   // navegador), quem não é Diretor cai de volta no Painel Executivo.
   if(PAGINAS_SO_DIRETOR.includes(page) && MEU_PAPEL !== "diretor") page = "overview";
-  if(MEU_PAPEL === "lider" && !PAGINAS_LIDER.includes(page)) page = PAGINAS_LIDER[0];
+  const restritas = PAGINAS_RESTRITAS[MEU_PAPEL];
+  if(restritas && !restritas.includes(page)) page = restritas[0];
   document.getElementById("pageTitle").textContent = titles[page][0];
   document.getElementById("pageSub").textContent = titles[page][1];
   document.querySelectorAll("nav.menu button").forEach(b=>{
@@ -2653,7 +2656,8 @@ initCharts.infracoes = () => {
 };
 
 /* -------------------- ENTREGAS -------------------- */
-renderers.entregas = () => {
+// Aba "Receita e viagens" (planilha importada) — a tela Entregas em si é montada mais abaixo, junto com a Programação diária
+function entregasReceita(){
   const filtro = FILTRO_ANO.entregas;
   const e = entregasView = (filtro === "todos" || DATA.entregas.lancamentos.length === 0)
     ? DATA.entregas
@@ -2718,7 +2722,7 @@ renderers.entregas = () => {
     `}
   `;
 };
-initCharts.entregas = () => {
+function entregasReceitaCharts(){
   const e = entregasView || DATA.entregas;
   if(!e.mensalLabels || e.mensalLabels.length === 0) return; // nada pra desenhar antes da 1ª importação/lançamento
   mkChart("ch-ent-mensal", {
@@ -5252,7 +5256,7 @@ async function iniciarPainel(){
   deriveEntregas();
   recomputeFolha();
   carregarSessionLogLocal();
-  if(MEU_PAPEL === "lider"){ navigate("frota"); return; } // líder não carrega nenhum outro dado do sistema
+  if(PAGINAS_RESTRITAS[MEU_PAPEL]){ navigate(PAGINAS_RESTRITAS[MEU_PAPEL][0]); return; } // perfis restritos não carregam nenhum outro dado do sistema
   navigate("overview"); // mostra algo na tela já, com os dados locais/baseline, sem esperar o Supabase
   // loadFromSupabase() é assíncrono e pode demorar (rede lenta no celular, por exemplo). Nesse meio
   // tempo o usuário pode já ter navegado pra outra página, importado uma planilha etc. — navegar de
@@ -5346,9 +5350,10 @@ function aplicarRestricoesDePapel(){
     el.style.display = souDiretor ? "" : "none";
   });
   // Líder: o menu mostra só o Status da Frota; some também o botão de exportar dados do topo
-  const souLider = MEU_PAPEL === "lider";
+  const restritas = PAGINAS_RESTRITAS[MEU_PAPEL];
+  const souLider = !!restritas;
   document.querySelectorAll("nav.menu button[data-page], nav.menu .grp-label").forEach(el=>{
-    if(souLider) el.style.display = (el.dataset.page && PAGINAS_LIDER.includes(el.dataset.page)) ? "" : "none";
+    if(souLider) el.style.display = (el.dataset.page && restritas.includes(el.dataset.page)) ? "" : "none";
   });
   document.querySelectorAll('button[onclick="exportDataJs()"]').forEach(el=>{ el.style.display = souLider ? "none" : ""; });
   document.body.classList.toggle("papel-lider", souLider);
@@ -6516,6 +6521,338 @@ renderers.frota = () => {
     ${corpo}`;
 };
 
+/* -------------------- PROGRAMAÇÃO DIÁRIA DE ENTREGAS --------------------
+   Aba da tela Entregas onde a pessoa do Monitoramento lança, dia a dia, cada entrega programada
+   (frota, motorista, cliente, transportadora, horário e NF) e depois marca o que foi realizado.
+   Planejado = entregas programadas; Realizado = entregas marcadas como realizadas (inclui extras).
+   Tudo fica na tabela entregas_programacao (histórico por dia) e vira a mensagem do WhatsApp. */
+const PROG_KEY = "avance_entregas_programacao_v1";
+const PROG_DB = !!sb;
+const PROG_SERVICOS = ["ENTREGA","COLETA","DESCARGA"];
+const PROG_HORARIOS = ["06:00","07:00","08:00","09:00","10:00","11:00","13:00","14:00","15:00","16:00","17:00","18:00"];
+const PROG_SUG_CLIENTES = ["BNB","AMAZON INDUSTRIA","THAP","CENTER CARGO","ATACADÃO","SENDAS","NOVA ERA","COSTA BRASIL","ITAM","RUFINO","EBD","CREDIE","CARREFOUR","SUPERMERCADOS DB","ORTOBOM","SEMILLON","DUNORTE","CB COMERCIO","HAVAN","NATUREZA COMERCIO","EMPRESA BRASILEIRA DE DISTRIBUIÇÃO","PETROBRAS","M MOTA COELHO","ARROW","ETERNIT","WAISON","CREDY","MILK 92","AMERICANAS","BEGUR","RCL COMERCIO","BEMOL","AROSUCO","ROCHA E PAIVA","ESTALEIRO SÃO JOÃO","SAINT-GOBAIN","ITARANA","CORREIOS","MARTINS","METALFINO","PIARARA","COEMA"];
+const PROG_SUG_TRANSP = ["COMPAR","SUZANO","BRILUX","GOIAS MINAS","ALBRAS","OVER TRUCK","TRANSUL","COOPERCARGA","QUIMICA","CCGL","ITALAC","ARROW","SOLAR","PETONY","BENEVIDES","1500 TRANSPORTES","TAMBAU","NOVA ROCHA","BBT","REAL 94","GIVOVA","ALCOA","HEINEKEN","ITAM","MIRASSOL","TRANSBEN","HILEIA","HNK","HU TRANSPORTES","FB SERVIÇOS","BRASKEN","CONCEITO","CLIK","APOTEOSE","BNB","MILI S/A","SÓ FRUTAS","PQA QUIMICA","P&G","LSL"];
+const PROG_SITUACAO = {
+  pendente:      { label:"Pendente",      icone:"⏳", badge:"gray"  },
+  realizada:     { label:"Realizada",     icone:"✅", badge:"green" },
+  nao_realizada: { label:"Não realizada", icone:"❌", badge:"red"   },
+};
+
+let ENT_ABA = "receita";          // receita | prog
+let PROG_DIA = frotaHojeISO();
+let PROG_MES = PROG_DIA.slice(0,7);
+let PROG = { linhas:[], carregando:false, mesCarregado:null, erro:null, veiculos:[] };
+let PROG_FORM = { servico:"ENTREGA", horario:"", planejado:true };
+let PROG_ASSINATURA = "";
+
+window.setEntAba = (a) => { ENT_ABA = a; navigate("entregas"); };
+function progMesesOpcoes(){
+  const out = [], d = new Date(); d.setDate(1);
+  for(let i=0;i<12;i++){ out.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`); d.setMonth(d.getMonth()-1); }
+  if(!out.includes(PROG_MES)) out.push(PROG_MES);
+  return out;
+}
+function progNomeMes(m){ const [a,mm] = m.split("-"); return `${MESES_HE[Number(mm)-1]}/${a.slice(2)}`; }
+function progDiaSemana(iso){ return ["domingo","segunda","terça","quarta","quinta","sexta","sábado"][new Date(iso+"T12:00:00").getDay()]; }
+function progDoDia(d){ return PROG.linhas.filter(l=>l.data===d).sort((a,b)=>(a.horario||"99").localeCompare(b.horario||"99") || (a.frota||"").localeCompare(b.frota||"")); }
+
+async function progCarregar(silencioso){
+  const mes = PROG_MES;
+  if(!silencioso){ PROG.carregando = true; }
+  if(!PROG_DB){
+    try{ PROG.linhas = JSON.parse(localStorage.getItem(PROG_KEY)||"[]"); }catch(e){ PROG.linhas = []; }
+    if(!PROG.veiculos.length) PROG.veiculos = frotaVeiculosOrdenados();
+    PROG.carregando = false; PROG.mesCarregado = mes; progRerender(); return;
+  }
+  const ini = `${mes}-01`, fimD = new Date(Number(mes.slice(0,4)), Number(mes.slice(5,7)), 0), fim = `${mes}-${String(fimD.getDate()).padStart(2,"0")}`;
+  // também busca os 10 dias antes do mês, para "copiar programação do último dia" funcionar no dia 1
+  const antes = new Date(ini+"T12:00:00"); antes.setDate(antes.getDate()-10);
+  const [lin, vei, st] = await Promise.all([
+    sb.from("entregas_programacao").select("*").gte("data", antes.toISOString().slice(0,10)).lte("data", fim),
+    sb.from("frota_veiculos").select("id,ordem,placa,motorista").order("ordem"),
+    sb.from("frota_status").select("veiculo_id,motorista,data").eq("data", PROG_DIA),
+  ]);
+  if(lin.error){ PROG.erro = lin.error.message; PROG.carregando = false; progRerender(); return; }
+  PROG.erro = null;
+  PROG.linhas = lin.data.map(r=>({ id:r.id, data:r.data, veiculoId:r.veiculo_id, frota:r.frota||"", motorista:r.motorista||"", cliente:r.cliente||"",
+    transportadora:r.transportadora||"", servico:r.servico||"ENTREGA", horario:r.horario||"", nf:r.nf||"", planejado:r.planejado!==false,
+    situacao:r.situacao||"pendente", horaReal:r.hora_real||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+  if(!vei.error) PROG.veiculos = vei.data.map(v=>({ id:v.id, ordem:v.ordem, placa:v.placa, motorista:v.motorista||"" }));
+  PROG.motoristaDoDia = {};
+  if(!st.error) st.data.forEach(r=>{ if(r.motorista) PROG.motoristaDoDia[r.veiculo_id] = r.motorista; });
+  PROG.carregando = false; PROG.mesCarregado = mes;
+  const assinatura = JSON.stringify(PROG.linhas);
+  const mudou = assinatura !== PROG_ASSINATURA; PROG_ASSINATURA = assinatura;
+  if(!silencioso || mudou) progRerender();
+}
+function progSalvarLocal(){ if(!PROG_DB) try{ localStorage.setItem(PROG_KEY, JSON.stringify(PROG.linhas)); }catch(e){} }
+function progRerender(){
+  if(document.querySelector('nav.menu button.active')?.dataset.page !== "entregas" || ENT_ABA !== "prog") return;
+  const foco = document.activeElement;
+  if(foco && foco.closest && foco.closest("#prog-form") && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return; // não atrapalha quem está digitando
+  const y = window.scrollY; document.getElementById("content").innerHTML = renderers.entregas(); window.scrollTo(0,y);
+  requestAnimationFrame(progGrafico);
+}
+setInterval(()=>{ if(PROG_DB && ENT_ABA==="prog" && document.visibilityState==="visible" && document.querySelector('nav.menu button.active')?.dataset.page==="entregas") progCarregar(true); }, 30000);
+
+window.progSetDia = (d) => { if(!d) return; PROG_DIA = d; const m = d.slice(0,7); if(m !== PROG_MES){ PROG_MES = m; progCarregar(); } else { progCarregar(); } };
+window.progMoverDia = (n) => { const d = new Date(PROG_DIA+"T12:00:00"); d.setDate(d.getDate()+n); progSetDia(d.toISOString().slice(0,10)); };
+window.progSetMes = (m) => { PROG_MES = m; const hoje = frotaHojeISO(); PROG_DIA = hoje.startsWith(m) ? hoje : `${m}-01`; progCarregar(); };
+window.progForm = (campo, valor) => { PROG_FORM[campo] = valor; const y = window.scrollY; const dados = progLerForm(); document.getElementById("content").innerHTML = renderers.entregas(); progPreencherForm(dados); window.scrollTo(0,y); requestAnimationFrame(progGrafico); };
+function progLerForm(){ const g = (id)=>document.getElementById(id)?.value || ""; return { frota:g("pg-frota"), motorista:g("pg-motorista"), cliente:g("pg-cliente"), transportadora:g("pg-transp"), horario:g("pg-horario"), nf:g("pg-nf") }; }
+function progPreencherForm(d){ const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; };
+  s("pg-frota", d.frota); s("pg-motorista", d.motorista); s("pg-cliente", d.cliente); s("pg-transp", d.transportadora); s("pg-horario", PROG_FORM.horario || d.horario); s("pg-nf", d.nf); }
+window.progEscolherFrota = (sel) => {
+  const v = PROG.veiculos.find(x=>x.id===sel.value); if(!v) return;
+  const m = (PROG.motoristaDoDia && PROG.motoristaDoDia[v.id]) || v.motorista || "";
+  const el = document.getElementById("pg-motorista"); if(el && m) el.value = m.toUpperCase();
+};
+window.progMaiusc = (el) => { const p = el.selectionStart; el.value = el.value.toUpperCase(); try{ el.setSelectionRange(p,p); }catch(e){} };
+window.progSoNumero = (el) => { el.value = el.value.replace(/\D/g,""); };
+
+async function progGravar(linha){
+  if(!PROG_DB){ const i = PROG.linhas.findIndex(l=>l.id===linha.id); if(i>=0) PROG.linhas[i] = linha; else PROG.linhas.push(linha); progSalvarLocal(); return true; }
+  const reg = { data:linha.data, veiculo_id:linha.veiculoId||null, frota:linha.frota, motorista:linha.motorista||null, cliente:linha.cliente||null,
+    transportadora:linha.transportadora||null, servico:linha.servico, horario:linha.horario||null, nf:linha.nf||null, planejado:linha.planejado,
+    situacao:linha.situacao, hora_real:linha.horaReal||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
+  const q = linha.id && !String(linha.id).startsWith("tmp")
+    ? sb.from("entregas_programacao").update(reg).eq("id", linha.id).select().single()
+    : sb.from("entregas_programacao").insert({ ...reg, criado_por:MEU_EMAIL }).select().single();
+  const { data, error } = await q;
+  if(error){ toast("⚠ Não salvou: " + error.message); return false; }
+  linha.id = data.id; return true;
+}
+
+window.progAdicionar = async () => {
+  const f = progLerForm();
+  const v = PROG.veiculos.find(x=>x.id===f.frota);
+  if(!v){ toast("Escolha a frota."); return; }
+  if(!f.cliente.trim()){ toast("Informe o cliente."); return; }
+  const linha = { id:"tmp"+osNovoId(), data:PROG_DIA, veiculoId:v.id, frota:`${String(v.ordem).padStart(2,"0")} ${v.placa}`,
+    motorista:f.motorista.trim().toUpperCase(), cliente:f.cliente.trim().toUpperCase(), transportadora:f.transportadora.trim().toUpperCase(),
+    servico:PROG_FORM.servico, horario:f.horario, nf:f.nf.replace(/\D/g,""), planejado:PROG_FORM.planejado,
+    situacao: PROG_FORM.planejado ? "pendente" : "realizada", horaReal: PROG_FORM.planejado ? "" : frotaHora(), por:(MEU_EMAIL||"").split("@")[0] };
+  PROG.linhas.push(linha);
+  // Mantém cliente, transportadora e horário no formulário (costumam se repetir); limpa frota, motorista e NF
+  PROG_FORM.horario = f.horario;
+  const manter = { cliente:f.cliente.toUpperCase(), transportadora:f.transportadora.toUpperCase(), horario:f.horario };
+  const y = window.scrollY; document.getElementById("content").innerHTML = renderers.entregas(); progPreencherForm(manter); window.scrollTo(0,y); requestAnimationFrame(progGrafico);
+  if(await progGravar(linha)) toast(`${linha.frota} adicionada ✓`);
+};
+window.progSituacao = async (id, sit) => {
+  const l = PROG.linhas.find(x=>x.id===id); if(!l) return;
+  l.situacao = l.situacao===sit ? "pendente" : sit;
+  l.horaReal = l.situacao==="realizada" ? frotaHora() : "";
+  l.por = (MEU_EMAIL||"").split("@")[0];
+  progRerender(); await progGravar(l);
+};
+window.progEditar = async (id, campo, valor) => {
+  const l = PROG.linhas.find(x=>x.id===id); if(!l) return;
+  l[campo] = campo==="nf" ? valor.replace(/\D/g,"") : campo==="horario" ? valor : valor.toUpperCase();
+  await progGravar(l); progRerender();
+};
+window.progExcluir = async (id) => {
+  const l = PROG.linhas.find(x=>x.id===id); if(!l || !confirm(`Excluir ${l.frota} · ${l.cliente}${l.horario ? " · "+l.horario : ""}?`)) return;
+  if(PROG_DB && !String(id).startsWith("tmp")){ const { error } = await sb.from("entregas_programacao").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  PROG.linhas = PROG.linhas.filter(x=>x.id!==id); progSalvarLocal(); progRerender();
+};
+window.progCopiarUltimoDia = async () => {
+  const anteriores = [...new Set(PROG.linhas.filter(l=>l.data<PROG_DIA && l.planejado).map(l=>l.data))].sort();
+  const ult = anteriores[anteriores.length-1];
+  if(!ult){ toast("Não encontrei programação nos dias anteriores."); return; }
+  const base = progDoDia(ult).filter(l=>l.planejado);
+  if(!confirm(`Copiar as ${base.length} entregas programadas de ${frotaDataBR(ult)} (${progDiaSemana(ult)}) para ${frotaDataBR(PROG_DIA)}?\n\nTodas entram como pendentes e sem NF.`)) return;
+  for(const b of base){
+    const linha = { ...b, id:"tmp"+osNovoId(), data:PROG_DIA, nf:"", situacao:"pendente", horaReal:"", planejado:true };
+    PROG.linhas.push(linha); await progGravar(linha);
+  }
+  toast(`${base.length} entregas copiadas ✓`); progRerender();
+};
+
+function progTextoWhatsApp(){
+  const itens = progDoDia(PROG_DIA), plan = itens.filter(l=>l.planejado);
+  const real = itens.filter(l=>l.situacao==="realizada"), pend = itens.filter(l=>l.situacao==="pendente"), nao = itens.filter(l=>l.situacao==="nao_realizada");
+  const extras = itens.filter(l=>!l.planejado);
+  const pct = plan.length ? Math.round(real.filter(l=>l.planejado).length/plan.length*100) : 0;
+  let t = `🚚 *PROGRAMAÇÃO DE ENTREGAS*\n📅 ${frotaDataBR(PROG_DIA)} (${progDiaSemana(PROG_DIA)})\n\n`;
+  t += `📋 Planejado: *${plan.length}*\n✅ Realizado: *${real.length}*${extras.length ? ` (${extras.length} extra)` : ""}\n⏳ Pendente: *${pend.length}*\n`;
+  if(nao.length) t += `❌ Não realizado: *${nao.length}*\n`;
+  t += `🎯 Atendimento: *${pct}%*\n`;
+  let horaAtual = null;
+  itens.forEach(l=>{
+    const h = l.horario || "Sem horário";
+    if(h !== horaAtual){ t += `\n🕐 *${h}*\n`; horaAtual = h; }
+    t += `${PROG_SITUACAO[l.situacao].icone} 🚛 ${l.frota}${l.motorista ? ` · ${l.motorista}` : ""}\n`;
+    t += `    🏢 ${l.cliente}${l.transportadora ? ` · 📦 ${l.transportadora}` : ""}${l.nf ? ` · 🧾 NF ${l.nf}` : ""}${l.servico!=="ENTREGA" ? ` · ${l.servico}` : ""}${!l.planejado ? " · ➕ EXTRA" : ""}\n`;
+  });
+  if(!itens.length) t += `\nNenhuma entrega lançada para o dia.\n`;
+  return t.trim();
+}
+window.progCopiarWhatsApp = async () => {
+  const txt = progTextoWhatsApp();
+  try{ await navigator.clipboard.writeText(txt); toast("Mensagem copiada ✓ — é só colar no WhatsApp"); }
+  catch(e){ const ta = document.getElementById("prog-wpp"); if(ta){ ta.select(); } toast("Selecione o texto e copie (Ctrl+C)."); }
+};
+window.progAbrirWhatsApp = () => { window.open("https://wa.me/?text=" + encodeURIComponent(progTextoWhatsApp()), "_blank"); };
+
+function progStatsMes(){
+  const dias = new Date(Number(PROG_MES.slice(0,4)), Number(PROG_MES.slice(5,7)), 0).getDate();
+  const doMes = PROG.linhas.filter(l=>l.data.startsWith(PROG_MES));
+  const porDia = Array.from({length:dias}, (_,i)=>{
+    const d = `${PROG_MES}-${String(i+1).padStart(2,"0")}`, ls = doMes.filter(l=>l.data===d);
+    return { d, plan:ls.filter(l=>l.planejado).length, real:ls.filter(l=>l.situacao==="realizada").length };
+  });
+  const plan = sumArr(porDia.map(x=>x.plan)), real = sumArr(porDia.map(x=>x.real));
+  const realPlan = doMes.filter(l=>l.planejado && l.situacao==="realizada").length;
+  return { porDia, plan, real, pct: plan ? realPlan/plan*100 : 0, diasComLanc: porDia.filter(x=>x.plan||x.real).length, extras: doMes.filter(l=>!l.planejado).length };
+}
+
+function progPagina(){
+  if(PROG.mesCarregado !== PROG_MES && !PROG.carregando){ PROG.carregando = true; setTimeout(()=>progCarregar(), 0); }
+  const itens = progDoDia(PROG_DIA), plan = itens.filter(l=>l.planejado);
+  const real = itens.filter(l=>l.situacao==="realizada"), pend = itens.filter(l=>l.situacao==="pendente"), nao = itens.filter(l=>l.situacao==="nao_realizada");
+  const pctDia = plan.length ? real.filter(l=>l.planejado).length/plan.length*100 : 0;
+  const M = progStatsMes();
+  const opt = (v,l,a) => `<option value="${v}" ${v===a?"selected":""}>${l}</option>`;
+  const veics = PROG.veiculos.length ? PROG.veiculos : [];
+  const historicoNomes = (campo, base) => [...new Set([...base, ...PROG.linhas.map(l=>l[campo]).filter(Boolean)])].sort();
+  const hoje = PROG_DIA === frotaHojeISO();
+
+  if(PROG.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar a programação</h4><p>${osEsc(PROG.erro)}</p><p>Se falar em tabela inexistente ("entregas_programacao"), rode o SQL da programação no Supabase.</p></div></div>`;
+  return `
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="prog-topo">
+        <div class="prog-dia">
+          <button class="os-btn" onclick="progMoverDia(-1)" title="Dia anterior">◀</button>
+          <input type="date" value="${PROG_DIA}" onchange="progSetDia(this.value)">
+          <button class="os-btn" onclick="progMoverDia(1)" title="Próximo dia">▶</button>
+          ${hoje ? `<span class="badge green">hoje</span>` : `<button class="os-link" onclick="progSetDia('${frotaHojeISO()}')">ir para hoje</button>`}
+          <b style="text-transform:capitalize;">${progDiaSemana(PROG_DIA)}</b>
+        </div>
+        ${PROG_DB ? `<span class="hint" style="margin:0;">🟢 compartilhado · atualiza sozinho a cada 30s</span>` : `<span class="hint" style="margin:0;">🧪 modo local</span>`}
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">📋 Planejado</div><div class="val">${plan.length}</div><div class="delta flat">entregas programadas no dia</div></div>
+      <div class="kpi"><div class="lbl">✅ Realizado</div><div class="val" style="color:var(--green);">${real.length}</div><div class="delta flat">${itens.filter(l=>!l.planejado).length} extra(s) fora do plano</div></div>
+      <div class="kpi"><div class="lbl">⏳ Pendente</div><div class="val" style="color:var(--${pend.length?"amber":"ink"});">${pend.length}</div></div>
+      <div class="kpi"><div class="lbl">❌ Não realizado</div><div class="val" style="color:var(--${nao.length?"red":"ink"});">${nao.length}</div></div>
+      <div class="kpi"><div class="lbl">🎯 Atendimento do dia</div><div class="val">${pctDia.toFixed(0)}%</div><div class="delta flat">realizado ÷ planejado</div></div>
+    </div>
+
+    <div class="panel os-form" id="prog-form" style="margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">➕ Lançar entrega — ${frotaDataBR(PROG_DIA)}</h3>
+        <button class="os-btn" onclick="progCopiarUltimoDia()">📋 Copiar programação do último dia</button>
+      </div>
+      <div class="prog-chips" style="margin-top:10px;">
+        <span class="hint" style="margin:0;">Tipo:</span>
+        <button class="sub-tab-btn ${PROG_FORM.planejado?"active":""}" onclick="progForm('planejado',true)">📋 Planejada</button>
+        <button class="sub-tab-btn ${!PROG_FORM.planejado?"active":""}" onclick="progForm('planejado',false)">➕ Extra (fora do plano, já realizada)</button>
+        <span class="hint" style="margin:0 0 0 10px;">Serviço:</span>
+        ${PROG_SERVICOS.map(s=>`<button class="sub-tab-btn ${PROG_FORM.servico===s?"active":""}" onclick="progForm('servico','${s}')">${s}</button>`).join("")}
+      </div>
+      <div class="os-grid" style="margin-top:4px;">
+        <label>🚛 Frota<select id="pg-frota" onchange="progEscolherFrota(this)">
+          <option value="">Selecione</option>${veics.map(v=>`<option value="${v.id}">${String(v.ordem).padStart(2,"0")} · ${osEsc(v.placa)}${v.motorista?` · ${osEsc(v.motorista)}`:""}</option>`).join("")}
+        </select></label>
+        <label>👤 Motorista<input id="pg-motorista" placeholder="NOME DO MOTORISTA" style="text-transform:uppercase;" oninput="progMaiusc(this)"></label>
+        <label>🏢 Cliente<input id="pg-cliente" list="pg-l-clientes" placeholder="CLIENTE" style="text-transform:uppercase;" oninput="progMaiusc(this)"></label>
+        <label>📦 Transportadora<input id="pg-transp" list="pg-l-transp" placeholder="TRANSPORTADORA" style="text-transform:uppercase;" oninput="progMaiusc(this)"></label>
+        <label>🧾 NF<input id="pg-nf" inputmode="numeric" placeholder="só números" oninput="progSoNumero(this)"></label>
+      </div>
+      <label>🕐 Horário programado</label>
+      <div class="prog-chips">
+        ${PROG_HORARIOS.map(h=>`<button class="sub-tab-btn ${PROG_FORM.horario===h?"active":""}" onclick="progForm('horario','${h}')">${h}</button>`).join("")}
+        <input type="time" id="pg-horario" step="900" value="${PROG_FORM.horario}" style="max-width:120px;" onchange="PROG_FORM.horario=this.value">
+      </div>
+      <datalist id="pg-l-clientes">${historicoNomes("cliente", PROG_SUG_CLIENTES).map(c=>`<option value="${osEsc(c)}">`).join("")}</datalist>
+      <datalist id="pg-l-transp">${historicoNomes("transportadora", PROG_SUG_TRANSP).map(c=>`<option value="${osEsc(c)}">`).join("")}</datalist>
+      <button class="entry-submit" onclick="progAdicionar()">Adicionar entrega</button>
+      <span class="hint" style="margin-left:10px;">Depois de adicionar, cliente, transportadora e horário continuam preenchidos para agilizar o próximo.</span>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Entregas do dia (${itens.length})</h3>
+      <div class="hint">Marque ✅ quando a entrega for realizada ou ❌ se não acontecer. Clique de novo para voltar a pendente. NF e horário podem ser ajustados aqui.</div>
+      ${itens.length ? `<div style="overflow-x:auto;"><table class="os-form prog-tab">
+        <thead><tr><th>Horário</th><th>Frota</th><th>Motorista</th><th>Cliente</th><th>Transportadora</th><th>NF</th><th>Situação</th><th></th></tr></thead>
+        <tbody>${itens.map(l=>`<tr class="sit-${l.situacao}">
+          <td><input type="time" step="900" value="${l.horario}" style="width:96px;" onchange="progEditar('${l.id}','horario',this.value)"></td>
+          <td><b>${osEsc(l.frota)}</b><div class="hint" style="margin:0;">${l.servico}${!l.planejado ? ' · <span class="badge amber">extra</span>' : ""}</div></td>
+          <td>${osEsc(l.motorista)||"—"}</td><td>${osEsc(l.cliente)}</td><td>${osEsc(l.transportadora)||"—"}</td>
+          <td><input value="${osEsc(l.nf)}" inputmode="numeric" style="width:90px;" oninput="progSoNumero(this)" onchange="progEditar('${l.id}','nf',this.value)"></td>
+          <td style="white-space:nowrap;">
+            <button class="prog-sit ${l.situacao==="realizada"?"on ok":""}" onclick="progSituacao('${l.id}','realizada')" title="Realizada">✅</button>
+            <button class="prog-sit ${l.situacao==="nao_realizada"?"on no":""}" onclick="progSituacao('${l.id}','nao_realizada')" title="Não realizada">❌</button>
+            <span class="hint" style="margin:0 0 0 4px;">${l.situacao==="realizada" && l.horaReal ? `às ${l.horaReal}` : PROG_SITUACAO[l.situacao].label}</span>
+          </td>
+          <td><button class="os-link" onclick="progExcluir('${l.id}')">excluir</button></td>
+        </tr>`).join("")}</tbody></table></div>` : `<div class="empty-state" style="padding:18px;"><p>Nenhuma entrega lançada para este dia.</p></div>`}
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>💬 Mensagem do dia para o WhatsApp</h3>
+      <div class="hint">Gerada a partir dos lançamentos. Para ver a mensagem de outro dia, troque a data no alto.</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="entry-submit" style="margin-top:0;" onclick="progCopiarWhatsApp()">📋 Copiar mensagem</button>
+        <button class="os-btn green" onclick="progAbrirWhatsApp()">🟢 Abrir no WhatsApp</button>
+      </div>
+      <textarea id="prog-wpp" readonly class="frota-wpp">${osEsc(progTextoWhatsApp())}</textarea>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">📊 Planejado x Realizado por dia — ${progNomeMes(PROG_MES)}</h3>
+          <div class="hint">Quantidade de entregas. Clique numa coluna para abrir o dia.</div></div>
+        <label class="frota-data">Mês <select onchange="progSetMes(this.value)">${progMesesOpcoes().map(m=>opt(m, progNomeMes(m), PROG_MES)).join("")}</select></label>
+      </div>
+      <div class="os-resumo" style="margin:4px 0 12px;">
+        <div>Planejado no mês<b>${M.plan}</b></div>
+        <div>Realizado no mês<b style="color:var(--green);">${M.real}</b><small>${M.extras} extra(s)</small></div>
+        <div>Atendimento do plano<b>${M.pct.toFixed(0)}%</b></div>
+        <div>Dias com lançamento<b>${M.diasComLanc}</b></div>
+      </div>
+      <div class="chart-wrap" style="height:300px;"><canvas id="ch-prog-mes"></canvas></div>
+    </div>`;
+}
+
+function progGrafico(){
+  const el = document.getElementById("ch-prog-mes"); if(!el) return;
+  const M = progStatsMes();
+  mkChart("ch-prog-mes", {
+    type:"bar",
+    data:{ labels:M.porDia.map(x=>x.d.slice(8,10)), datasets:[
+      { label:"Planejado", data:M.porDia.map(x=>x.plan||null), backgroundColor:"#B9BBC6", borderRadius:4, maxBarThickness:18 },
+      { label:"Realizado", data:M.porDia.map(x=>x.real||null), backgroundColor:COLORS.red, borderRadius:4, maxBarThickness:18 },
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      onClick:(_e, els)=>{ if(els.length) progSetDia(M.porDia[els[0].index].d); },
+      onHover:(e, els)=>{ e.native.target.style.cursor = els.length ? "pointer" : "default"; },
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"rectRounded" } },
+        tooltip:{ mode:"index", callbacks:{ title:(its)=>`${its[0].label}/${PROG_MES.slice(5,7)} (${progDiaSemana(M.porDia[its[0].dataIndex].d)})`,
+          afterBody:(its)=>{ const x = M.porDia[its[0].dataIndex]; return x.plan ? `Atendimento: ${Math.round(Math.min(x.real,x.plan)/x.plan*100)}%` : ""; } } },
+        datalabels:{ anchor:"end", align:"top", offset:0, color:COLORS.ink, font:{ size:9, weight:700 }, display:(c)=>c.dataset.data[c.dataIndex]!=null } },
+      layout:{ padding:{ top:16 } },
+      scales:{ x:{ grid:{ display:false }, ticks:{ font:(c)=>({ weight: M.porDia[c.index]?.d===PROG_DIA ? 800 : 400 }) } },
+               y:{ beginAtZero:true, grid:{ color:COLORS.grid }, ticks:{ precision:0 } } } }
+  });
+}
+
+renderers.entregas = () => {
+  if(MEU_PAPEL === "monitoramento") ENT_ABA = "prog";
+  const abas = MEU_PAPEL === "monitoramento" ? "" : `
+    <div class="tabs" style="margin-bottom:14px;">
+      <button class="tab-btn ${ENT_ABA==="prog"?"active":""}" onclick="setEntAba('prog')">📦 Programação diária</button>
+      <button class="tab-btn ${ENT_ABA==="receita"?"active":""}" onclick="setEntAba('receita')">💰 Receita e viagens</button>
+    </div>`;
+  if(ENT_ABA === "prog") return `
+    <div class="page-head"><h2>Programação diária de entregas</h2><p>Frota, motorista, cliente, transportadora, horário e NF — planejado x realizado, dia a dia</p></div>
+    ${abas}${progPagina()}`;
+  return abas + entregasReceita();
+};
+initCharts.entregas = () => { if(ENT_ABA === "prog") progGrafico(); else entregasReceitaCharts(); };
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
 renderers.belem = () => {
   const b = DATA.belem;
@@ -6728,6 +7065,7 @@ async function carregarGestaoAcessos(){
               <option value="sem_perfil" ${u.papel==="sem_perfil"?"selected":""}>Sem perfil (aguardando)</option>
               <option value="operacional" ${u.papel==="operacional"?"selected":""}>Operacional</option>
               <option value="lider" ${u.papel==="lider"?"selected":""}>Líder (só Status da Frota)</option>
+              <option value="monitoramento" ${u.papel==="monitoramento"?"selected":""}>Monitoramento (só Programação de Entregas)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
           </td>
@@ -6748,7 +7086,7 @@ window.salvarPapelUsuario = async (userId, email) => {
   } else {
     const { error } = await sb.from("user_roles").upsert({ user_id:userId, email, papel });
     if(error){ toast("⚠ Falha ao salvar: " + error.message); return; }
-    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)" })[papel]} ✓`);
+    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)" })[papel]} ✓`);
   }
   carregarGestaoAcessos();
 };
