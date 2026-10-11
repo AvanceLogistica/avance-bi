@@ -6602,13 +6602,27 @@ window.progForm = (campo, valor) => { PROG_FORM[campo] = valor; const y = window
 function progLerForm(){ const g = (id)=>document.getElementById(id)?.value || ""; return { frota:g("pg-frota"), motorista:g("pg-motorista"), cliente:g("pg-cliente"), transportadora:g("pg-transp"), horario:g("pg-horario"), nf:g("pg-nf") }; }
 function progPreencherForm(d){ const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; };
   s("pg-frota", d.frota); s("pg-motorista", d.motorista); s("pg-cliente", d.cliente); s("pg-transp", d.transportadora); s("pg-horario", PROG_FORM.horario || d.horario); s("pg-nf", d.nf); }
-window.progEscolherFrota = (sel) => {
-  const v = PROG.veiculos.find(x=>x.id===sel.value); if(!v) return;
+// Campo Frota: a pessoa escolhe na lista ou digita (número "07", placa "GCV3D62" ou o começo dela "GCV3D")
+function progRotuloFrota(v){ return `${String(v.ordem).padStart(2,"0")} · ${v.placa}`; }
+function progAcharFrota(txt){
+  const t = String(txt||"").toUpperCase().replace(/\s+/g," ").trim(); if(!t) return null;
+  const semSep = t.replace(/[\s·.\-]/g,"");
+  return PROG.veiculos.find(v=>progRotuloFrota(v).toUpperCase()===t)
+      || PROG.veiculos.find(v=>v.placa.replace(/[\s-]/g,"")===semSep)
+      || (/^\d{1,3}$/.test(t) ? PROG.veiculos.find(v=>v.ordem===parseInt(t,10)) : null)
+      || (() => { const c = PROG.veiculos.filter(v=>v.placa.replace(/[\s-]/g,"").startsWith(semSep) || (String(v.ordem).padStart(2,"0")+v.placa.replace(/[\s-]/g,"")).startsWith(semSep)); return c.length===1 ? c[0] : null; })();
+}
+window.progEscolherFrota = (el) => {
+  const v = progAcharFrota(el.value); if(!v) return;
+  el.value = progRotuloFrota(v);
   const m = (PROG.motoristaDoDia && PROG.motoristaDoDia[v.id]) || v.motorista || "";
-  const el = document.getElementById("pg-motorista"); if(el && m) el.value = m.toUpperCase();
+  const mot = document.getElementById("pg-motorista"); if(mot && m) mot.value = m.toUpperCase();
 };
 window.progMaiusc = (el) => { const p = el.selectionStart; el.value = el.value.toUpperCase(); try{ el.setSelectionRange(p,p); }catch(e){} };
 window.progSoNumero = (el) => { el.value = el.value.replace(/\D/g,""); };
+// NF: só números; várias notas separadas por "/" (vírgula, espaço ou ponto e vírgula viram "/")
+function progLimparNF(v){ return String(v||"").replace(/[,;\s]+/g,"/").replace(/[^\d/]/g,"").replace(/\/{2,}/g,"/"); }
+window.progNF = (el) => { el.value = progLimparNF(el.value); };
 
 async function progGravar(linha){
   if(!PROG_DB){ const i = PROG.linhas.findIndex(l=>l.id===linha.id); if(i>=0) PROG.linhas[i] = linha; else PROG.linhas.push(linha); progSalvarLocal(); return true; }
@@ -6625,12 +6639,12 @@ async function progGravar(linha){
 
 window.progAdicionar = async () => {
   const f = progLerForm();
-  const v = PROG.veiculos.find(x=>x.id===f.frota);
-  if(!v){ toast("Escolha a frota."); return; }
+  const v = progAcharFrota(f.frota);
+  if(!v){ toast(f.frota ? `Não encontrei a frota "${f.frota}". Escolha uma da lista.` : "Escolha a frota."); return; }
   if(!f.cliente.trim()){ toast("Informe o cliente."); return; }
   const linha = { id:"tmp"+osNovoId(), data:PROG_DIA, veiculoId:v.id, frota:`${String(v.ordem).padStart(2,"0")} ${v.placa}`,
     motorista:f.motorista.trim().toUpperCase(), cliente:f.cliente.trim().toUpperCase(), transportadora:f.transportadora.trim().toUpperCase(),
-    servico:PROG_FORM.servico, horario:f.horario, nf:f.nf.replace(/\D/g,""), planejado:PROG_FORM.planejado,
+    servico:PROG_FORM.servico, horario:f.horario, nf:progLimparNF(f.nf).replace(/^\/|\/$/g,""), planejado:PROG_FORM.planejado,
     situacao: PROG_FORM.planejado ? "pendente" : "realizada", horaReal: PROG_FORM.planejado ? "" : frotaHora(), por:(MEU_EMAIL||"").split("@")[0] };
   PROG.linhas.push(linha);
   // Mantém cliente, transportadora e horário no formulário (costumam se repetir); limpa frota, motorista e NF
@@ -6648,7 +6662,7 @@ window.progSituacao = async (id, sit) => {
 };
 window.progEditar = async (id, campo, valor) => {
   const l = PROG.linhas.find(x=>x.id===id); if(!l) return;
-  l[campo] = campo==="nf" ? valor.replace(/\D/g,"") : campo==="horario" ? valor : valor.toUpperCase();
+  l[campo] = campo==="nf" ? progLimparNF(valor).replace(/^\/|\/$/g,"") : campo==="horario" ? valor : valor.toUpperCase();
   await progGravar(l); progRerender();
 };
 window.progExcluir = async (id) => {
@@ -6754,13 +6768,12 @@ function progPagina(){
         ${PROG_SERVICOS.map(s=>`<button class="sub-tab-btn ${PROG_FORM.servico===s?"active":""}" onclick="progForm('servico','${s}')">${s}</button>`).join("")}
       </div>
       <div class="os-grid" style="margin-top:4px;">
-        <label>🚛 Frota<select id="pg-frota" onchange="progEscolherFrota(this)">
-          <option value="">Selecione</option>${veics.map(v=>`<option value="${v.id}">${String(v.ordem).padStart(2,"0")} · ${osEsc(v.placa)}${v.motorista?` · ${osEsc(v.motorista)}`:""}</option>`).join("")}
-        </select></label>
+        <label>🚛 Frota<input id="pg-frota" list="pg-l-frotas" placeholder="Digite ou escolha (ex: 07 ou GCV3D)" autocomplete="off" style="text-transform:uppercase;" onchange="progEscolherFrota(this)"></label>
+        <datalist id="pg-l-frotas">${veics.map(v=>`<option value="${osEsc(progRotuloFrota(v))}">`).join("")}</datalist>
         <label>👤 Motorista<input id="pg-motorista" placeholder="NOME DO MOTORISTA" style="text-transform:uppercase;" oninput="progMaiusc(this)"></label>
         <label>🏢 Cliente<input id="pg-cliente" list="pg-l-clientes" placeholder="CLIENTE" style="text-transform:uppercase;" oninput="progMaiusc(this)"></label>
         <label>📦 Transportadora<input id="pg-transp" list="pg-l-transp" placeholder="TRANSPORTADORA" style="text-transform:uppercase;" oninput="progMaiusc(this)"></label>
-        <label>🧾 NF<input id="pg-nf" inputmode="numeric" placeholder="só números" oninput="progSoNumero(this)"></label>
+        <label>🧾 NF<input id="pg-nf" inputmode="text" placeholder="ex: 12345/98745" oninput="progNF(this)"></label>
       </div>
       <label>🕐 Horário programado</label>
       <div class="prog-chips">
@@ -6782,7 +6795,7 @@ function progPagina(){
           <td><input type="time" step="900" value="${l.horario}" style="width:96px;" onchange="progEditar('${l.id}','horario',this.value)"></td>
           <td><b>${osEsc(l.frota)}</b><div class="hint" style="margin:0;">${l.servico}${!l.planejado ? ' · <span class="badge amber">extra</span>' : ""}</div></td>
           <td>${osEsc(l.motorista)||"—"}</td><td>${osEsc(l.cliente)}</td><td>${osEsc(l.transportadora)||"—"}</td>
-          <td><input value="${osEsc(l.nf)}" inputmode="numeric" style="width:90px;" oninput="progSoNumero(this)" onchange="progEditar('${l.id}','nf',this.value)"></td>
+          <td><input value="${osEsc(l.nf)}" style="width:130px;" placeholder="12345/98745" oninput="progNF(this)" onchange="progEditar('${l.id}','nf',this.value)"></td>
           <td style="white-space:nowrap;">
             <button class="prog-sit ${l.situacao==="realizada"?"on ok":""}" onclick="progSituacao('${l.id}','realizada')" title="Realizada">✅</button>
             <button class="prog-sit ${l.situacao==="nao_realizada"?"on no":""}" onclick="progSituacao('${l.id}','nao_realizada')" title="Não realizada">❌</button>
