@@ -6882,37 +6882,76 @@ function progPagina(){
           <div class="hint">Quantidade de entregas. Clique numa coluna para abrir o dia.</div></div>
         <label class="frota-data">Mês <select onchange="progSetMes(this.value)">${progMesesOpcoes().map(m=>opt(m, progNomeMes(m), PROG_MES)).join("")}</select></label>
       </div>
-      <div class="os-resumo" style="margin:4px 0 12px;">
+      <div class="os-resumo prog-resumo" style="margin:4px 0 12px;">
         <div>Planejado no mês<b>${M.plan}</b></div>
         <div>Realizado no mês<b style="color:var(--green);">${M.real}</b><small>${M.extras} extra(s)</small></div>
         <div>Atendimento do plano<b>${M.pct.toFixed(0)}%</b></div>
         <div>Dias com lançamento<b>${M.diasComLanc}</b></div>
       </div>
-      <div class="chart-wrap" style="height:300px;"><canvas id="ch-prog-mes"></canvas></div>
+      <div class="chart-wrap" style="height:320px;"><canvas id="ch-prog-mes"></canvas></div>
+      <div class="hint" style="margin:8px 0 0;">Barra cinza = planejado · barra vermelha = realizado · número = realizado/planejado (<span style="color:var(--green);font-weight:700;">verde</span> bateu o plano, <span style="color:var(--red);font-weight:700;">vermelho</span> ficou abaixo)</div>
     </div>`;
 }
 
+// Planejado (barra cinza larga) com o Realizado (barra vermelha fina) por dentro, no mesmo lugar —
+// um único rótulo "realizado/planejado" por dia. No celular o gráfico deita (um dia por linha).
+let PROG_GRAF_MOBILE = null;
 function progGrafico(){
   const el = document.getElementById("ch-prog-mes"); if(!el) return;
   const M = progStatsMes();
+  const hoje = frotaHojeISO();
+  // mês corrente: só até hoje (ou até o último dia lançado, se houver lançamento futuro)
+  const ultimoLanc = M.porDia.filter(x=>x.plan||x.real).map(x=>x.d).pop() || "";
+  const limite = PROG_MES === hoje.slice(0,7) ? (ultimoLanc > hoje ? ultimoLanc : hoje) : "9999";
+  const dias = M.porDia.filter(x=>x.d <= limite);
+  const SEM = ["dom","seg","ter","qua","qui","sex","sáb"];
+  const sem = (d) => SEM[new Date(d+"T12:00:00").getDay()];
+  const mobile = (el.parentElement.clientWidth || window.innerWidth) < 600;
+  PROG_GRAF_MOBILE = mobile;
+  const wrap = el.parentElement;
+  wrap.style.height = mobile ? `${Math.max(220, dias.length*30 + 70)}px` : "320px";
+
+  const rotulo = (x) => x.plan || x.real ? `${x.real}/${x.plan}` : "";
+  const corRotulo = (x) => !x.plan ? COLORS.inkSoft : x.real >= x.plan ? COLORS.green : COLORS.red;
+  const maxV = Math.max(1, ...dias.map(x=>Math.max(x.plan, x.real)));
+  const eixoDia = { grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:(c)=>({ size: mobile ? 11 : 10, weight: dias[c.index]?.d===PROG_DIA ? 800 : 400 }),
+    color:(c)=> dias[c.index]?.d===PROG_DIA ? COLORS.ink : COLORS.inkSoft } };
+  const eixoQtd = { beginAtZero:true, suggestedMax: Math.ceil(maxV*1.2), grid:{ color:COLORS.grid }, ticks:{ precision:0, color:COLORS.inkSoft } };
+
   mkChart("ch-prog-mes", {
     type:"bar",
-    data:{ labels:M.porDia.map(x=>x.d.slice(8,10)), datasets:[
-      { label:"Planejado", data:M.porDia.map(x=>x.plan||null), backgroundColor:"#B9BBC6", borderRadius:4, maxBarThickness:18 },
-      { label:"Realizado", data:M.porDia.map(x=>x.real||null), backgroundColor:COLORS.red, borderRadius:4, maxBarThickness:18 },
-    ]},
-    options:{ responsive:true, maintainAspectRatio:false,
-      onClick:(_e, els)=>{ if(els.length) progSetDia(M.porDia[els[0].index].d); },
+    data:{
+      labels: dias.map(x=> mobile ? `${x.d.slice(8,10)} ${sem(x.d)}` : [x.d.slice(8,10), sem(x.d).slice(0,3)]),
+      datasets:[
+        { label:"Planejado", data:dias.map(x=>x.plan), backgroundColor:"#D5D7DF", borderRadius:5, grouped:false, order:2,
+          barPercentage: mobile ? 0.9 : 0.85, categoryPercentage:0.9 },
+        { label:"Realizado", data:dias.map(x=>x.real), backgroundColor:COLORS.red, borderRadius:4, grouped:false, order:1,
+          barPercentage: mobile ? 0.5 : 0.45, categoryPercentage:0.9 },
+      ]},
+    options:{ responsive:true, maintainAspectRatio:false, indexAxis: mobile ? "y" : "x",
+      onClick:(_e, els)=>{ if(els.length) progSetDia(dias[els[0].index].d); },
       onHover:(e, els)=>{ e.native.target.style.cursor = els.length ? "pointer" : "default"; },
-      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"rectRounded" } },
-        tooltip:{ mode:"index", callbacks:{ title:(its)=>`${its[0].label}/${PROG_MES.slice(5,7)} (${progDiaSemana(M.porDia[its[0].dataIndex].d)})`,
-          afterBody:(its)=>{ const x = M.porDia[its[0].dataIndex]; return x.plan ? `Atendimento: ${Math.round(Math.min(x.real,x.plan)/x.plan*100)}%` : ""; } } },
-        datalabels:{ anchor:"end", align:"top", offset:0, color:COLORS.ink, font:{ size:9, weight:700 }, display:(c)=>c.dataset.data[c.dataIndex]!=null } },
-      layout:{ padding:{ top:16 } },
-      scales:{ x:{ grid:{ display:false }, ticks:{ font:(c)=>({ weight: M.porDia[c.index]?.d===PROG_DIA ? 800 : 400 }) } },
-               y:{ beginAtZero:true, grid:{ color:COLORS.grid }, ticks:{ precision:0 } } } }
+      plugins:{ legend:{ position: mobile ? "top" : "bottom", labels:{ boxWidth:12, usePointStyle:true, pointStyle:"rectRounded", padding:14 } },
+        tooltip:{ mode:"index", intersect:false, callbacks:{
+          title:(its)=>{ const x = dias[its[0].dataIndex]; return `${x.d.slice(8,10)}/${x.d.slice(5,7)} (${progDiaSemana(x.d)})`; },
+          afterBody:(its)=>{ const x = dias[its[0].dataIndex]; return x.plan ? `Atendimento: ${Math.round(Math.min(x.real,x.plan)/x.plan*100)}%` : ""; } } },
+        // um rótulo por dia, preso à barra mais alta do dia (planejado ou realizado)
+        datalabels:{
+          display:(c)=>{ const x = dias[c.dataIndex]; if(!(x.plan||x.real)) return false; return c.datasetIndex===0 ? x.plan>=x.real : x.real>x.plan; },
+          formatter:(_v,c)=>rotulo(dias[c.dataIndex]), color:(c)=>corRotulo(dias[c.dataIndex]),
+          anchor:"end", align: mobile ? "right" : "top", offset:2, clamp:true, font:{ size: mobile ? 11 : 10, weight:800 } } },
+      layout:{ padding: mobile ? { right:40 } : { top:18 } },
+      scales: mobile ? { y: eixoDia, x: { ...eixoQtd, position:"top" } } : { x: eixoDia, y: eixoQtd } }
   });
 }
+// Ao girar o celular ou redimensionar a janela, troca entre gráfico em pé e deitado
+window.addEventListener("resize", ()=>{
+  clearTimeout(window.__progResize);
+  window.__progResize = setTimeout(()=>{
+    const el = document.getElementById("ch-prog-mes"); if(!el) return;
+    if(((el.parentElement.clientWidth || window.innerWidth) < 600) !== PROG_GRAF_MOBILE) progGrafico();
+  }, 250);
+});
 
 renderers.entregas = () => {
   if(MEU_PAPEL === "monitoramento") ENT_ABA = "prog";

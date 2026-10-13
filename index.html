@@ -399,6 +399,8 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .prog-sit.on{ filter:none; opacity:1; }
 .prog-sit.on.ok{ background:#E4F5EE; border-color:var(--green); }
 .prog-sit.on.no{ background:var(--red-soft); border-color:var(--red); }
+.prog-resumo{ grid-template-columns:repeat(auto-fit, minmax(130px,1fr)) !important; }
+@media (max-width:600px){ .prog-resumo{ grid-template-columns:1fr 1fr !important; } .prog-resumo b{ font-size:18px; } }
 .frota-data select{ font-family:inherit; font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); }
 
 /* Status da Frota (protótipo) */
