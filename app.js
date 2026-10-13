@@ -1860,6 +1860,65 @@ initCharts.diesel = () => {
 };
 
 /* -------------------- FOLHA -------------------- */
+// Média mensal por trimestre de cada categoria da folha no ano escolhido. Cada média usa só os meses
+// que já têm valor naquela categoria (mês em aberto não puxa a média para baixo); a seta compara com
+// o trimestre anterior (no T1, com o T4 do ano anterior). Para custo, subir é vermelho e cair é verde.
+function folhaValorMes(campo, ano, mes){
+  const i = filtrarFolhaIndices({ ano:String(ano), mes:String(mes) })[0];
+  const v = i==null ? null : DATA.folha[campo][i];
+  return v==null || !(v>0) ? null : v;
+}
+function folhaMediaTri(campo, ano, tri){
+  const vals = [1,2,3].map(k=>{
+    const mes = (tri-1)*3+k;
+    if(campo === "total"){
+      const p = ["salario","ad40","vtVr"].map(c=>folhaValorMes(c, ano, mes));
+      return p[0]==null ? null : sumArr(p.map(v=>v||0)); // só meses com salário lançado (mês fechado)
+    }
+    return folhaValorMes(campo, ano, mes);
+  }).filter(v=>v!=null);
+  return vals.length ? { media: sumArr(vals)/vals.length, total: sumArr(vals), meses: vals.length } : null;
+}
+function folhaTrimestres(ano){
+  if(!ano) return "";
+  const cats = [
+    { campo:"salario", nome:"Salário",                   cor:COLORS.ink },
+    { campo:"ad40",    nome:"40% Adicional",             cor:COLORS.red },
+    { campo:"vtVr",    nome:"VT + VR",                   cor:"#E8939E" },
+    { campo:"total",   nome:"Total (com VT + VR)",       cor:"#5B5F6B" },
+  ];
+  const tris = [["T1","jan–mar"],["T2","abr–jun"],["T3","jul–set"],["T4","out–dez"]];
+  const seta = (a, b) => {
+    if(!a || !b) return `<span class="ftri-p flat">—</span>`;
+    const p = (a.media-b.media)/b.media*100;
+    if(Math.abs(p) < 0.05) return `<span class="ftri-p flat">→ 0%</span>`;
+    return `<span class="ftri-p ${p>0?"up":"down"}" title="vs. trimestre anterior">${p>0?"▲":"▼"} ${Math.abs(p).toFixed(1).replace(".",",")}%</span>`;
+  };
+  const cards = cats.map(c=>{
+    const q = [1,2,3,4].map(t=>folhaMediaTri(c.campo, ano, t));
+    const antT4 = folhaMediaTri(c.campo, Number(ano)-1, 4);
+    const comDado = q.filter(Boolean);
+    const mesesAno = sumArr(comDado.map(x=>x.meses));
+    const mediaAno = mesesAno ? sumArr(comDado.map(x=>x.total))/mesesAno : 0;
+    return `<div class="ftri-card" style="--c:${c.cor};">
+      <div class="ftri-top"><i></i>${c.nome}</div>
+      <div class="ftri-val">${mediaAno ? fmtBRL(mediaAno) : "—"}</div>
+      <div class="ftri-sub">média mensal em ${ano}${mesesAno ? ` · ${mesesAno} ${mesesAno===1?"mês":"meses"}` : ""}</div>
+      ${tris.map(([t,meses],i)=>`<div class="ftri-row ${q[i]?"":"vazio"}">
+        <span class="ftri-t"><b>${t}</b> ${meses}</span>
+        <span class="ftri-m">${q[i] ? fmtBRL(q[i].media) : "sem dados"}${q[i] && q[i].meses<3 ? `<small> (${q[i].meses} de 3 meses)</small>` : ""}</span>
+        ${q[i] ? seta(q[i], i ? q[i-1] : antT4) : `<span class="ftri-p flat"></span>`}
+      </div>`).join("")}
+    </div>`;
+  }).join("");
+  return `
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Média mensal por trimestre — ${ano}</h3>
+      <div class="hint">Quanto é pago, em média, por mês em cada categoria. Seta: comparação com o trimestre anterior (▲ aumento · ▼ queda). Troque o ano no filtro acima.</div>
+      <div class="ftri-grid">${cards}</div>
+    </div>`;
+}
+
 renderers.folha = () => {
   const f = DATA.folha;
   const anosDisponiveis = [...new Set(f.labels.map(l=>"20"+l.slice(-2)))].sort();
@@ -1918,6 +1977,8 @@ renderers.folha = () => {
       ${comparacao && comparacao.comparavel ? `
       <div class="kpi"><div class="lbl">${comparacao.ano} vs ${comparacao.anoAnterior} (${comparacao.mesesFechados} ${comparacao.mesesFechados===1?"mês":"meses"})</div><div class="val">${comparacao.crescimentoPct>=0?"+":""}${comparacao.crescimentoPct}%</div>${deltaBadge(comparacao.crescimentoPct, true)}</div>` : ""}
     </div>
+
+    ${folhaTrimestres(FILTRO_FOLHA.ano !== "todos" ? FILTRO_FOLHA.ano : anosDisponiveis[anosDisponiveis.length-1])}
 
     <div class="panel" style="margin-bottom:16px;">
       <h3>Composição mensal do custo (R$)</h3>
