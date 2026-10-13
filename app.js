@@ -1796,7 +1796,7 @@ renderers.diesel = () => {
     <div class="page-head"><h2>Diesel</h2><p>Custo de abastecimento — ${d.mensalLabels[0]} a ${d.mensalLabels[d.mensalLabels.length-1]}</p>${montarFiltroAno("diesel", DATA.diesel.lancamentos)}</div>
     <div class="kpi-grid">
       <div class="kpi"><div class="lbl">Total do período</div><div class="val">${fmtBRL(d.totalPeriodo)}</div></div>
-      <div class="kpi"><div class="lbl">Litros abastecidos</div><div class="val">${d.totalLitrosPeriodo!=null ? fmtNum(d.totalLitrosPeriodo)+"L" : "—"}</div></div>
+      <div class="kpi"><div class="lbl">Litros abastecidos</div><div class="val">${d.totalLitrosPeriodo!=null ? fmtNum(Math.round(d.totalLitrosPeriodo))+" <span style=\"font-size:15px; font-weight:700;\">litros</span>" : "—"}</div>${d.totalLitrosPeriodo>=1000 ? `<div class="delta flat">≈ ${fmtNum(Math.round(d.totalLitrosPeriodo/1000))} mil litros</div>` : ""}</div>
       <div class="kpi"><div class="lbl">Custo médio por litro</div><div class="val">${d.custoMedioLitro!=null ? fmtBRL2(d.custoMedioLitro) : "—"}</div></div>
       <div class="kpi"><div class="lbl">Média semanal</div><div class="val">${fmtMil(d.mediaSemanal)}</div></div>
       <div class="kpi"><div class="lbl">Top 10 caminhões</div><div class="val">${d.topCaminhoesTotalPct}%</div><div class="delta flat">do custo total do período</div></div>
