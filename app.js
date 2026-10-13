@@ -7046,7 +7046,8 @@ renderers.belem = () => {
 
     <div class="panel" style="margin-bottom:16px;">
       <h3>Receita, Custo e Resultado por mês</h3>
-      <div class="chart-wrap" style="height:300px;"><canvas id="ch-belem-dre"></canvas></div>
+      <div class="hint">Valores em R$ mil · embaixo do resultado, a margem do mês (resultado ÷ receita)</div>
+      <div class="chart-wrap" style="height:320px;"><canvas id="ch-belem-dre"></canvas></div>
       <div class="chart-insight">${insightSerie(st.labels, st.linhas.map(l=>l.resultado), fmtBRL)}</div>
     </div>
 
@@ -7092,20 +7093,36 @@ initCharts.belem = () => {
   const st = computarBelemStats(b.lancamentos, b.receita, FILTRO_BELEM.ano);
   if(!st.linhas.length) return;
 
+  // Três barras por mês (Receita, Custo, Resultado) no mesmo eixo em R$, cada uma com o valor em cima;
+  // a do Resultado leva também a margem. Resultado negativo (prejuízo) fica abaixo do zero, em vermelho escuro.
+  const semRS = (v) => fmtLabelBRL(v).replace("R$ ","");
+  const barra = { borderRadius:5, maxBarThickness:58, categoryPercentage:0.78, barPercentage:0.92 };
+  const rotuloTopo = { display:true, anchor:"end", align:"end", offset:2, clamp:true, color:COLORS.ink, font:{ size:11.5, weight:800 } };
   mkChart("ch-belem-dre", {
     type:"bar",
     data:{ labels:st.labels, datasets:[
-      { label:"Receita Bruta", data:st.linhas.map(l=>l.receita), backgroundColor:COLORS.green, borderRadius:4 },
-      { label:"Custo Total", data:st.linhas.map(l=>l.custoTotal), backgroundColor:COLORS.red, borderRadius:4 },
-      { type:"line", label:"Resultado", data:st.linhas.map(l=>l.resultado), borderColor:COLORS.ink, borderWidth:2.5,
-        pointRadius:3, pointBackgroundColor:COLORS.ink, tension:.25,
-        datalabels:{ display:true, align:"top", offset:6, color:COLORS.ink, font:{size:11, weight:700}, formatter:fmtLabelBRL } }
+      { label:"Receita Bruta", data:st.linhas.map(l=>l.receita), backgroundColor:COLORS.green, ...barra,
+        datalabels:{ ...rotuloTopo, formatter:semRS } },
+      { label:"Custo Total", data:st.linhas.map(l=>l.custoTotal), backgroundColor:COLORS.red, ...barra,
+        datalabels:{ ...rotuloTopo, formatter:semRS } },
+      { label:"Resultado", data:st.linhas.map(l=>l.resultado), ...barra,
+        backgroundColor:st.linhas.map(l=>l.resultado>=0 ? COLORS.ink : COLORS.redDark),
+        datalabels:{ ...rotuloTopo,
+          color:(c)=>st.linhas[c.dataIndex].resultado>=0 ? COLORS.ink : COLORS.redDark,
+          formatter:(v,c)=>`${semRS(v)}\n${st.linhas[c.dataIndex].margem.toFixed(0)}%`, textAlign:"center" } },
     ]},
     options:{ responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
-        datalabels:{ display:(ctx)=>ctx.datasetIndex===2 } },
-      layout:{ padding:{ top:24 } },
-      scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}}, x:{grid:{display:false}} } }
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:12, usePointStyle:true, pointStyle:"rectRounded", padding:16,
+          // a barra de Resultado muda de cor no prejuízo; a legenda mostra sempre a cor normal (preto)
+          generateLabels:(chart)=>{ const it = Chart.defaults.plugins.legend.labels.generateLabels(chart); if(it[2]){ it[2].fillStyle = COLORS.ink; it[2].strokeStyle = COLORS.ink; } return it; } } },
+        tooltip:{ mode:"index", intersect:false, callbacks:{
+          label:(c)=>` ${c.dataset.label}: ${fmtBRL(c.raw)}`,
+          afterBody:(its)=>{ const l = st.linhas[its[0].dataIndex]; return `Margem: ${l.margem.toFixed(1)}%`; } } } },
+      layout:{ padding:{ top:34 } },
+      scales:{ y:{ beginAtZero:true, grid:{ color:COLORS.grid }, border:{ display:false }, ticks:{ callback:v=>fmtMil(v), color:COLORS.inkSoft },
+                   // com prejuízo, abre espaço abaixo do zero para o valor e a margem caberem
+                   suggestedMin: Math.min(0, ...st.linhas.map(l=>l.resultado)) < 0 ? Math.min(...st.linhas.map(l=>l.resultado))*2.2 : 0 },
+               x:{ grid:{ display:false }, border:{ display:false }, ticks:{ font:{ size:12, weight:700 }, color:COLORS.ink } } } }
   });
 
   mkChart("ch-belem-cat", {
