@@ -439,8 +439,8 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","belem","ordens","frota","acessos"];
-const PAGINAS_SO_DIRETOR = ["faturamento","contaspagar","belem","ordens","acessos"];
+const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","acessos"];
+const PAGINAS_SO_DIRETOR = ["faturamento","emissaonf","contaspagar","belem","ordens","acessos"];
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
@@ -449,6 +449,7 @@ const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
+  emissaonf: ["Emissão de NF","Lançamento das notas por contrato, serviço ou balsa, minuta e vencimento"],
   faturamento: ["Faturamento","Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem"],
   acessos: ["Gestão de Acessos","Libere ou altere o perfil de cada pessoa cadastrada no sistema"],
   belem: ["Operação Belém","Combustível, mão de obra e peças — com DRE do resultado mensal"],
@@ -1172,11 +1173,11 @@ window.setFiltroFaturamento = (campo, valor) => {
 // A coluna BALSA/VIAGEM traz o nome do navio + nº da viagem (ex: "MELBOURNE - 16029", às vezes sem o
 // espaço antes do número: "TOKYO -8278") ou um rótulo de operação (ex: "LOGISTICA REVERSA"). Pra virar
 // um resumo útil, agrupa pelo texto antes do hífen (tolerando espaço de um só lado ou nenhum).
+// Agrupa o texto BALSA/VIAGEM pelo serviço ou nome da balsa (mesma regra da tela Emissão de NF,
+// que junta variações como "LOG. REVERSA" e "LOGISTICA REVERSA")
 function balsaGrupo(raw){
   if(!raw) return "Sem informação";
-  const s = String(raw).trim();
-  const m = s.match(/^(.*?)\s*-\s*\S+$/);
-  return m ? m[1].trim() : s;
+  return nfClassificar(raw).item;
 }
 
 // Aplica os filtros da página (Ano/Mês/Balsa) a uma lista de lançamentos de faturamento. O gráfico de
@@ -6969,6 +6970,222 @@ renderers.entregas = () => {
   return abas + entregasReceita();
 };
 initCharts.entregas = () => { if(ENT_ABA === "prog") progGrafico(); else entregasReceitaCharts(); };
+/* -------------------- EMISSÃO DE NF --------------------
+   Lançamento e controle das notas de serviço. Usa a mesma tabela do Faturamento
+   (faturamento_lancamentos), então tudo o que entra aqui aparece nos gráficos de lá e a importação
+   da planilha do George continua valendo. O antigo campo "BALSA/VIAGEM" vira dois campos:
+   Serviço/Balsa (lista) + Nº da balsa — e continua gravado no formato da planilha
+   ("VALÊNCIA - 9252" ou "LOGÍSTICA REVERSA") para não quebrar nada. DOC = Entrega da minuta (data). */
+const NF_SERVICOS = ["LOGÍSTICA REVERSA","RESÍDUO DE ENTREGA","MANUTENÇÃO","1º QZN DE ENTREGA","2º QZN DE ENTREGA","OPERAÇÃO BELÉM"];
+const NF_OUTROS = "OUTROS SERVIÇOS";
+const NF_BALSAS_PADRAO = ["ANTUÉRPIA","BARCELONA","CASA BLANCA","DUBAI","GENOVA","LISBOA","LOS ANGELES","MELBOURNE","MIAMI","OSAKA","OSLO","ROTTERDAM","SINGAPUR","TBL LV","TBL XXXV","TOKYO","VALÊNCIA","XANGAI","YOKOHAMA"];
+const FILTRO_NF = { mes:null, item:"todos", busca:"", pendentes:false };
+let NF_EDIT = null;   // id do lançamento em edição (null = novo)
+let NF_SEL = "";      // serviço/balsa escolhido no formulário
+
+function nfSemAcento(s){ return String(s||"").toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g,"").trim(); }
+// Lê o texto do campo BALSA/VIAGEM (como veio da planilha) e separa em serviço / balsa + número
+function nfClassificar(raw){
+  const s = String(raw||"").replace(/\s+/g," ").trim();
+  if(!s) return { item:NF_OUTROS, tipo:"servico", numero:"", original:"" };
+  const u = nfSemAcento(s);
+  const servico = (nome, numero="") => ({ item:nome, tipo:"servico", numero, original:s });
+  if(/OPERA..O BEL/.test(u)) return servico("OPERAÇÃO BELÉM", (u.match(/(\d{1,2})[./](\d{2,4})/)||[]).slice(1).join("/"));
+  if(/RESIDUO/.test(u)) return servico("RESÍDUO DE ENTREGA");
+  if(/2.? ?QZN/.test(u)) return servico("2º QZN DE ENTREGA");
+  if(/1.? ?QZN/.test(u)) return servico("1º QZN DE ENTREGA");
+  if(/LOG/.test(u) && /REVER|VER\b|VER\//.test(u)) return servico("LOGÍSTICA REVERSA");
+  if(/MANUT/.test(u)) return servico("MANUTENÇÃO");
+  if(/MOVIMENT|ATRELAMENTO|CARRETEIRA/.test(u)) return { item:NF_OUTROS, tipo:"servico", numero:"", original:s };
+  // Balsa: "NOME - 1234" (ou só "NOME")
+  const m = s.match(/^(.*?)\s*[-–]\s*([\d./ ]+)$/);
+  let nome = (m ? m[1] : s).toUpperCase().trim();
+  if(nfSemAcento(nome).replace(/\s/g,"") === "CASABLANCA") nome = "CASA BLANCA";
+  return { item:nome, tipo:"balsa", numero: m ? m[2].trim() : "", original:s };
+}
+function nfMontarBalsaViagem(item, numero){
+  if(!item) return null;
+  const n = String(numero||"").trim();
+  if(item === "OPERAÇÃO BELÉM") return n ? `OPERAÇÃO BELÉM/${n.replace("/",".")}` : "OPERAÇÃO BELÉM";
+  if(NF_SERVICOS.includes(item) || item === NF_OUTROS) return item;
+  return n ? `${item} - ${n}` : item;
+}
+function nfEhBalsa(item){ return !!item && !NF_SERVICOS.includes(item) && item !== NF_OUTROS; }
+function nfBalsasConhecidas(){
+  const daBase = DATA.faturamento.lancamentos.map(r=>nfClassificar(r.balsaViagem)).filter(c=>c.tipo==="balsa").map(c=>c.item);
+  return [...new Set([...NF_BALSAS_PADRAO, ...daBase])].sort((a,b)=>a.localeCompare(b,"pt-BR"));
+}
+function nfMinuta(r){ return r.doc && /^\d{4}-\d{2}-\d{2}$/.test(r.doc) ? r.doc : null; }
+function nfMesRef(r){ return (r.vencimento || r.deadline || "").slice(0,7); }
+
+window.setFiltroNF = (campo, valor) => { FILTRO_NF[campo] = valor; navigate("emissaonf"); };
+window.nfBuscar = (t) => { FILTRO_NF.busca = t; const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); window.scrollTo(0,y); const el = document.getElementById("nf-busca"); if(el){ el.focus(); el.setSelectionRange(t.length,t.length); } };
+window.nfEscolherItem = (sel) => {
+  if(sel.value === "__nova"){
+    const nome = (prompt("Nome da nova balsa:")||"").trim().toUpperCase();
+    if(!nome){ sel.value = NF_SEL; return; }
+    NF_BALSAS_PADRAO.push(nome); NF_SEL = nome;
+  } else NF_SEL = sel.value;
+  const dados = nfLerForm(); navigate("emissaonf"); nfPreencherForm({ ...dados, item:NF_SEL });
+};
+window.nfLimparDigitos = (el, extra) => { el.value = el.value.replace(new RegExp(`[^\\d${extra||""}]`,"g"),""); };
+
+function nfLerForm(){
+  const g = (id)=>document.getElementById(id)?.value || "";
+  return { contrato:g("nf-contrato"), nf:g("nf-nf"), deadline:g("nf-deadline"), minuta:g("nf-minuta"), item:NF_SEL, numero:g("nf-numero"), valor:g("nf-valor"), vencimento:g("nf-venc") };
+}
+function nfPreencherForm(d){
+  const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; };
+  s("nf-contrato", d.contrato); s("nf-nf", d.nf); s("nf-deadline", d.deadline); s("nf-minuta", d.minuta);
+  s("nf-item", d.item); s("nf-numero", d.numero); s("nf-valor", d.valor); s("nf-venc", d.vencimento);
+}
+window.nfEditar = (id) => {
+  const r = DATA.faturamento.lancamentos.find(x=>x.id===id); if(!r) return;
+  const c = nfClassificar(r.balsaViagem);
+  NF_EDIT = id; NF_SEL = c.item;
+  navigate("emissaonf");
+  nfPreencherForm({ contrato:r.contrato||"", nf:r.nf||"", deadline:r.deadline||"", minuta:nfMinuta(r)||"", item:c.item, numero:c.numero,
+    valor:r.valor!=null ? "R$ "+Number(r.valor).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}) : "", vencimento:r.vencimento||"" });
+  document.getElementById("nf-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
+};
+window.nfCancelar = () => { NF_EDIT = null; NF_SEL = ""; navigate("emissaonf"); };
+
+window.nfSalvar = async () => {
+  const f = nfLerForm();
+  const valor = osNum("nf-valor");
+  if(!f.item){ toast("Escolha o serviço ou a balsa."); return; }
+  if(!valor){ toast("Informe o valor."); return; }
+  if(!f.vencimento){ toast("Informe o vencimento."); return; }
+  if(nfEhBalsa(f.item) && !f.numero.trim() && !confirm("Balsa sem número. Salvar assim mesmo?")) return;
+  const reg = { contrato:f.contrato.trim()||null, nf:f.nf.replace(/^\/|\/$/g,"").trim()||null, deadline:f.deadline||null,
+    doc:f.minuta||null, balsaViagem:nfMontarBalsaViagem(f.item, f.numero), valor, vencimento:f.vencimento };
+  const banco = { contrato:reg.contrato, nf:reg.nf, deadline:reg.deadline, doc:reg.doc, balsa_viagem:reg.balsaViagem, valor:reg.valor, vencimento:reg.vencimento };
+  const lista = DATA.faturamento.lancamentos;
+  if(NF_EDIT){
+    const r = lista.find(x=>x.id===NF_EDIT);
+    if(sb){ const { error } = await sb.from("faturamento_lancamentos").update(banco).eq("id", NF_EDIT); if(error){ toast("⚠ Não salvou: " + error.message); return; } }
+    Object.assign(r, reg);
+    toast("Lançamento atualizado ✓");
+  } else {
+    const novo = { id:localId(), ...reg };
+    if(sb){ const { data, error } = await sb.from("faturamento_lancamentos").insert(banco).select().single(); if(error){ toast("⚠ Não salvou: " + error.message); return; } novo.id = data.id; }
+    lista.push(novo);
+    toast(`${reg.balsaViagem} · ${fmtBRL2(valor)} lançado ✓`);
+  }
+  NF_EDIT = null; NF_SEL = "";
+  FILTRO_NF.mes = nfMesRef(reg) || FILTRO_NF.mes;
+  navigate("emissaonf");
+};
+window.nfExcluir = async (id) => {
+  const r = DATA.faturamento.lancamentos.find(x=>x.id===id); if(!r) return;
+  if(!confirm(`Excluir o lançamento ${r.balsaViagem||""} · ${fmtBRL2(r.valor)} (vencimento ${fmtDataBR(r.vencimento)})?`)) return;
+  if(sb){ const { error } = await sb.from("faturamento_lancamentos").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  DATA.faturamento.lancamentos = DATA.faturamento.lancamentos.filter(x=>x.id!==id);
+  navigate("emissaonf");
+};
+
+renderers.emissaonf = () => {
+  const todos = DATA.faturamento.lancamentos;
+  const meses = [...new Set(todos.map(nfMesRef).filter(Boolean))].sort().reverse();
+  const hojeMes = frotaHojeISO().slice(0,7);
+  if(!FILTRO_NF.mes) FILTRO_NF.mes = meses.includes(hojeMes) ? hojeMes : (meses[0] || hojeMes);
+  const nomeMes = (m) => m==="todos" ? "Todos os meses" : `${MESES_HE[Number(m.slice(5,7))-1]}/${m.slice(2,4)}`;
+  const balsas = nfBalsasConhecidas();
+  const opt = (v,l,a) => `<option value="${osEsc(v)}" ${v===a?"selected":""}>${osEsc(l)}</option>`;
+
+  const doMes = todos.filter(r=>FILTRO_NF.mes==="todos" || nfMesRef(r)===FILTRO_NF.mes);
+  const busca = nfSemAcento(FILTRO_NF.busca);
+  const lista = doMes.filter(r=>{
+    const c = nfClassificar(r.balsaViagem);
+    if(FILTRO_NF.item!=="todos" && c.item!==FILTRO_NF.item) return false;
+    if(FILTRO_NF.pendentes && r.nf) return false;
+    if(busca && !nfSemAcento(`${r.contrato||""} ${r.nf||""} ${r.balsaViagem||""}`).includes(busca)) return false;
+    return true;
+  }).sort((a,b)=>(a.vencimento||"9").localeCompare(b.vencimento||"9") || (a.deadline||"").localeCompare(b.deadline||""));
+
+  const semNF = doMes.filter(r=>!r.nf), semMinuta = doMes.filter(r=>!nfMinuta(r));
+  const hoje = frotaHojeISO(), em7 = new Date(hoje+"T12:00:00"); em7.setDate(em7.getDate()+7);
+  const venceSemana = doMes.filter(r=>r.vencimento && r.vencimento>=hoje && r.vencimento<=em7.toISOString().slice(0,10));
+  const porItem = {};
+  doMes.forEach(r=>{ const c = nfClassificar(r.balsaViagem); const k = c.tipo==="balsa" ? "BALSAS" : c.item; porItem[k] = (porItem[k]||0) + (r.valor||0); });
+  const totalMes = sumArr(doMes.map(r=>r.valor||0));
+  const resumo = Object.entries(porItem).sort((a,b)=>b[1]-a[1]);
+
+  const itemSel = NF_SEL;
+  return `
+    <div class="page-head"><h2>Emissão de NF</h2><p>Lançamento das notas por contrato — serviço ou balsa, deadline, entrega da minuta e vencimento · mesmos dados da tela Faturamento</p></div>
+
+    <div class="panel os-form" id="nf-form" style="margin-bottom:16px; ${NF_EDIT ? "border:2px solid var(--amber);" : ""}">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+        <h3 style="margin:0;">${NF_EDIT ? "✏️ Editando lançamento" : "➕ Novo lançamento"}</h3>
+        ${NF_EDIT ? `<button class="os-btn" onclick="nfCancelar()">Cancelar edição</button>` : ""}
+      </div>
+      <div class="nf-grid">
+        <label>Contrato<input id="nf-contrato" inputmode="numeric" placeholder="ex: 045 ou 045/046" oninput="nfLimparDigitos(this,'/\\-')"></label>
+        <label>NF<input id="nf-nf" inputmode="numeric" placeholder="ex: 1234 ou 1234/1235" oninput="progNF(this)"></label>
+        <label title="Data do serviço executado">Deadline (execução)<input type="date" id="nf-deadline"></label>
+        <label>Entrega da minuta<input type="date" id="nf-minuta"></label>
+      </div>
+      <div class="nf-grid nf-grid-2">
+        <label>Serviço / Balsa<select id="nf-item" onchange="nfEscolherItem(this)">
+          <option value="">Selecione</option>
+          <optgroup label="Serviços">${NF_SERVICOS.map(s=>opt(s,s,itemSel)).join("")}${opt(NF_OUTROS, "Outros serviços (movimentação, atrelamento...)", itemSel)}</optgroup>
+          <optgroup label="Balsas">${balsas.map(b=>opt(b,b,itemSel)).join("")}<option value="__nova">+ Cadastrar outra balsa…</option></optgroup>
+        </select></label>
+        <label>${itemSel==="OPERAÇÃO BELÉM" ? "Referência (mês/ano)" : "Nº da balsa"}<input id="nf-numero" ${nfEhBalsa(itemSel) || itemSel==="OPERAÇÃO BELÉM" ? "" : "disabled"}
+          placeholder="${itemSel==="OPERAÇÃO BELÉM" ? "ex: 08/26" : nfEhBalsa(itemSel) ? "ex: 9252" : "só para balsas"}" inputmode="numeric" oninput="nfLimparDigitos(this,'/')"></label>
+        <label>Valor<input id="nf-valor" inputmode="numeric" placeholder="R$ 0,00" oninput="osMascaraBRL(this)"></label>
+        <label>Vencimento<input type="date" id="nf-venc"></label>
+      </div>
+      <button class="entry-submit" onclick="nfSalvar()">${NF_EDIT ? "Salvar alterações" : "Lançar"}</button>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="filtro-bar">
+        <label>Mês (vencimento)<select onchange="setFiltroNF('mes',this.value)">${opt("todos","Todos os meses",FILTRO_NF.mes)}${meses.map(m=>opt(m, nomeMes(m), FILTRO_NF.mes)).join("")}</select></label>
+        <label>Serviço / Balsa<select onchange="setFiltroNF('item',this.value)">${opt("todos","Todos",FILTRO_NF.item)}
+          <optgroup label="Serviços">${[...NF_SERVICOS, NF_OUTROS].map(s=>opt(s,s,FILTRO_NF.item)).join("")}</optgroup>
+          <optgroup label="Balsas">${balsas.map(b=>opt(b,b,FILTRO_NF.item)).join("")}</optgroup></select></label>
+        <label>Buscar<input id="nf-busca" value="${osEsc(FILTRO_NF.busca)}" placeholder="contrato, NF ou balsa" oninput="nfBuscar(this.value)"
+          style="font-family:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--paper);"></label>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Lançamentos — ${nomeMes(FILTRO_NF.mes)}</div><div class="val">${doMes.length}</div><div class="delta flat">${fmtBRL(totalMes)}</div></div>
+      <div class="kpi" style="cursor:pointer;" onclick="setFiltroNF('pendentes', ${!FILTRO_NF.pendentes})"><div class="lbl">🧾 Sem NF emitida</div><div class="val" style="color:var(--${semNF.length?"amber":"green"});">${semNF.length}</div><div class="delta flat">${FILTRO_NF.pendentes ? "✓ mostrando só esses · clique para ver todos" : "clique para ver só esses"}</div></div>
+      <div class="kpi"><div class="lbl">📄 Minuta não entregue</div><div class="val" style="color:var(--${semMinuta.length?"amber":"green"});">${semMinuta.length}</div><div class="delta flat">sem data de entrega da minuta</div></div>
+      <div class="kpi"><div class="lbl">📅 Vencem nos próximos 7 dias</div><div class="val">${venceSemana.length}</div><div class="delta flat">${fmtBRL(sumArr(venceSemana.map(r=>r.valor||0)))}</div></div>
+    </div>
+
+    ${resumo.length ? `<div class="panel" style="margin-bottom:16px;">
+      <h3>Valor por serviço — ${nomeMes(FILTRO_NF.mes)}</h3>
+      <div class="nf-resumo">${resumo.map(([k,v])=>`<div><span>${osEsc(k)}</span><b>${fmtBRL(v)}</b><small>${totalMes?(v/totalMes*100).toFixed(0):0}%</small></div>`).join("")}</div>
+    </div>` : ""}
+
+    <div class="panel">
+      <h3>Lançamentos (${lista.length})</h3>
+      <div class="hint">Ordenados por vencimento. Clique em ✏️ para corrigir um lançamento.</div>
+      ${lista.length ? `<div style="overflow-x:auto;"><table class="nf-tab">
+        <thead><tr><th>Contrato</th><th>NF</th><th>Deadline</th><th>Entrega da minuta</th><th>Serviço / Balsa</th><th>Nº balsa</th><th class="num">Valor</th><th>Vencimento</th><th></th></tr></thead>
+        <tbody>${lista.map(r=>{ const c = nfClassificar(r.balsaViagem); const min = nfMinuta(r);
+          const vencida = r.vencimento && r.vencimento < hoje;
+          return `<tr ${NF_EDIT===r.id?'style="background:#FCF1DE;"':""}>
+            <td><b>${osEsc(r.contrato)||"—"}</b></td>
+            <td>${r.nf ? osEsc(r.nf) : '<span class="badge amber">sem NF</span>'}</td>
+            <td>${fmtDataBR(r.deadline)}</td>
+            <td>${min ? fmtDataBR(min) : (r.doc && r.doc!=="-" ? osEsc(r.doc) : '<span class="badge gray">pendente</span>')}</td>
+            <td>${c.tipo==="balsa" ? `🚢 <b>${osEsc(c.item)}</b>` : osEsc(c.item)}${c.item===NF_OUTROS && c.original ? `<div class="hint" style="margin:0;">${osEsc(c.original)}</div>` : ""}</td>
+            <td>${osEsc(c.numero)||"—"}</td>
+            <td class="num"><b>${fmtBRL2(r.valor)}</b></td>
+            <td style="white-space:nowrap;">${fmtDataBR(r.vencimento)}${vencida ? ' <span class="badge gray">vencido</span>' : ""}</td>
+            <td style="white-space:nowrap;"><button class="os-link" onclick="nfEditar('${r.id}')" title="Editar">✏️</button> <button class="os-link" onclick="nfExcluir('${r.id}')" title="Excluir">🗑️</button></td>
+          </tr>`; }).join("")}</tbody>
+        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="6">Total</td><td class="num">${fmtBRL2(sumArr(lista.map(r=>r.valor||0)))}</td><td colspan="2"></td></tr></tfoot>
+      </table></div>` : `<div class="empty-state" style="padding:20px;"><p>Nenhum lançamento com esses filtros.</p></div>`}
+    </div>`;
+};
+
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
 renderers.belem = () => {
   const b = DATA.belem;
