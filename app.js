@@ -444,7 +444,7 @@ const PAGINAS_SO_DIRETOR = ["faturamento","emissaonf","contaspagar","belem","ord
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf"] };
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -5310,6 +5310,15 @@ function updateSyncPill(){
   }
 }
 
+// Perfil Coordenação: carrega só a tabela do faturamento (a Emissão de NF), nada mais do painel
+async function carregarFaturamentoDoBanco(){
+  const ftLanc = await sbFetchAll("faturamento_lancamentos");
+  DATA.faturamento.lancamentos = ftLanc.map(r=>({
+    id:r.id, contrato:r.contrato||null, nf:r.nf||null, deadline:r.deadline||null, doc:r.doc||null,
+    balsaViagem:r.balsa_viagem||null, valor:Number(r.valor), vencimento:r.vencimento||null
+  }));
+}
+
 async function iniciarPainel(){
   deriveCompras(); // garante que os dados locais (data.js) já estão prontos como base/fallback
   deriveManutencao();
@@ -5318,6 +5327,7 @@ async function iniciarPainel(){
   deriveEntregas();
   recomputeFolha();
   carregarSessionLogLocal();
+  if(MEU_PAPEL === "coordenacao") await carregarFaturamentoDoBanco(); // só os dados da Emissão de NF
   if(PAGINAS_RESTRITAS[MEU_PAPEL]){ navigate(PAGINAS_RESTRITAS[MEU_PAPEL][0]); return; } // perfis restritos não carregam nenhum outro dado do sistema
   navigate("overview"); // mostra algo na tela já, com os dados locais/baseline, sem esperar o Supabase
   // loadFromSupabase() é assíncrono e pode demorar (rede lenta no celular, por exemplo). Nesse meio
@@ -7416,6 +7426,7 @@ async function carregarGestaoAcessos(){
               <option value="operacional" ${u.papel==="operacional"?"selected":""}>Operacional</option>
               <option value="lider" ${u.papel==="lider"?"selected":""}>Líder (só Status da Frota)</option>
               <option value="monitoramento" ${u.papel==="monitoramento"?"selected":""}>Monitoramento (só Programação de Entregas)</option>
+              <option value="coordenacao" ${u.papel==="coordenacao"?"selected":""}>Coordenação (só Emissão de NF)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
           </td>
@@ -7436,7 +7447,7 @@ window.salvarPapelUsuario = async (userId, email) => {
   } else {
     const { error } = await sb.from("user_roles").upsert({ user_id:userId, email, papel });
     if(error){ toast("⚠ Falha ao salvar: " + error.message); return; }
-    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)" })[papel]} ✓`);
+    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)", coordenacao:"Coordenação (só Emissão de NF)" })[papel]} ✓`);
   }
   carregarGestaoAcessos();
 };
