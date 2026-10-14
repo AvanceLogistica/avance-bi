@@ -6758,9 +6758,10 @@ function progTextoWhatsApp(){
   let horaAtual = null;
   itens.forEach(l=>{
     const h = l.horario || "Sem horário";
-    if(h !== horaAtual){ t += `\n🕐 *${h}*\n`; horaAtual = h; }
-    t += `${PROG_SITUACAO[l.situacao].icone} 🚛 ${l.frota}${l.motorista ? ` · ${l.motorista}` : ""}\n`;
-    t += `    🏢 ${l.cliente}${l.transportadora ? ` · 📦 ${l.transportadora}` : ""}${l.nf ? ` · 🧾 NF ${l.nf}` : ""}${l.servico!=="ENTREGA" ? ` · ${l.servico}` : ""}${!l.planejado ? " · ➕ EXTRA" : ""}\n`;
+    // emojis só no cabeçalho/resumo; nas linhas das entregas, a situação vai escrita
+    if(h !== horaAtual){ t += `\n*${h}*\n`; horaAtual = h; }
+    t += `${l.frota}${l.motorista ? ` · ${l.motorista}` : ""} — ${PROG_SITUACAO[l.situacao].label.toUpperCase()}\n`;
+    t += `   ${l.cliente}${l.transportadora ? ` · ${l.transportadora}` : ""}${l.nf ? ` · NF ${l.nf}` : ""}${l.servico!=="ENTREGA" ? ` · ${l.servico}` : ""}${!l.planejado ? " · EXTRA" : ""}\n`;
   });
   if(!itens.length) t += `\nNenhuma entrega lançada para o dia.\n`;
   return t.trim();
