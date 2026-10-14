@@ -6556,7 +6556,9 @@ renderers.frota = () => {
       ${frotaPodeCadastrar() ? `<p>Cadastre um por um na aba Caminhões, ou carregue a lista inicial de 42 caminhões.</p>
       <button class="entry-submit" onclick="frotaCarregarListaInicial()">Carregar os 42 caminhões da lista inicial</button>` : `<p>Peça ao diretor para cadastrar os caminhões.</p>`}</div></div>`;
   else corpo = FROTA_ABA==="lider" ? frotaLider(itens) : FROTA_ABA==="cadastro" ? frotaCadastro() : frotaPainel(itens);
-  const teste = FROTA_DB && !F.carregando && !F.erro && MEU_PAPEL==="diretor" ? frotaTesteLocal() : null;
+  // A recuperação do teste local só aparece com o cadastro do banco VAZIO — com caminhões já
+  // cadastrados, enviar os dados antigos deste navegador sobrescreveria a lista atual.
+  const teste = FROTA_DB && !F.carregando && !F.erro && MEU_PAPEL==="diretor" && !F.veiculos.length ? frotaTesteLocal() : null;
   if(teste) corpo = `
     <div class="os-alerta amber" style="margin:0 0 16px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between;">
       <span>💾 <b>Encontrei os dados do teste salvos neste navegador:</b> ${teste.d.veiculos.length} caminhões e ${teste.lanc} lançamento(s) de status${teste.dias.length ? ` (${teste.dias.map(frotaDataBR).join(", ")})` : ""}.</span>
