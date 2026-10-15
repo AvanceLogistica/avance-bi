@@ -7266,12 +7266,12 @@ async function osmCarregar(silencioso){
 }
 function osmSalvarLocal(){ if(!sb) try{ localStorage.setItem(OSM_LOCAL_KEY, JSON.stringify({ lista:OSM.lista, servicos:OSM.servicos, carretas:OSM.carretas })); }catch(e){} }
 function osmRerender(){
-  if(document.querySelector('nav.menu button.active')?.dataset.page !== "emissaonf" || NF_ABA !== "os") return;
+  if(document.querySelector('nav.menu button.active')?.dataset.page !== "emissaonf" || !["os","fin"].includes(NF_ABA)) return;
   const foco = document.activeElement;
   if(foco && foco.closest && foco.closest("#osm-form") && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
   const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); window.scrollTo(0,y);
 }
-setInterval(()=>{ if(sb && NF_ABA==="os" && document.visibilityState==="visible" && document.querySelector('nav.menu button.active')?.dataset.page==="emissaonf") osmCarregar(true); }, 30000);
+setInterval(()=>{ if(sb && ["os","fin"].includes(NF_ABA) && document.visibilityState==="visible" && document.querySelector('nav.menu button.active')?.dataset.page==="emissaonf") osmCarregar(true); }, 30000);
 
 window.setNfAba = (a) => { NF_ABA = a; navigate("emissaonf"); };
 window.osmSetDia = (d) => { if(!d) return; const mudouMes = d.slice(0,7) !== OSM_DIA.slice(0,7); OSM_DIA = d; if(mudouMes) osmCarregar(); else osmRerender(); };
@@ -7542,17 +7542,181 @@ function osmPagina(){
     </div>` : ""}`;
 }
 
+/* -------------------- O.S FINANCEIRA (aba da Emissão de NF) --------------------
+   Documento de cada O.S de manutenção (uma por carreta/frota) com os valores para emissão da NF —
+   mão de obra e peças por serviço — para imprimir e colher assinatura/carimbo. Usa as mesmas O.S da aba
+   "O.S de Manutenção". Os dados do cabeçalho (empresa e cliente) ficam salvos neste navegador e devem ser
+   conferidos antes da primeira impressão. */
+const OSF_CAB_KEY = "avance_osf_cabecalho_v1";
+const OSF_CAB_PADRAO = {
+  empresa:"AVANCE LOGÍSTICA INTEGRADA LTDA", razao:"AVANCE LOGÍSTICA INTEGRADA LTDA", cnpj:"",
+  endereco:"Rua Macatuba, nº 84 - Bairro Cidade de Deus", cep:"69099-266",
+  cliente:"COMBITRANS AMAZONAS LTDA", clienteEndereco:"Rua Ponta Grossa, 303 - Col. Oliveira Machado", clienteCnpj:"",
+  conferido:false,
+};
+let OSF_SEL = new Set();
+let OSF_BUSCA = "";
+function osfCab(){ try{ return { ...OSF_CAB_PADRAO, ...JSON.parse(localStorage.getItem(OSF_CAB_KEY)||"{}") }; }catch(e){ return { ...OSF_CAB_PADRAO }; } }
+window.osfSalvarCab = () => {
+  const c = {}; Object.keys(OSF_CAB_PADRAO).forEach(k=>{ const el = document.getElementById("osf-"+k); if(el) c[k] = el.value.trim(); });
+  c.conferido = true;
+  try{ localStorage.setItem(OSF_CAB_KEY, JSON.stringify(c)); }catch(e){}
+  toast("Dados do cabeçalho salvos ✓"); navigate("emissaonf");
+};
+window.osfSel = (id, on) => { on ? OSF_SEL.add(id) : OSF_SEL.delete(id); const b = document.getElementById("osf-imp-sel"); if(b) b.textContent = `🖨️ Imprimir selecionadas (${OSF_SEL.size})`; };
+window.osfSelTodas = (on, ids) => { ids.split(",").filter(Boolean).forEach(id=>on ? OSF_SEL.add(id) : OSF_SEL.delete(id)); navigate("emissaonf"); };
+window.osfBuscar = (t) => { OSF_BUSCA = t; const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); window.scrollTo(0,y); const el = document.getElementById("osf-busca"); if(el){ el.focus(); el.setSelectionRange(t.length,t.length); } };
+
+function osfDocumento(o, cab){
+  const e = osEsc, brl = (v)=> v ? fmtBRL2(v) : "", dt = (d)=> d ? d.split("-").reverse().join("-") : "—";
+  const linhas = (o.itens||[]).map(it=>{
+    const mo = it.cobrar === "mat" ? 0 : (it.mo||0), pc = it.cobrar === "mo" ? 0 : (it.mat||0);
+    return `<tr><td class="srv">${e(it.servico)}</td><td>${it.cod}</td><td>${String(it.qtd).replace(".",",")}</td>
+      <td class="v">${brl(mo)}</td><td>${pc ? String(it.qtd).replace(".",",") : ""}</td><td class="v">${brl(pc)}</td><td class="v"><b>${fmtBRL2(osmValorItem(it))}</b></td></tr>`;
+  }).join("");
+  const vazias = Array.from({ length: Math.max(0, 6-(o.itens||[]).length) }, ()=>`<tr><td class="srv">&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>`).join("");
+  return `<section class="folha">
+    <div class="topo">
+      <div class="marca"><span class="logo"></span><span class="nome">A V A N C E</span></div>
+      <div class="empresa">
+        <div><b>EMPRESA:</b> ${e(cab.empresa)}</div><div><b>RAZÃO SOCIAL:</b> ${e(cab.razao)}</div>
+        <div><b>CNPJ:</b> ${e(cab.cnpj)||"&nbsp;"}</div><div><b>ENDEREÇO:</b> ${e(cab.endereco)}</div><div><b>CEP:</b> ${e(cab.cep)}</div>
+      </div>
+    </div>
+    <div class="meio">
+      <div class="cliente">
+        <div><b>Cliente:</b> ${e(cab.cliente)}</div><div><b>Endereço:</b> ${e(cab.clienteEndereco)}</div><div><b>CNPJ:</b> ${e(cab.clienteCnpj)||"&nbsp;"}</div>
+      </div>
+      <table class="cab-os">
+        <tr><th colspan="2">ORDEM DE SERVIÇO Nº ${o.numero}</th></tr>
+        <tr><td>Início: ${dt(o.entradaData)} / Hora: ${e(o.entradaHora)||"—"}</td><td>Placa: <b>${e(o.placa)||"—"}</b></td></tr>
+        <tr><td>Saída: ${dt(o.saidaData)} / Hora: ${e(o.saidaHora)||"—"}</td><td>Frota: <b>${e(o.frota)}</b></td></tr>
+      </table>
+    </div>
+    <table class="itens">
+      <thead>
+        <tr><th rowspan="2" class="srv">SERVIÇO</th><th rowspan="2">COD</th><th rowspan="2">Qtd</th><th colspan="3" class="grupo">VALOR PARA EMISSÃO DE NF</th><th rowspan="2" class="tot">Valor Total</th></tr>
+        <tr><th>MÃO DE OBRA</th><th>Qtd</th><th>PEÇAS</th></tr>
+      </thead>
+      <tbody>${linhas}${vazias}</tbody>
+      <tfoot><tr><td colspan="6" class="lbl">TOTAL</td><td class="v"><b>${fmtBRL2(osmValorOS(o))}</b></td></tr></tfoot>
+    </table>
+    ${o.obs ? `<div class="obs"><b>Observação:</b> ${e(o.obs)}</div>` : ""}
+    <div class="assin">
+      <div><span></span>Responsável Avance</div>
+      <div><span></span>Responsável ${e(cab.cliente.split(" ")[0]||"cliente")}</div>
+    </div>
+    <div class="carimbos"><b>CARIMBOS:</b></div>
+  </section>`;
+}
+window.osfImprimir = (ids) => {
+  const lista = (Array.isArray(ids) ? ids : [ids]).map(id=>OSM.lista.find(o=>o.id===id)).filter(Boolean)
+    .sort((a,b)=>(a.entradaData+a.entradaHora).localeCompare(b.entradaData+b.entradaHora) || a.numero-b.numero);
+  if(!lista.length){ toast("Selecione ao menos uma O.S."); return; }
+  const cab = osfCab();
+  if(!cab.conferido && !confirm("Os dados do cabeçalho (CNPJ e endereços) ainda não foram conferidos. Imprimir assim mesmo?")) return;
+  const w = window.open("", "_blank");
+  if(!w){ toast("O navegador bloqueou a janela de impressão. Permita pop-ups para este site."); return; }
+  w.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>O.S ${lista.map(o=>o.numero).join(", ")}</title><style>
+    @page{ size:A4 portrait; margin:12mm; }
+    *{ box-sizing:border-box; } body{ font-family:Arial, Helvetica, sans-serif; color:#111; margin:0; font-size:11.5px; }
+    .folha{ page-break-after:always; padding:4px 2px; } .folha:last-child{ page-break-after:auto; }
+    .topo{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; border-bottom:3px solid #D0021B; padding-bottom:10px; }
+    .marca{ display:flex; align-items:center; gap:10px; } .logo{ width:44px; height:44px; background:#D0021B; clip-path:polygon(0 0,70% 0,100% 50%,70% 100%,0 100%,30% 50%); }
+    .nome{ font-size:30px; font-weight:900; letter-spacing:6px; }
+    .empresa{ font-size:10.5px; line-height:1.5; text-align:left; border:1px solid #999; padding:6px 10px; }
+    .meio{ display:flex; justify-content:space-between; gap:16px; margin:12px 0; align-items:flex-start; }
+    .cliente{ line-height:1.6; font-size:11px; }
+    table{ border-collapse:collapse; width:100%; } th,td{ border:1px solid #444; padding:5px 6px; text-align:center; }
+    .cab-os{ width:330px; flex:none; } .cab-os th{ background:#17181C; color:#fff; font-size:12px; } .cab-os td{ text-align:left; font-size:11px; }
+    .itens thead th{ background:#D0021B; color:#fff; font-size:10.5px; } .itens thead th.grupo{ background:#FFD84D; color:#111; }
+    .itens .srv{ text-align:left; } .itens .v{ text-align:right; white-space:nowrap; } .itens .tot{ background:#17181C; }
+    .itens tfoot td{ font-size:12.5px; background:#FFD84D; } .itens tfoot .lbl{ text-align:right; font-weight:700; }
+    .obs{ margin-top:10px; font-size:11px; }
+    .assin{ display:flex; gap:40px; margin-top:60px; } .assin div{ flex:1; text-align:center; font-size:11px; } .assin span{ display:block; border-top:1px solid #111; margin-bottom:4px; }
+    .carimbos{ margin-top:28px; height:90px; border:1px dashed #999; padding:6px 8px; font-size:11px; }
+    .barra{ position:sticky; top:0; background:#F4F4F6; padding:10px; text-align:center; border-bottom:1px solid #ddd; font-family:Arial; }
+    .barra button{ font-size:14px; font-weight:700; padding:8px 18px; border-radius:8px; border:0; background:#D0021B; color:#fff; cursor:pointer; }
+    @media print{ .barra{ display:none; } }
+  </style></head><body>
+    <div class="barra"><button onclick="window.print()">🖨️ Imprimir ${lista.length} O.S</button></div>
+    ${lista.map(o=>osfDocumento(o, cab)).join("")}
+  </body></html>`);
+  w.document.close();
+  setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
+};
+
+function osfPagina(){
+  if(OSM.mesCarregado !== OSM_DIA.slice(0,7) && !OSM.carregando){ OSM.carregando = true; setTimeout(()=>osmCarregar(), 0); }
+  const cab = osfCab();
+  const mes = OSM_DIA.slice(0,7), nomeMes = `${MESES_HE[Number(mes.slice(5,7))-1]}/${mes.slice(2,4)}`;
+  const busca = nfSemAcento(OSF_BUSCA);
+  const lista = OSM.lista.filter(o=>o.entradaData.startsWith(mes))
+    .filter(o=>!busca || nfSemAcento(`${o.numero} ${o.frota} ${o.placa}`).includes(busca))
+    .sort((a,b)=>(b.entradaData+b.entradaHora).localeCompare(a.entradaData+a.entradaHora) || b.numero-a.numero);
+  const ids = lista.map(o=>o.id).join(",");
+  const todasSel = lista.length && lista.every(o=>OSF_SEL.has(o.id));
+  const campo = (k, l, ph="") => `<label>${l}<input id="osf-${k}" value="${osEsc(cab[k])}" placeholder="${ph}"></label>`;
+  return `
+    <details class="panel os-form" style="margin-bottom:16px;" ${cab.conferido ? "" : "open"}>
+      <summary style="cursor:pointer; font-weight:700;">🏢 Dados do cabeçalho da O.S ${cab.conferido ? `<span class="hint" style="margin:0;">· conferidos</span>` : `<span class="badge amber">conferir antes de imprimir</span>`}</summary>
+      <div class="hint" style="margin-top:8px;">Preenchidos a partir da foto da O.S — <b>confira principalmente os CNPJs</b>, que não estavam legíveis. Ficam salvos neste navegador.</div>
+      <div class="nf-grid">${campo("empresa","Empresa")}${campo("razao","Razão social")}${campo("cnpj","CNPJ da Avance","00.000.000/0000-00")}${campo("cep","CEP")}</div>
+      <div class="nf-grid nf-grid-2" style="grid-template-columns:2fr 1fr 2fr 1fr;">${campo("endereco","Endereço da Avance")}${campo("cliente","Cliente")}${campo("clienteEndereco","Endereço do cliente")}${campo("clienteCnpj","CNPJ do cliente","00.000.000/0000-00")}</div>
+      <button class="entry-submit" onclick="osfSalvarCab()">Salvar dados do cabeçalho</button>
+    </details>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="prog-topo">
+        <div class="prog-dia">
+          <span class="hint" style="margin:0;">Mês:</span>
+          <input type="month" value="${mes}" onchange="osmSetDia(this.value+'-01')">
+          <input id="osf-busca" value="${osEsc(OSF_BUSCA)}" placeholder="🔎 Nº da O.S, frota ou placa" oninput="osfBuscar(this.value)" style="font-family:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; min-width:220px;">
+        </div>
+        <button class="entry-submit" id="osf-imp-sel" style="margin:0;" onclick="osfImprimir([...OSF_SEL])">🖨️ Imprimir selecionadas (${OSF_SEL.size})</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">O.S em ${nomeMes}</div><div class="val">${lista.length}</div></div>
+      <div class="kpi"><div class="lbl">Valor para emissão de NF</div><div class="val">${fmtBRL(sumArr(lista.map(osmValorOS)))}</div></div>
+      <div class="kpi"><div class="lbl">Frotas atendidas</div><div class="val">${new Set(lista.map(o=>o.frota)).size}</div></div>
+      <div class="kpi"><div class="lbl">Sem saída registrada</div><div class="val" style="color:var(--${lista.some(o=>!o.saidaData)?"amber":"green"});">${lista.filter(o=>!o.saidaData).length}</div><div class="delta flat">o documento sai com saída em branco</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>O.S do mês — uma por frota</h3>
+      <div class="hint">Clique em 🖨️ para gerar o documento de uma O.S, ou marque várias e use “Imprimir selecionadas” (cada uma sai numa folha).</div>
+      ${lista.length ? `<div style="overflow-x:auto;"><table class="nf-tab">
+        <thead><tr><th><input type="checkbox" ${todasSel?"checked":""} onchange="osfSelTodas(this.checked,'${ids}')"></th><th>Nº O.S</th><th>Entrada</th><th>Saída</th><th>Frota</th><th>Placa</th><th class="num">Serviços</th><th class="num">Valor</th><th></th></tr></thead>
+        <tbody>${lista.map(o=>`<tr>
+          <td><input type="checkbox" ${OSF_SEL.has(o.id)?"checked":""} onchange="osfSel('${o.id}', this.checked)"></td>
+          <td><b style="color:var(--red);">${o.numero}</b></td>
+          <td style="white-space:nowrap;">${frotaDataBR(o.entradaData)} ${osEsc(o.entradaHora)}</td>
+          <td style="white-space:nowrap;">${o.saidaData ? `${frotaDataBR(o.saidaData)} ${osEsc(o.saidaHora)}` : '<span class="badge amber">sem saída</span>'}</td>
+          <td><b>${osEsc(o.frota)}</b></td><td>${osEsc(o.placa)||"—"}</td>
+          <td class="num">${(o.itens||[]).length}</td>
+          <td class="num"><b>${fmtBRL2(osmValorOS(o))}</b></td>
+          <td><button class="os-btn sm" onclick="osfImprimir('${o.id}')">🖨️ Imprimir</button></td>
+        </tr>`).join("")}</tbody>
+      </table></div>` : `<div class="empty-state" style="padding:18px;"><p>Nenhuma O.S de manutenção neste mês.</p></div>`}
+    </div>`;
+}
+
 renderers.emissaonf = () => {
   if(MEU_PAPEL === "manutencao") NF_ABA = "os";
   const abas = MEU_PAPEL === "manutencao" ? "" : `
     <div class="tabs" style="margin-bottom:14px;">
       <button class="tab-btn ${NF_ABA==="nf"?"active":""}" onclick="setNfAba('nf')">🧾 Notas fiscais</button>
       <button class="tab-btn ${NF_ABA==="os"?"active":""}" onclick="setNfAba('os')">🔧 O.S de Manutenção</button>
+      <button class="tab-btn ${NF_ABA==="fin"?"active":""}" onclick="setNfAba('fin')">💰 O.S Financeira</button>
     </div>`;
-  const cab = NF_ABA === "os"
+  const cab = NF_ABA === "fin"
+    ? `<div class="page-head"><h2>O.S Financeira</h2><p>Documento de cada O.S (uma por frota) com os valores para emissão da NF — para imprimir e colher assinatura</p></div>`
+    : NF_ABA === "os"
     ? `<div class="page-head"><h2>O.S de Manutenção</h2><p>Carretas que entram na oficina — entrada, saída, frota, serviços (código e quantidade) e observação</p></div>`
     : `<div class="page-head"><h2>Emissão de NF</h2><p>Lançamento das notas por contrato — serviço ou balsa, deadline, entrega da minuta e vencimento · mesmos dados da tela Faturamento</p></div>`;
-  return cab + abas + (NF_ABA === "os" ? osmPagina() : nfPaginaNotas());
+  return cab + abas + (NF_ABA === "fin" ? osfPagina() : NF_ABA === "os" ? osmPagina() : nfPaginaNotas());
 };
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
 renderers.belem = () => {
