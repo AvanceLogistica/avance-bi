@@ -371,6 +371,17 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .he-alerta-lista li span{ color:var(--ink-soft); text-align:right; }
 .he-alerta-lista li.mais{ color:var(--ink-soft); border:none; }
 
+/* O.S de manutenção */
+.osm-grid{ grid-template-columns:110px minmax(150px,1.2fr) minmax(280px,2fr) minmax(280px,2fr) !important; }
+@media (max-width:1100px){ .osm-grid{ grid-template-columns:1fr 1fr !important; } }
+.osm-dh{ display:flex; gap:6px; align-items:center; }
+.osm-dh input[type=date]{ flex:1.4; min-width:130px; } .osm-dh input[type=time]{ flex:1; min-width:92px; }
+.osm-add{ display:grid; grid-template-columns:2fr 1fr auto; gap:10px; align-items:end; }
+.osm-add label{ margin-top:0 !important; }
+.osm-itens{ margin-top:10px; } .osm-itens td{ font-size:12.5px; }
+.osm-it{ font-size:12px; white-space:nowrap; } .osm-it span{ color:var(--ink-soft); font-size:11px; display:inline-block; max-width:260px; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom; }
+@media (max-width:700px){ .osm-add{ grid-template-columns:1fr 1fr; } .osm-add .os-btn{ grid-column:span 2; } }
+
 /* Emissão de NF */
 .nf-grid{ display:grid; grid-template-columns:repeat(4, minmax(150px,1fr)); gap:10px; }
 .nf-grid-2{ grid-template-columns:2fr 1fr 1fr 1fr; }

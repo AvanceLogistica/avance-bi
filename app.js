@@ -444,7 +444,7 @@ const PAGINAS_SO_DIRETOR = ["faturamento","emissaonf","contaspagar","belem","ord
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf"], manutencao:["emissaonf"] };
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -7094,7 +7094,8 @@ window.nfExcluir = async (id) => {
   navigate("emissaonf");
 };
 
-renderers.emissaonf = () => {
+// Aba "Notas fiscais" da tela Emissão de NF
+function nfPaginaNotas(){
   const todos = DATA.faturamento.lancamentos;
   const meses = [...new Set(todos.map(nfMesRef).filter(Boolean))].sort().reverse();
   const hojeMes = frotaHojeISO().slice(0,7);
@@ -7123,7 +7124,6 @@ renderers.emissaonf = () => {
 
   const itemSel = NF_SEL;
   return `
-    <div class="page-head"><h2>Emissão de NF</h2><p>Lançamento das notas por contrato — serviço ou balsa, deadline, entrega da minuta e vencimento · mesmos dados da tela Faturamento</p></div>
 
     <div class="panel os-form" id="nf-form" style="margin-bottom:16px; ${NF_EDIT ? "border:2px solid var(--amber);" : ""}">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
@@ -7196,6 +7196,316 @@ renderers.emissaonf = () => {
     </div>`;
 };
 
+/* -------------------- O.S DE MANUTENÇÃO (aba da Emissão de NF) --------------------
+   Substitui a folha de papel da oficina: cada O.S é uma carreta que entrou para manutenção —
+   Nº da O.S, entrada e saída (data/hora), frota/placa, serviços (código + quantidade) e observação.
+   A tabela de serviços (código, descrição, mão de obra, material) e o inventário de carretas
+   (placa + nº de frota) vêm da planilha "TABELA DE SERVIÇO 2026 - CARRETA", importada para o banco
+   (os preços NÃO ficam no código do site, que é público). Cada serviço lançado guarda o preço do dia,
+   então o valor da O.S não muda se a tabela for atualizada depois. */
+let NF_ABA = "nf";                       // nf | os
+let OSM = { lista:[], servicos:[], carretas:[], carregando:false, mesCarregado:null, erro:null, tabelaVazia:false };
+let OSM_DIA = frotaHojeISO();
+let OSM_EDIT = null;                     // id da O.S em edição
+let OSM_ITENS = [];                      // serviços do formulário atual
+const OSM_LOCAL_KEY = "avance_os_manutencao_v1";
+
+function osmVeValores(){ return MEU_PAPEL !== "manutencao"; }   // líder da manutenção não vê preços
+function osmPodeImportar(){ return !sb || ["diretor","coordenacao"].includes(MEU_PAPEL); }
+function osmUnidade(serv){ return /METRO|\(M\)|MTS/i.test(serv||"") ? "m" : "un"; }
+function osmValorItem(it){ return ((it.mo||0) + (it.mat||0)) * (Number(it.qtd)||0); }
+function osmValorOS(os){ return sumArr((os.itens||[]).map(osmValorItem)); }
+function osmRotuloCarreta(c){ return `${c.frota} · ${c.placa}`; }
+function osmAcharCarreta(txt){
+  const t = String(txt||"").toUpperCase().replace(/\s+/g," ").trim(); if(!t) return null;
+  const sem = t.replace(/[\s·.\-]/g,"");
+  return OSM.carretas.find(c=>osmRotuloCarreta(c).toUpperCase()===t)
+      || OSM.carretas.find(c=>c.placa.replace(/[\s-]/g,"")===sem)
+      || OSM.carretas.find(c=>String(c.frota)===t)
+      || null;
+}
+function osmAcharServico(txt){
+  const m = String(txt||"").trim().match(/^(\d{1,4})/); if(!m) return null;
+  return OSM.servicos.find(s=>s.cod===parseInt(m[1],10)) || null;
+}
+
+async function osmCarregar(silencioso){
+  const mes = OSM_DIA.slice(0,7);
+  if(!silencioso) OSM.carregando = true;
+  if(!sb){
+    try{ const d = JSON.parse(localStorage.getItem(OSM_LOCAL_KEY)||"{}"); OSM.lista = d.lista||[]; OSM.servicos = d.servicos||[]; OSM.carretas = d.carretas||[]; }catch(e){}
+    OSM.carregando = false; OSM.mesCarregado = mes; OSM.tabelaVazia = !OSM.servicos.length; osmRerender(); return;
+  }
+  const ini = `${mes}-01`, fimD = new Date(Number(mes.slice(0,4)), Number(mes.slice(5,7)), 0), fim = `${mes}-${String(fimD.getDate()).padStart(2,"0")}`;
+  const precisaTabela = !OSM.servicos.length;
+  const [lis, ser, car, ult] = await Promise.all([
+    sb.from("manutencao_os").select("*").gte("entrada_data", ini).lte("entrada_data", fim),
+    precisaTabela ? sbFetchAll("os_servicos") : Promise.resolve(null),
+    precisaTabela ? sbFetchAll("os_carretas") : Promise.resolve(null),
+    sb.from("manutencao_os").select("numero").order("numero", { ascending:false }).limit(1),
+  ]);
+  if(lis.error){ OSM.erro = lis.error.message; OSM.carregando = false; osmRerender(); return; }
+  OSM.erro = null;
+  OSM.lista = lis.data.map(r=>({ id:r.id, numero:r.numero, entradaData:r.entrada_data, entradaHora:r.entrada_hora||"", saidaData:r.saida_data||"", saidaHora:r.saida_hora||"",
+    frota:r.frota||"", placa:r.placa||"", itens:r.itens||[], obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+  if(ser) OSM.servicos = ser.map(s=>({ cod:Number(s.cod), servico:s.servico, grupo:s.grupo||"", mo:s.mo!=null?Number(s.mo):null, mat:s.mat!=null?Number(s.mat):null })).sort((a,b)=>a.cod-b.cod);
+  if(car) OSM.carretas = car.map(c=>({ placa:c.placa, frota:String(c.frota) })).sort((a,b)=>a.frota.localeCompare(b.frota, undefined, { numeric:true }));
+  OSM.ultimoNumero = !ult.error && ult.data.length ? Number(ult.data[0].numero) : null;
+  OSM.tabelaVazia = !OSM.servicos.length;
+  OSM.carregando = false; OSM.mesCarregado = mes;
+  osmRerender();
+}
+function osmSalvarLocal(){ if(!sb) try{ localStorage.setItem(OSM_LOCAL_KEY, JSON.stringify({ lista:OSM.lista, servicos:OSM.servicos, carretas:OSM.carretas })); }catch(e){} }
+function osmRerender(){
+  if(document.querySelector('nav.menu button.active')?.dataset.page !== "emissaonf" || NF_ABA !== "os") return;
+  const foco = document.activeElement;
+  if(foco && foco.closest && foco.closest("#osm-form") && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
+  const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); window.scrollTo(0,y);
+}
+setInterval(()=>{ if(sb && NF_ABA==="os" && document.visibilityState==="visible" && document.querySelector('nav.menu button.active')?.dataset.page==="emissaonf") osmCarregar(true); }, 30000);
+
+window.setNfAba = (a) => { NF_ABA = a; navigate("emissaonf"); };
+window.osmSetDia = (d) => { if(!d) return; const mudouMes = d.slice(0,7) !== OSM_DIA.slice(0,7); OSM_DIA = d; if(mudouMes) osmCarregar(); else osmRerender(); };
+window.osmMoverDia = (n) => { const d = new Date(OSM_DIA+"T12:00:00"); d.setDate(d.getDate()+n); osmSetDia(d.toISOString().slice(0,10)); };
+window.osmAgora = (campoData, campoHora) => {
+  const a = document.getElementById(campoData), b = document.getElementById(campoHora);
+  if(a) a.value = frotaHojeISO(); if(b) b.value = frotaHora();
+};
+
+function osmLerCabecalho(){
+  const g = (id)=>document.getElementById(id)?.value || "";
+  return { numero:g("osm-num"), frota:g("osm-frota"), entradaData:g("osm-ent-d"), entradaHora:g("osm-ent-h"), saidaData:g("osm-sai-d"), saidaHora:g("osm-sai-h"), obs:g("osm-obs") };
+}
+function osmPreencherCabecalho(c){
+  const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; };
+  s("osm-num", c.numero); s("osm-frota", c.frota); s("osm-ent-d", c.entradaData); s("osm-ent-h", c.entradaHora); s("osm-sai-d", c.saidaData); s("osm-sai-h", c.saidaHora); s("osm-obs", c.obs);
+}
+function osmRedesenharMantendo(){ const c = osmLerCabecalho(); const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); osmPreencherCabecalho(c); window.scrollTo(0,y); }
+
+window.osmAddItem = () => {
+  const cod = document.getElementById("osm-cod")?.value || "", qtd = parseFloat((document.getElementById("osm-qtd")?.value||"").replace(",", "."));
+  const s = osmAcharServico(cod);
+  if(!s){ toast(cod ? `Código "${cod}" não está na tabela de serviços.` : "Informe o código do serviço."); return; }
+  if(!(qtd>0)){ toast("Informe a quantidade."); return; }
+  OSM_ITENS.push({ cod:s.cod, servico:s.servico, qtd, un:osmUnidade(s.servico), mo:s.mo, mat:s.mat });
+  osmRedesenharMantendo();
+  setTimeout(()=>document.getElementById("osm-cod")?.focus(), 30);
+};
+window.osmRemoverItem = (i) => { OSM_ITENS.splice(i,1); osmRedesenharMantendo(); };
+window.osmMostrarServico = (el) => {
+  const s = osmAcharServico(el.value), alvo = document.getElementById("osm-cod-desc");
+  if(alvo) alvo.textContent = s ? `${s.servico} · por ${osmUnidade(s.servico)==="m" ? "metro" : "unidade"}` : (el.value ? "código não encontrado" : "");
+  if(s) el.value = String(s.cod);
+};
+
+window.osmSalvar = async () => {
+  const c = osmLerCabecalho();
+  const numero = parseInt(c.numero, 10);
+  if(!numero){ toast("Informe o Nº da O.S."); return; }
+  if(!c.frota.trim()){ toast("Informe a frota ou a placa da carreta."); return; }
+  if(!c.entradaData){ toast("Informe a data de entrada."); return; }
+  if(!OSM_ITENS.length){ toast("Adicione pelo menos um serviço (código + quantidade)."); return; }
+  const saidaAntes = c.saidaData && (c.saidaData < c.entradaData || (c.saidaData === c.entradaData && c.saidaHora && c.entradaHora && c.saidaHora < c.entradaHora));
+  if(saidaAntes){ toast("A saída está antes da entrada. Confira as datas e horas."); return; }
+  if(OSM.lista.some(o=>o.numero===numero && o.id!==OSM_EDIT) && !confirm(`Já existe uma O.S nº ${numero} neste mês. Salvar assim mesmo?`)) return;
+  const car = osmAcharCarreta(c.frota);
+  const os = { id:OSM_EDIT || ("tmp"+osNovoId()), numero, entradaData:c.entradaData, entradaHora:c.entradaHora, saidaData:c.saidaData, saidaHora:c.saidaHora,
+    frota: car ? car.frota : c.frota.trim().toUpperCase(), placa: car ? car.placa : "", itens:[...OSM_ITENS], obs:c.obs.trim(), por:(MEU_EMAIL||"").split("@")[0] };
+  const reg = { numero, entrada_data:os.entradaData, entrada_hora:os.entradaHora||null, saida_data:os.saidaData||null, saida_hora:os.saidaHora||null,
+    frota:os.frota, placa:os.placa||null, itens:os.itens, obs:os.obs||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
+  if(sb){
+    const q = OSM_EDIT ? sb.from("manutencao_os").update(reg).eq("id", OSM_EDIT).select().single() : sb.from("manutencao_os").insert({ ...reg, criado_por:MEU_EMAIL }).select().single();
+    const { data, error } = await q;
+    if(error){ toast("⚠ Não salvou: " + error.message); return; }
+    os.id = data.id;
+  }
+  const i = OSM.lista.findIndex(o=>o.id===OSM_EDIT);
+  if(i>=0) OSM.lista[i] = os; else OSM.lista.push(os);
+  OSM.ultimoNumero = Math.max(OSM.ultimoNumero||0, numero);
+  osmSalvarLocal();
+  toast(`O.S ${numero} ${OSM_EDIT ? "atualizada" : "lançada"} ✓`);
+  OSM_EDIT = null; OSM_ITENS = []; OSM_DIA = os.entradaData;
+  navigate("emissaonf");
+};
+window.osmEditar = (id) => {
+  const o = OSM.lista.find(x=>x.id===id); if(!o) return;
+  OSM_EDIT = id; OSM_ITENS = (o.itens||[]).map(x=>({ ...x }));
+  navigate("emissaonf");
+  osmPreencherCabecalho({ numero:o.numero, frota: o.placa ? `${o.frota} · ${o.placa}` : o.frota, entradaData:o.entradaData, entradaHora:o.entradaHora, saidaData:o.saidaData, saidaHora:o.saidaHora, obs:o.obs });
+  document.getElementById("osm-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
+};
+window.osmCancelar = () => { OSM_EDIT = null; OSM_ITENS = []; navigate("emissaonf"); };
+window.osmRegistrarSaida = async (id) => {
+  const o = OSM.lista.find(x=>x.id===id); if(!o) return;
+  o.saidaData = frotaHojeISO(); o.saidaHora = frotaHora();
+  if(sb){ const { error } = await sb.from("manutencao_os").update({ saida_data:o.saidaData, saida_hora:o.saidaHora, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id); if(error){ toast("⚠ Não salvou: " + error.message); return; } }
+  osmSalvarLocal(); toast(`Saída da O.S ${o.numero} registrada ✓`); osmRerender();
+};
+window.osmExcluir = async (id) => {
+  const o = OSM.lista.find(x=>x.id===id); if(!o || !confirm(`Excluir a O.S nº ${o.numero} (${o.frota})?`)) return;
+  if(sb){ const { error } = await sb.from("manutencao_os").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  OSM.lista = OSM.lista.filter(x=>x.id!==id); osmSalvarLocal(); osmRerender();
+};
+
+// Importa a planilha TABELA DE SERVIÇO: aba de serviços (CÓD, SERVIÇOS, M.OBRA, MATERIAL — com as linhas
+// de grupo como "PÉ", "CHAPA"...) e aba de placas (blocos QT / PLACA / FROTA lado a lado)
+window.osmImportarTabela = async () => {
+  const file = document.getElementById("osm-tab-file")?.files[0], st = document.getElementById("osm-tab-status");
+  if(!file){ st.textContent = "⚠ Escolha o arquivo primeiro."; return; }
+  st.textContent = "Lendo planilha...";
+  try{
+    const wb = XLSX.read(await file.arrayBuffer(), { type:"array" });
+    const servicos = [], carretas = [];
+    wb.SheetNames.forEach(nome=>{
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[nome], { header:1, defval:null });
+      const ehPlacas = rows.slice(0,6).some(r=>r && r.some(c=>String(c||"").trim().toUpperCase()==="PLACA"));
+      if(ehPlacas){
+        rows.forEach(r=>{ if(!r) return; for(let k=0;k<r.length;k+=4){ const p = r[k+1], f = r[k+2];
+          if(p && f!=null && /^[A-Z]{3}-?\w{4}$/i.test(String(p).trim())) carretas.push({ placa:String(p).trim().toUpperCase(), frota:String(f).trim() }); } });
+        return;
+      }
+      let grupo = null;
+      rows.forEach(r=>{
+        if(!r) return;
+        const a = r[0], c = r[2];
+        if(typeof a === "string" && a.trim() && (c==null || c==="") && !/^TABELA/i.test(a.trim())){ grupo = a.trim(); return; }
+        if(typeof a === "number" && c){
+          const num = (v)=> typeof v === "number" ? v : null;
+          servicos.push({ cod:a, servico:String(c).replace(/\s+/g," ").trim(), grupo, mo:num(r[3]), mat:num(r[4]) });
+        }
+      });
+    });
+    // código repetido na planilha: fica o primeiro
+    const vistos = new Set(), servUnicos = servicos.filter(s=>vistos.has(s.cod) ? false : vistos.add(s.cod));
+    if(!servUnicos.length){ st.textContent = "⚠ Não encontrei a tabela de serviços (colunas CÓD / SERVIÇOS / M.OBRA / MATERIAL)."; return; }
+    if(sb){
+      st.textContent = `Gravando ${servUnicos.length} serviços e ${carretas.length} carretas no banco...`;
+      await sbSubstituirTabela("os_servicos", servUnicos);
+      if(carretas.length) await sbSubstituirTabela("os_carretas", carretas);
+    }
+    OSM.servicos = servUnicos.sort((a,b)=>a.cod-b.cod);
+    if(carretas.length) OSM.carretas = carretas;
+    OSM.tabelaVazia = false; osmSalvarLocal();
+    st.innerHTML = `✓ <b>${servUnicos.length}</b> serviços e <b>${carretas.length}</b> carretas importados${servicos.length>servUnicos.length ? ` (${servicos.length-servUnicos.length} código(s) repetido(s) ignorado(s))` : ""}.`;
+    toast("Tabela de serviços importada ✓");
+    setTimeout(()=>osmRerender(), 800);
+  }catch(e){ st.innerHTML = "⚠ " + (e.message||e); }
+};
+
+function osmPagina(){
+  if(OSM.mesCarregado !== OSM_DIA.slice(0,7) && !OSM.carregando){ OSM.carregando = true; setTimeout(()=>osmCarregar(), 0); }
+  if(OSM.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar as O.S</h4><p>${osEsc(OSM.erro)}</p><p>Se falar em tabela inexistente ("manutencao_os"), rode o SQL da O.S de Manutenção no Supabase.</p></div></div>`;
+  const veValor = osmVeValores();
+  const doDia = OSM.lista.filter(o=>o.entradaData===OSM_DIA).sort((a,b)=>(a.entradaHora||"").localeCompare(b.entradaHora||"") || a.numero-b.numero);
+  const doMes = OSM.lista.filter(o=>o.entradaData.startsWith(OSM_DIA.slice(0,7)));
+  const abertas = OSM.lista.filter(o=>!o.saidaData);
+  const proximo = (OSM.ultimoNumero || Math.max(0, ...OSM.lista.map(o=>o.numero))) + 1;
+  const hoje = OSM_DIA === frotaHojeISO();
+  const totItens = sumArr(OSM_ITENS.map(osmValorItem));
+  const nomeMes = `${MESES_HE[Number(OSM_DIA.slice(5,7))-1]}/${OSM_DIA.slice(2,4)}`;
+
+  const painelTabela = osmPodeImportar() ? `
+    <details class="panel" style="margin-bottom:16px;" ${OSM.tabelaVazia ? "open" : ""}>
+      <summary style="cursor:pointer; font-weight:700;">📥 Tabela de serviços e carretas ${OSM.tabelaVazia ? '<span class="badge amber">importar antes de começar</span>' : `<span class="hint" style="margin:0;">· ${OSM.servicos.length} serviços · ${OSM.carretas.length} carretas</span>`}</summary>
+      <div class="hint" style="margin-top:8px;">Escolha a planilha <b>"TABELA DE SERVIÇO 2026 - CARRETA"</b>. Ela substitui a tabela de serviços (códigos e preços) e o inventário de carretas (placa e frota). As O.S já lançadas mantêm os preços com que foram lançadas.</div>
+      <input type="file" id="osm-tab-file" accept=".xlsx,.xls" style="font-size:12.5px;">
+      <button class="entry-submit" style="margin-top:10px;" onclick="osmImportarTabela()">Importar tabela</button>
+      <div id="osm-tab-status" class="hint" style="margin-top:8px;"></div>
+    </details>` : "";
+
+  return `
+    ${painelTabela}
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="prog-topo">
+        <div class="prog-dia">
+          <button class="os-btn" onclick="osmMoverDia(-1)">◀</button>
+          <input type="date" value="${OSM_DIA}" onchange="osmSetDia(this.value)">
+          <button class="os-btn" onclick="osmMoverDia(1)">▶</button>
+          ${hoje ? `<span class="badge green">hoje</span>` : `<button class="os-link" onclick="osmSetDia('${frotaHojeISO()}')">ir para hoje</button>`}
+          <b style="text-transform:capitalize;">${progDiaSemana(OSM_DIA)}</b>
+        </div>
+        ${sb ? `<span class="hint" style="margin:0;">🟢 compartilhado · atualiza sozinho a cada 30s</span>` : `<span class="hint" style="margin:0;">🧪 modo local</span>`}
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">🔧 O.S no dia</div><div class="val">${doDia.length}</div><div class="delta flat">carretas que entraram</div></div>
+      <div class="kpi"><div class="lbl">⏳ Em aberto</div><div class="val" style="color:var(--${abertas.length?"amber":"green"});">${abertas.length}</div><div class="delta flat">sem saída registrada</div></div>
+      <div class="kpi"><div class="lbl">📅 O.S em ${nomeMes}</div><div class="val">${doMes.length}</div><div class="delta flat">${sumArr(doMes.map(o=>o.itens.length))} serviço(s)</div></div>
+      ${veValor ? `<div class="kpi"><div class="lbl">💰 Valor do dia</div><div class="val">${fmtBRL(sumArr(doDia.map(osmValorOS)))}</div><div class="delta flat">mês: ${fmtBRL(sumArr(doMes.map(osmValorOS)))}</div></div>` : ""}
+    </div>
+
+    <div class="panel os-form" id="osm-form" style="margin-bottom:16px; ${OSM_EDIT ? "border:2px solid var(--amber);" : ""}">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+        <h3 style="margin:0;">${OSM_EDIT ? "✏️ Editando O.S" : "➕ Nova O.S de manutenção"}</h3>
+        ${OSM_EDIT ? `<button class="os-btn" onclick="osmCancelar()">Cancelar edição</button>` : ""}
+      </div>
+      ${OSM.tabelaVazia ? `<div class="os-alerta amber">⚠️ A tabela de serviços ainda não foi importada — os códigos não vão ser reconhecidos.${osmPodeImportar() ? " Use o quadro “Tabela de serviços e carretas” acima." : " Peça para a coordenação importar."}</div>` : ""}
+      <div class="nf-grid osm-grid">
+        <label>Nº da O.S<input id="osm-num" inputmode="numeric" value="${OSM_EDIT ? "" : proximo}" oninput="nfLimparDigitos(this)"></label>
+        <label>Frota / placa<input id="osm-frota" list="osm-l-carretas" placeholder="nº da frota ou placa" autocomplete="off" style="text-transform:uppercase;"></label>
+        <label>Entrada<div class="osm-dh"><input type="date" id="osm-ent-d" value="${OSM_EDIT ? "" : OSM_DIA}"><input type="time" id="osm-ent-h" value="${OSM_EDIT || !hoje ? "" : frotaHora()}"><button class="os-btn sm" onclick="osmAgora('osm-ent-d','osm-ent-h')">agora</button></div></label>
+        <label title="Pode ficar vazia e ser preenchida quando a carreta sair">Saída<div class="osm-dh"><input type="date" id="osm-sai-d"><input type="time" id="osm-sai-h"><button class="os-btn sm" onclick="osmAgora('osm-sai-d','osm-sai-h')">agora</button></div></label>
+      </div>
+      <datalist id="osm-l-carretas">${OSM.carretas.map(c=>`<option value="${osEsc(osmRotuloCarreta(c))}">`).join("")}</datalist>
+
+      <div class="osm-servicos">
+        <h4 style="margin:12px 0 6px;">Serviços</h4>
+        <div class="osm-add">
+          <label>Código<input id="osm-cod" list="osm-l-serv" placeholder="ex: 101" autocomplete="off" onchange="osmMostrarServico(this)" onkeydown="if(event.key==='Enter'){ osmMostrarServico(this); document.getElementById('osm-qtd').focus(); }"></label>
+          <label>Quantidade<input id="osm-qtd" inputmode="decimal" placeholder="ex: 12" onkeydown="if(event.key==='Enter') osmAddItem()"></label>
+          <button class="os-btn green" onclick="osmAddItem()">+ Adicionar serviço</button>
+        </div>
+        <div id="osm-cod-desc" class="hint" style="margin:4px 0 0;"></div>
+        <datalist id="osm-l-serv">${OSM.servicos.map(s=>`<option value="${s.cod} — ${osEsc(s.servico)}">`).join("")}</datalist>
+        ${OSM_ITENS.length ? `<table class="osm-itens"><thead><tr><th>Cód.</th><th>Serviço</th><th class="num">Qtd</th>${veValor ? `<th class="num">Valor</th>` : ""}<th></th></tr></thead><tbody>
+          ${OSM_ITENS.map((it,i)=>`<tr><td><b>${it.cod}</b></td><td>${osEsc(it.servico)}</td><td class="num">${String(it.qtd).replace(".",",")} ${it.un==="m"?"m":"un"}</td>${veValor ? `<td class="num">${fmtBRL2(osmValorItem(it))}</td>` : ""}<td><button class="os-link" onclick="osmRemoverItem(${i})">remover</button></td></tr>`).join("")}
+          ${veValor ? `<tr style="font-weight:800; background:var(--paper);"><td colspan="3">Total da O.S</td><td class="num">${fmtBRL2(totItens)}</td><td></td></tr>` : ""}
+        </tbody></table>` : `<div class="hint" style="margin-top:8px;">Nenhum serviço adicionado ainda.</div>`}
+      </div>
+      <label>Observação<input id="osm-obs" placeholder="opcional"></label>
+      <button class="entry-submit" onclick="osmSalvar()">${OSM_EDIT ? "Salvar alterações" : "Lançar O.S"}</button>
+    </div>
+
+    <div class="panel">
+      <h3>O.S de ${frotaDataBR(OSM_DIA)} (${doDia.length})</h3>
+      <div class="hint">Mesma folha da oficina: entrada, saída, frota, serviços e observação. Clique em ⏱ para registrar a saída agora.</div>
+      ${doDia.length ? `<div style="overflow-x:auto;"><table class="nf-tab osm-tab">
+        <thead><tr><th>Nº O.S</th><th>Entrada</th><th>Saída</th><th>Frota</th><th>Serviços (código · qtd)</th>${veValor ? `<th class="num">Valor</th>` : ""}<th>Observação</th><th></th></tr></thead>
+        <tbody>${doDia.map(o=>`<tr>
+          <td><b style="color:var(--red);">${o.numero}</b></td>
+          <td style="white-space:nowrap;">${frotaDataBR(o.entradaData)} ${o.entradaHora||""}</td>
+          <td style="white-space:nowrap;">${o.saidaData ? `${frotaDataBR(o.saidaData)} ${o.saidaHora||""}` : `<button class="os-btn sm" onclick="osmRegistrarSaida('${o.id}')">⏱ registrar saída</button>`}</td>
+          <td><b>${osEsc(o.frota)}</b>${o.placa ? `<div class="hint" style="margin:0;">${osEsc(o.placa)}</div>` : ""}</td>
+          <td>${(o.itens||[]).map(it=>`<div class="osm-it" title="${osEsc(it.servico)}"><b>${it.cod}</b> · ${String(it.qtd).replace(".",",")}${it.un==="m"?" m":""} <span>${osEsc(it.servico)}</span></div>`).join("")}</td>
+          ${veValor ? `<td class="num"><b>${fmtBRL2(osmValorOS(o))}</b></td>` : ""}
+          <td>${osEsc(o.obs)||"—"}</td>
+          <td style="white-space:nowrap;"><button class="os-link" onclick="osmEditar('${o.id}')" title="Editar">✏️</button> <button class="os-link" onclick="osmExcluir('${o.id}')" title="Excluir">🗑️</button></td>
+        </tr>`).join("")}</tbody>
+      </table></div>` : `<div class="empty-state" style="padding:18px;"><p>Nenhuma O.S lançada neste dia.</p></div>`}
+    </div>
+    ${abertas.filter(o=>o.entradaData!==OSM_DIA).length ? `
+    <div class="panel" style="margin-top:16px;">
+      <h3>⏳ O.S de outros dias ainda sem saída</h3>
+      <table class="nf-tab"><thead><tr><th>Nº O.S</th><th>Entrada</th><th>Frota</th><th></th></tr></thead><tbody>
+        ${abertas.filter(o=>o.entradaData!==OSM_DIA).map(o=>`<tr><td><b>${o.numero}</b></td><td>${frotaDataBR(o.entradaData)} ${o.entradaHora||""}</td><td>${osEsc(o.frota)}</td>
+          <td><button class="os-btn sm" onclick="osmRegistrarSaida('${o.id}')">⏱ registrar saída</button> <button class="os-link" onclick="osmSetDia('${o.entradaData}')">abrir o dia</button></td></tr>`).join("")}
+      </tbody></table>
+    </div>` : ""}`;
+}
+
+renderers.emissaonf = () => {
+  if(MEU_PAPEL === "manutencao") NF_ABA = "os";
+  const abas = MEU_PAPEL === "manutencao" ? "" : `
+    <div class="tabs" style="margin-bottom:14px;">
+      <button class="tab-btn ${NF_ABA==="nf"?"active":""}" onclick="setNfAba('nf')">🧾 Notas fiscais</button>
+      <button class="tab-btn ${NF_ABA==="os"?"active":""}" onclick="setNfAba('os')">🔧 O.S de Manutenção</button>
+    </div>`;
+  const cab = NF_ABA === "os"
+    ? `<div class="page-head"><h2>O.S de Manutenção</h2><p>Carretas que entram na oficina — entrada, saída, frota, serviços (código e quantidade) e observação</p></div>`
+    : `<div class="page-head"><h2>Emissão de NF</h2><p>Lançamento das notas por contrato — serviço ou balsa, deadline, entrega da minuta e vencimento · mesmos dados da tela Faturamento</p></div>`;
+  return cab + abas + (NF_ABA === "os" ? osmPagina() : nfPaginaNotas());
+};
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
 renderers.belem = () => {
   const b = DATA.belem;
@@ -7427,6 +7737,7 @@ async function carregarGestaoAcessos(){
               <option value="lider" ${u.papel==="lider"?"selected":""}>Líder (só Status da Frota)</option>
               <option value="monitoramento" ${u.papel==="monitoramento"?"selected":""}>Monitoramento (só Programação de Entregas)</option>
               <option value="coordenacao" ${u.papel==="coordenacao"?"selected":""}>Coordenação (só Emissão de NF)</option>
+              <option value="manutencao" ${u.papel==="manutencao"?"selected":""}>Manutenção (só O.S de Manutenção)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
           </td>
@@ -7447,7 +7758,7 @@ window.salvarPapelUsuario = async (userId, email) => {
   } else {
     const { error } = await sb.from("user_roles").upsert({ user_id:userId, email, papel });
     if(error){ toast("⚠ Falha ao salvar: " + error.message); return; }
-    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)", coordenacao:"Coordenação (só Emissão de NF)" })[papel]} ✓`);
+    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)", coordenacao:"Coordenação (só Emissão de NF)", manutencao:"Manutenção (só O.S de Manutenção)" })[papel]} ✓`);
   }
   carregarGestaoAcessos();
 };
