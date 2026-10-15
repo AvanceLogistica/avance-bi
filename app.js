@@ -7273,7 +7273,7 @@ function osmRerender(){
 }
 setInterval(()=>{ if(sb && ["os","fin"].includes(NF_ABA) && document.visibilityState==="visible" && document.querySelector('nav.menu button.active')?.dataset.page==="emissaonf") osmCarregar(true); }, 30000);
 
-window.setNfAba = (a) => { NF_ABA = a; navigate("emissaonf"); };
+window.setNfAba = (a) => { NF_ABA = a; OSF_VOLTAR = false; navigate("emissaonf"); };
 window.osmSetDia = (d) => { if(!d) return; const mudouMes = d.slice(0,7) !== OSM_DIA.slice(0,7); OSM_DIA = d; if(mudouMes) osmCarregar(); else osmRerender(); };
 window.osmMoverDia = (n) => { const d = new Date(OSM_DIA+"T12:00:00"); d.setDate(d.getDate()+n); osmSetDia(d.toISOString().slice(0,10)); };
 window.osmAgora = (campoData, campoHora) => {
@@ -7370,6 +7370,7 @@ window.osmSalvar = async () => {
   osmSalvarLocal();
   toast(`O.S ${numero} ${OSM_EDIT ? "atualizada" : "lançada"} ✓`);
   OSM_EDIT = null; OSM_ITENS = []; OSM_ITEM_EDIT = null; OSM_DIA = os.entradaData;
+  if(OSF_VOLTAR){ OSF_VOLTAR = false; NF_ABA = "fin"; }
   navigate("emissaonf");
 };
 window.osmEditar = (id) => {
@@ -7379,7 +7380,7 @@ window.osmEditar = (id) => {
   osmPreencherCabecalho({ numero:o.numero, frota: o.placa ? `${o.frota} · ${o.placa}` : o.frota, entradaData:o.entradaData, entradaHora:o.entradaHora, saidaData:o.saidaData, saidaHora:o.saidaHora, obs:o.obs });
   document.getElementById("osm-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
 };
-window.osmCancelar = () => { OSM_EDIT = null; OSM_ITENS = []; OSM_ITEM_EDIT = null; navigate("emissaonf"); };
+window.osmCancelar = () => { OSM_EDIT = null; OSM_ITENS = []; OSM_ITEM_EDIT = null; if(OSF_VOLTAR){ OSF_VOLTAR = false; NF_ABA = "fin"; } navigate("emissaonf"); };
 window.osmRegistrarSaida = async (id) => {
   const o = OSM.lista.find(x=>x.id===id); if(!o) return;
   o.saidaData = frotaHojeISO(); o.saidaHora = frotaHora();
@@ -7483,8 +7484,9 @@ function osmPagina(){
     <div class="panel os-form" id="osm-form" style="margin-bottom:16px; ${OSM_EDIT ? "border:2px solid var(--amber);" : ""}">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
         <h3 style="margin:0;">${OSM_EDIT ? "✏️ Editando O.S" : "➕ Nova O.S de manutenção"}</h3>
-        ${OSM_EDIT ? `<button class="os-btn" onclick="osmCancelar()">Cancelar edição</button>` : ""}
+        ${OSM_EDIT ? `<button class="os-btn" onclick="osmCancelar()">${OSF_VOLTAR ? "← Voltar para a O.S Financeira" : "Cancelar edição"}</button>` : ""}
       </div>
+      ${OSM_EDIT && OSF_VOLTAR ? `<div class="os-alerta amber" style="margin-top:8px;">💰 Conferência da O.S Financeira — corrija o que precisar e clique em <b>Salvar alterações</b>; você volta para a lista para imprimir.</div>` : ""}
       ${OSM.tabelaVazia ? `<div class="os-alerta amber">⚠️ A tabela de serviços ainda não foi importada — os códigos não vão ser reconhecidos.${osmPodeImportar() ? " Use o quadro “Tabela de serviços e carretas” acima." : " Peça para a coordenação importar."}</div>` : ""}
       <div class="nf-grid osm-grid">
         <label>Nº da O.S<input id="osm-num" inputmode="numeric" value="${OSM_EDIT ? "" : proximo}" oninput="nfLimparDigitos(this)"></label>
@@ -7556,6 +7558,8 @@ const OSF_CAB_PADRAO = {
 };
 let OSF_SEL = new Set();
 let OSF_BUSCA = "";
+let OSF_VOLTAR = false;   // edição aberta a partir da O.S Financeira: ao salvar/cancelar, volta para ela
+window.osfEditar = (id) => { OSF_VOLTAR = true; NF_ABA = "os"; osmEditar(id); };
 function osfCab(){ try{ return { ...OSF_CAB_PADRAO, ...JSON.parse(localStorage.getItem(OSF_CAB_KEY)||"{}") }; }catch(e){ return { ...OSF_CAB_PADRAO }; } }
 window.osfSalvarCab = () => {
   const c = {}; Object.keys(OSF_CAB_PADRAO).forEach(k=>{ const el = document.getElementById("osf-"+k); if(el) c[k] = el.value.trim(); });
@@ -7697,7 +7701,7 @@ function osfPagina(){
           <td><b>${osEsc(o.frota)}</b></td><td>${osEsc(o.placa)||"—"}</td>
           <td class="num">${(o.itens||[]).length}</td>
           <td class="num"><b>${fmtBRL2(osmValorOS(o))}</b></td>
-          <td><button class="os-btn sm" onclick="osfImprimir('${o.id}')">🖨️ Imprimir</button></td>
+          <td style="white-space:nowrap;"><button class="os-btn sm" onclick="osfEditar('${o.id}')">✏️ Editar</button> <button class="os-btn sm" onclick="osfImprimir('${o.id}')">🖨️ Imprimir</button></td>
         </tr>`).join("")}</tbody>
       </table></div>` : `<div class="empty-state" style="padding:18px;"><p>Nenhuma O.S de manutenção neste mês.</p></div>`}
     </div>`;
