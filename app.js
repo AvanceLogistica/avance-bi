@@ -7213,7 +7213,15 @@ const OSM_LOCAL_KEY = "avance_os_manutencao_v1";
 function osmVeValores(){ return MEU_PAPEL !== "manutencao"; }   // líder da manutenção não vê preços
 function osmPodeImportar(){ return !sb || ["diretor","coordenacao"].includes(MEU_PAPEL); }
 function osmUnidade(serv){ return /METRO|\(M\)|MTS/i.test(serv||"") ? "m" : "un"; }
-function osmValorItem(it){ return ((it.mo||0) + (it.mat||0)) * (Number(it.qtd)||0); }
+// O que é cobrado em cada serviço: "mo" = só mão de obra, "mat" = só material, "ambos".
+// Itens antigos (antes dessa opção existir) não têm o campo e valem como "ambos", como eram calculados.
+function osmValorItem(it){
+  const mo = it.cobrar === "mat" ? 0 : (it.mo||0), mat = it.cobrar === "mo" ? 0 : (it.mat||0);
+  return (mo + mat) * (Number(it.qtd)||0);
+}
+const OSM_COBRAR_LABEL = { mo:"Mão de obra", mat:"Material", ambos:"Mão de obra + material" };
+function osmCobrarAuto(s){ return s.mo && s.mat ? null : s.mat && !s.mo ? "mat" : "mo"; }   // null = precisa escolher
+let OSM_COBRAR = null;
 function osmValorOS(os){ return sumArr((os.itens||[]).map(osmValorItem)); }
 function osmRotuloCarreta(c){ return `${c.frota} · ${c.placa}`; }
 function osmAcharCarreta(txt){
@@ -7287,14 +7295,34 @@ window.osmAddItem = () => {
   const s = osmAcharServico(cod);
   if(!s){ toast(cod ? `Código "${cod}" não está na tabela de serviços.` : "Informe o código do serviço."); return; }
   if(!(qtd>0)){ toast("Informe a quantidade."); return; }
-  OSM_ITENS.push({ cod:s.cod, servico:s.servico, qtd, un:osmUnidade(s.servico), mo:s.mo, mat:s.mat });
+  const cobrar = osmCobrarAuto(s) || OSM_COBRAR;
+  if(!cobrar){ toast("Esse serviço tem mão de obra e material: escolha o que será cobrado."); document.getElementById("osm-cobrar")?.classList.add("piscar"); return; }
+  OSM_ITENS.push({ cod:s.cod, servico:s.servico, qtd, un:osmUnidade(s.servico), mo:s.mo, mat:s.mat, cobrar });
+  OSM_COBRAR = null;
   osmRedesenharMantendo();
   setTimeout(()=>document.getElementById("osm-cod")?.focus(), 30);
 };
 window.osmRemoverItem = (i) => { OSM_ITENS.splice(i,1); osmRedesenharMantendo(); };
+window.osmCobrarItem = (i, v) => { OSM_ITENS[i].cobrar = v; osmRedesenharMantendo(); };
+window.osmSetCobrar = (v) => {
+  OSM_COBRAR = v;
+  document.querySelectorAll("#osm-cobrar button").forEach(b=>b.classList.toggle("active", b.dataset.v===v));
+  document.getElementById("osm-cobrar")?.classList.remove("piscar");
+};
+// Ao reconhecer o código: mostra a descrição e, se o serviço tiver mão de obra E material, os botões de escolha
 window.osmMostrarServico = (el) => {
-  const s = osmAcharServico(el.value), alvo = document.getElementById("osm-cod-desc");
+  const s = osmAcharServico(el.value), alvo = document.getElementById("osm-cod-desc"), box = document.getElementById("osm-cobrar");
+  OSM_COBRAR = null;
   if(alvo) alvo.textContent = s ? `${s.servico} · por ${osmUnidade(s.servico)==="m" ? "metro" : "unidade"}` : (el.value ? "código não encontrado" : "");
+  if(box){
+    const v = osmVeValores(), r = (n)=> v && n ? ` · ${fmtBRL2(n)}` : "";
+    if(!s) box.innerHTML = "";
+    else if(osmCobrarAuto(s)){ const a = osmCobrarAuto(s); box.innerHTML = `<span class="hint" style="margin:0;">Cobrança: <b>${a==="mat" ? "só material" : "só mão de obra"}</b>${r(a==="mat"?s.mat:s.mo)} (único valor da tabela)</span>`; }
+    else box.innerHTML = `<span class="hint" style="margin:0;">Cobrar:</span>
+      <button type="button" class="sub-tab-btn" data-v="mo" onclick="osmSetCobrar('mo')">Só mão de obra${r(s.mo)}</button>
+      <button type="button" class="sub-tab-btn" data-v="mat" onclick="osmSetCobrar('mat')">Só material${r(s.mat)}</button>
+      <button type="button" class="sub-tab-btn" data-v="ambos" onclick="osmSetCobrar('ambos')">Mão de obra + material${r((s.mo||0)+(s.mat||0))}</button>`;
+  }
   if(s) el.value = String(s.cod);
 };
 
@@ -7457,10 +7485,13 @@ function osmPagina(){
           <button class="os-btn green" onclick="osmAddItem()">+ Adicionar serviço</button>
         </div>
         <div id="osm-cod-desc" class="hint" style="margin:4px 0 0;"></div>
+        <div id="osm-cobrar" class="prog-chips"></div>
         <datalist id="osm-l-serv">${OSM.servicos.map(s=>`<option value="${s.cod} — ${osEsc(s.servico)}">`).join("")}</datalist>
-        ${OSM_ITENS.length ? `<table class="osm-itens"><thead><tr><th>Cód.</th><th>Serviço</th><th class="num">Qtd</th>${veValor ? `<th class="num">Valor</th>` : ""}<th></th></tr></thead><tbody>
-          ${OSM_ITENS.map((it,i)=>`<tr><td><b>${it.cod}</b></td><td>${osEsc(it.servico)}</td><td class="num">${String(it.qtd).replace(".",",")} ${it.un==="m"?"m":"un"}</td>${veValor ? `<td class="num">${fmtBRL2(osmValorItem(it))}</td>` : ""}<td><button class="os-link" onclick="osmRemoverItem(${i})">remover</button></td></tr>`).join("")}
-          ${veValor ? `<tr style="font-weight:800; background:var(--paper);"><td colspan="3">Total da O.S</td><td class="num">${fmtBRL2(totItens)}</td><td></td></tr>` : ""}
+        ${OSM_ITENS.length ? `<table class="osm-itens"><thead><tr><th>Cód.</th><th>Serviço</th><th class="num">Qtd</th><th>Cobrança</th>${veValor ? `<th class="num">Valor</th>` : ""}<th></th></tr></thead><tbody>
+          ${OSM_ITENS.map((it,i)=>`<tr><td><b>${it.cod}</b></td><td>${osEsc(it.servico)}</td><td class="num">${String(it.qtd).replace(".",",")} ${it.un==="m"?"m":"un"}</td>
+            <td>${it.mo && it.mat ? `<select onchange="osmCobrarItem(${i}, this.value)" style="padding:4px 6px; font-size:12px;">${["mo","mat","ambos"].map(k=>`<option value="${k}" ${(it.cobrar||"ambos")===k?"selected":""}>${OSM_COBRAR_LABEL[k]}</option>`).join("")}</select>` : `<span class="hint" style="margin:0;">${it.mat && !it.mo ? "Material" : "Mão de obra"}</span>`}</td>
+            ${veValor ? `<td class="num">${fmtBRL2(osmValorItem(it))}</td>` : ""}<td><button class="os-link" onclick="osmRemoverItem(${i})">remover</button></td></tr>`).join("")}
+          ${veValor ? `<tr style="font-weight:800; background:var(--paper);"><td colspan="4">Total da O.S</td><td class="num">${fmtBRL2(totItens)}</td><td></td></tr>` : ""}
         </tbody></table>` : `<div class="hint" style="margin-top:8px;">Nenhum serviço adicionado ainda.</div>`}
       </div>
       <label>Observação<input id="osm-obs" placeholder="opcional"></label>
@@ -7477,7 +7508,7 @@ function osmPagina(){
           <td style="white-space:nowrap;">${frotaDataBR(o.entradaData)} ${o.entradaHora||""}</td>
           <td style="white-space:nowrap;">${o.saidaData ? `${frotaDataBR(o.saidaData)} ${o.saidaHora||""}` : `<button class="os-btn sm" onclick="osmRegistrarSaida('${o.id}')">⏱ registrar saída</button>`}</td>
           <td><b>${osEsc(o.frota)}</b>${o.placa ? `<div class="hint" style="margin:0;">${osEsc(o.placa)}</div>` : ""}</td>
-          <td>${(o.itens||[]).map(it=>`<div class="osm-it" title="${osEsc(it.servico)}"><b>${it.cod}</b> · ${String(it.qtd).replace(".",",")}${it.un==="m"?" m":""} <span>${osEsc(it.servico)}</span></div>`).join("")}</td>
+          <td>${(o.itens||[]).map(it=>`<div class="osm-it" title="${osEsc(it.servico)}"><b>${it.cod}</b> · ${String(it.qtd).replace(".",",")}${it.un==="m"?" m":""}${it.mo && it.mat ? ` <em class="osm-cob">${({ mo:"M.O", mat:"Mat.", ambos:"M.O+Mat." })[it.cobrar||"ambos"]}</em>` : ""} <span>${osEsc(it.servico)}</span></div>`).join("")}</td>
           ${veValor ? `<td class="num"><b>${fmtBRL2(osmValorOS(o))}</b></td>` : ""}
           <td>${osEsc(o.obs)||"—"}</td>
           <td style="white-space:nowrap;"><button class="os-link" onclick="osmEditar('${o.id}')" title="Editar">✏️</button> <button class="os-link" onclick="osmExcluir('${o.id}')" title="Excluir">🗑️</button></td>
