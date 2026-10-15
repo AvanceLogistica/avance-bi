@@ -7222,6 +7222,7 @@ function osmValorItem(it){
 const OSM_COBRAR_LABEL = { mo:"Mão de obra", mat:"Material", ambos:"Mão de obra + material" };
 function osmCobrarAuto(s){ return s.mo && s.mat ? null : s.mat && !s.mo ? "mat" : "mo"; }   // null = precisa escolher
 let OSM_COBRAR = null;
+let OSM_ITEM_EDIT = null;   // posição do serviço que está sendo editado (volta para o mesmo lugar)
 function osmValorOS(os){ return sumArr((os.itens||[]).map(osmValorItem)); }
 function osmRotuloCarreta(c){ return `${c.frota} · ${c.placa}`; }
 function osmAcharCarreta(txt){
@@ -7297,12 +7298,27 @@ window.osmAddItem = () => {
   if(!(qtd>0)){ toast("Informe a quantidade."); return; }
   const cobrar = osmCobrarAuto(s) || OSM_COBRAR;
   if(!cobrar){ toast("Esse serviço tem mão de obra e material: escolha o que será cobrado."); document.getElementById("osm-cobrar")?.classList.add("piscar"); return; }
-  OSM_ITENS.push({ cod:s.cod, servico:s.servico, qtd, un:osmUnidade(s.servico), mo:s.mo, mat:s.mat, cobrar });
+  const item = { cod:s.cod, servico:s.servico, qtd, un:osmUnidade(s.servico), mo:s.mo, mat:s.mat, cobrar };
+  if(OSM_ITEM_EDIT!=null){ OSM_ITENS.splice(Math.min(OSM_ITEM_EDIT, OSM_ITENS.length), 0, item); OSM_ITEM_EDIT = null; }
+  else OSM_ITENS.push(item);
   OSM_COBRAR = null;
   osmRedesenharMantendo();
   setTimeout(()=>document.getElementById("osm-cod")?.focus(), 30);
 };
-window.osmRemoverItem = (i) => { OSM_ITENS.splice(i,1); osmRedesenharMantendo(); };
+window.osmRemoverItem = (i) => { OSM_ITENS.splice(i,1); if(OSM_ITEM_EDIT!=null && i < OSM_ITEM_EDIT) OSM_ITEM_EDIT--; osmRedesenharMantendo(); };
+// Editar um serviço: tira da lista e devolve código, quantidade e cobrança para os campos de cima;
+// ao salvar, ele volta para a mesma posição
+window.osmEditarItem = (i) => {
+  if(OSM_ITEM_EDIT!=null){ toast("Termine de salvar o serviço que já está em edição."); return; }
+  const it = OSM_ITENS.splice(i,1)[0]; if(!it) return;
+  OSM_ITEM_EDIT = i;
+  osmRedesenharMantendo();
+  const cod = document.getElementById("osm-cod"), qtd = document.getElementById("osm-qtd");
+  if(cod){ cod.value = String(it.cod); osmMostrarServico(cod); }
+  if(qtd){ qtd.value = String(it.qtd).replace(".",","); }
+  if(it.mo && it.mat) osmSetCobrar(it.cobrar || "ambos");
+  setTimeout(()=>qtd?.focus(), 30);
+};
 window.osmCobrarItem = (i, v) => { OSM_ITENS[i].cobrar = v; osmRedesenharMantendo(); };
 window.osmSetCobrar = (v) => {
   OSM_COBRAR = v;
@@ -7332,6 +7348,7 @@ window.osmSalvar = async () => {
   if(!numero){ toast("Informe o Nº da O.S."); return; }
   if(!c.frota.trim()){ toast("Informe a frota ou a placa da carreta."); return; }
   if(!c.entradaData){ toast("Informe a data de entrada."); return; }
+  if(OSM_ITEM_EDIT!=null){ toast("Há um serviço em edição: clique em ✓ Salvar serviço antes de lançar a O.S."); return; }
   if(!OSM_ITENS.length){ toast("Adicione pelo menos um serviço (código + quantidade)."); return; }
   const saidaAntes = c.saidaData && (c.saidaData < c.entradaData || (c.saidaData === c.entradaData && c.saidaHora && c.entradaHora && c.saidaHora < c.entradaHora));
   if(saidaAntes){ toast("A saída está antes da entrada. Confira as datas e horas."); return; }
@@ -7352,17 +7369,17 @@ window.osmSalvar = async () => {
   OSM.ultimoNumero = Math.max(OSM.ultimoNumero||0, numero);
   osmSalvarLocal();
   toast(`O.S ${numero} ${OSM_EDIT ? "atualizada" : "lançada"} ✓`);
-  OSM_EDIT = null; OSM_ITENS = []; OSM_DIA = os.entradaData;
+  OSM_EDIT = null; OSM_ITENS = []; OSM_ITEM_EDIT = null; OSM_DIA = os.entradaData;
   navigate("emissaonf");
 };
 window.osmEditar = (id) => {
   const o = OSM.lista.find(x=>x.id===id); if(!o) return;
-  OSM_EDIT = id; OSM_ITENS = (o.itens||[]).map(x=>({ ...x }));
+  OSM_EDIT = id; OSM_ITENS = (o.itens||[]).map(x=>({ ...x })); OSM_ITEM_EDIT = null;
   navigate("emissaonf");
   osmPreencherCabecalho({ numero:o.numero, frota: o.placa ? `${o.frota} · ${o.placa}` : o.frota, entradaData:o.entradaData, entradaHora:o.entradaHora, saidaData:o.saidaData, saidaHora:o.saidaHora, obs:o.obs });
   document.getElementById("osm-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
 };
-window.osmCancelar = () => { OSM_EDIT = null; OSM_ITENS = []; navigate("emissaonf"); };
+window.osmCancelar = () => { OSM_EDIT = null; OSM_ITENS = []; OSM_ITEM_EDIT = null; navigate("emissaonf"); };
 window.osmRegistrarSaida = async (id) => {
   const o = OSM.lista.find(x=>x.id===id); if(!o) return;
   o.saidaData = frotaHojeISO(); o.saidaHora = frotaHora();
@@ -7482,7 +7499,7 @@ function osmPagina(){
         <div class="osm-add">
           <label>Código<input id="osm-cod" list="osm-l-serv" placeholder="ex: 101" autocomplete="off" onchange="osmMostrarServico(this)" onkeydown="if(event.key==='Enter'){ osmMostrarServico(this); document.getElementById('osm-qtd').focus(); }"></label>
           <label>Quantidade<input id="osm-qtd" inputmode="decimal" placeholder="ex: 12" onkeydown="if(event.key==='Enter') osmAddItem()"></label>
-          <button class="os-btn green" onclick="osmAddItem()">+ Adicionar serviço</button>
+          <button class="os-btn green" onclick="osmAddItem()">${OSM_ITEM_EDIT!=null ? "✓ Salvar serviço" : "+ Adicionar serviço"}</button>
         </div>
         <div id="osm-cod-desc" class="hint" style="margin:4px 0 0;"></div>
         <div id="osm-cobrar" class="prog-chips"></div>
@@ -7490,7 +7507,7 @@ function osmPagina(){
         ${OSM_ITENS.length ? `<table class="osm-itens"><thead><tr><th>Cód.</th><th>Serviço</th><th class="num">Qtd</th><th>Cobrança</th>${veValor ? `<th class="num">Valor</th>` : ""}<th></th></tr></thead><tbody>
           ${OSM_ITENS.map((it,i)=>`<tr><td><b>${it.cod}</b></td><td>${osEsc(it.servico)}</td><td class="num">${String(it.qtd).replace(".",",")} ${it.un==="m"?"m":"un"}</td>
             <td>${it.mo && it.mat ? `<select onchange="osmCobrarItem(${i}, this.value)" style="padding:4px 6px; font-size:12px;">${["mo","mat","ambos"].map(k=>`<option value="${k}" ${(it.cobrar||"ambos")===k?"selected":""}>${OSM_COBRAR_LABEL[k]}</option>`).join("")}</select>` : `<span class="hint" style="margin:0;">${it.mat && !it.mo ? "Material" : "Mão de obra"}</span>`}</td>
-            ${veValor ? `<td class="num">${fmtBRL2(osmValorItem(it))}</td>` : ""}<td><button class="os-link" onclick="osmRemoverItem(${i})">remover</button></td></tr>`).join("")}
+            ${veValor ? `<td class="num">${fmtBRL2(osmValorItem(it))}</td>` : ""}<td style="white-space:nowrap;"><button class="os-link" onclick="osmEditarItem(${i})">editar</button> · <button class="os-link" onclick="osmRemoverItem(${i})">remover</button></td></tr>`).join("")}
           ${veValor ? `<tr style="font-weight:800; background:var(--paper);"><td colspan="4">Total da O.S</td><td class="num">${fmtBRL2(totItens)}</td><td></td></tr>` : ""}
         </tbody></table>` : `<div class="hint" style="margin-top:8px;">Nenhum serviço adicionado ainda.</div>`}
       </div>
