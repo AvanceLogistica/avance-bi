@@ -371,6 +371,24 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .he-alerta-lista li span{ color:var(--ink-soft); text-align:right; }
 .he-alerta-lista li.mais{ color:var(--ink-soft); border:none; }
 
+/* NF Emitidas — painel de emissão */
+.nfe-legenda{ display:flex; gap:12px; font-size:12.5px; font-weight:700; flex-wrap:wrap; }
+.nfe-cards{ display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:12px; margin-top:12px; }
+.nfe-card{ border:1px solid var(--line); border-left:6px solid #B9BBC6; border-radius:12px; padding:12px 14px; background:var(--card); }
+.nfe-card.vermelho{ border-left-color:var(--red); background:#FFF7F8; }
+.nfe-card.amarelo{ border-left-color:var(--amber); background:#FFFBF2; }
+.nfe-card.verde{ border-left-color:var(--green); background:#F4FBF8; }
+.nfe-card-top{ display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:13.5px; }
+.nfe-pers{ display:flex; flex-wrap:wrap; gap:5px; }
+.nfe-per{ font-family:inherit; font-size:11px; font-weight:700; padding:4px 8px; border-radius:7px; border:1px solid transparent; cursor:pointer; color:#fff; }
+.nfe-per.vermelho{ background:var(--red); } .nfe-per.amarelo{ background:var(--amber); } .nfe-per.verde{ background:var(--green); } .nfe-per.cinza{ background:#C9CBD4; color:var(--ink); }
+.nfe-per.sel{ outline:2px solid var(--ink); outline-offset:1px; }
+.nfe-det{ margin-top:10px; padding-top:10px; border-top:1px dashed var(--line); font-size:12.5px; }
+.nfe-st{ margin-top:6px; font-weight:800; } .nfe-st.vermelho{ color:var(--red-dark); } .nfe-st.amarelo{ color:#8a5a0c; } .nfe-st.verde{ color:var(--green); } .nfe-st.cinza{ color:var(--ink-soft); }
+.nfe-obs-lbl{ display:flex; flex-direction:column; gap:4px; font-size:11px; font-weight:600; color:var(--ink-soft); margin-top:8px; }
+.nfe-obs-lbl input{ font-family:inherit; font-size:12.5px; padding:7px 9px; border:1px solid var(--line); border-radius:7px; background:#fff; }
+.nfe-acoes{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.os-btn.amarelo-on{ background:var(--amber); border-color:var(--amber); color:#fff; }
 /* NF Emitidas */
 .nfe-chip.active{ background:var(--c) !important; border-color:var(--c) !important; color:#fff !important; }
 .nfe-dot{ display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--c); margin-right:6px; }

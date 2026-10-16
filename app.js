@@ -7708,67 +7708,166 @@ function osfPagina(){
 }
 
 /* -------------------- NF EMITIDAS (aba da Emissão de NF) --------------------
-   Registro das notas fiscais já emitidas, por atividade, para o diretor acompanhar o que foi faturado:
-   atividade (+ sentido subindo/descendo nas logísticas reversas), número, NF, valor, data de emissão e
-   observação. Tabela própria no banco: nf_emitidas. */
+   Registro das notas fiscais emitidas por atividade + PAINEL DE EMISSÃO: cada serviço tem um ritmo de
+   faturamento (semanal, quinzenal ou mensal) e um prazo para a NF. Para cada período o painel mostra:
+     verde    = NF lançada para o período (ou marcado "sem operação")
+     amarelo  = marcado "em andamento" (com o motivo)
+     vermelho = chegou o prazo (dia útil) e não há NF
+     cinza    = período em execução / ainda antes do prazo
+   Tabelas: nf_emitidas (com a coluna "periodo") e nf_painel (status manual + observação por período). */
 const NFE_ATIVIDADES = [
-  { chave:"lr_sw",         label:"Logística Reversa SW",                 sentido:true,  cor:"#2E6DB0" },
-  { chave:"lr_carreteira", label:"Logística Reversa Carreteira",         sentido:true,  cor:"#1C9A6C" },
-  { chave:"desatrelamento",label:"Desatrelamento",                       sentido:false, cor:"#8E2EB0" },
-  { chave:"puxadas",       label:"Puxadas de carretas avariadas (pátios)", sentido:false, cor:"#E1971F" },
-  { chave:"outros",        label:"Outros serviços (LSL / outros)",       sentido:false, cor:"#5B5F6B" },
-  { chave:"manutencao",    label:"Manutenção de Carreta",                sentido:false, cor:"#D0021B" },
+  { chave:"lr_sw",            label:"Logística Reversa SW",          sentido:true,  cad:"semanal",   doc:"RQ",     cor:"#2E6DB0" },
+  { chave:"desatrelamento",   label:"Desatrelamento SW",             sentido:false, cad:"semanal",   doc:"RQ",     cor:"#8E2EB0" },
+  { chave:"puxadas",          label:"Puxada de carreta avaria NC",   sentido:false, cad:"semanal",   doc:"E-mail", cor:"#E1971F" },
+  { chave:"devolucao_motos",  label:"Devolução de motos",            sentido:false, cad:"mensal",    doc:"E-mail", cor:"#147A55" },
+  { chave:"contrato_sw_motos",label:"Contrato SW motos",             sentido:false, cad:"mensal",    doc:"",       cor:"#8C0011" },
+  { chave:"entregas",         label:"Entregas",                      sentido:false, cad:"quinzenal", doc:"",       cor:"#4A86C8" },
+  { chave:"manutencao",       label:"Manutenção de Carreta",         sentido:false, cad:"quinzenal", doc:"",       cor:"#D0021B" },
+  { chave:"lr_carreteira",    label:"Logística Reversa Carreteira",  sentido:true,  cad:null,        doc:"",       cor:"#1C9A6C" },
+  { chave:"outros",           label:"Outros serviços (LSL / outros)",sentido:false, cad:null,        doc:"",       cor:"#5B5F6B" },
 ];
-const NFE_LOCAL_KEY = "avance_nf_emitidas_v1";
-let NFE = { lista:[], carregado:false, carregando:false, erro:null };
+const NFE_INICIO_CONTROLE = "2026-10-01";   // períodos antes disso não entram no painel
+const NFE_CAD_LABEL = { semanal:"Semanal — NF na semana seguinte", quinzenal:"Quinzenal — NF no dia 16 e no dia 1º", mensal:"Mensal — NF no início do mês seguinte" };
+// Feriados nacionais fixos (o prazo que cai neles passa para o próximo dia útil)
+const NFE_FERIADOS = ["01-01","04-21","05-01","09-07","10-12","11-02","11-15","11-20","12-25"];
+const NFE_LOCAL_KEY = "avance_nf_emitidas_v1", NFE_PAINEL_LOCAL = "avance_nf_painel_v1";
+let NFE = { lista:[], painel:{}, carregado:false, carregando:false, erro:null };
 let NFE_FILTRO = { mes:null, atividade:"todas", busca:"" };
-let NFE_EDIT = null;
-let NFE_ATIV = "";       // atividade escolhida no formulário
-let NFE_SENTIDO = "";
+let NFE_EDIT = null, NFE_ATIV = "", NFE_SENTIDO = "", NFE_PERIODO = "";
+let NFE_CARD_SEL = {};   // período escolhido em cada cartão do painel
 
 function nfeAtiv(ch){ return NFE_ATIVIDADES.find(a=>a.chave===ch) || { chave:ch, label:ch||"—", cor:"#5B5F6B" }; }
 function nfeRotulo(r){ return `${nfeAtiv(r.atividade).label}${r.sentido ? ` — ${r.sentido==="sobe" ? "Subindo" : "Descendo"}` : ""}`; }
 
+/* ---------- Datas, períodos e prazos ---------- */
+const nfeISO = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const nfeDate = (iso) => new Date(iso+"T12:00:00");
+function nfeDiaUtil(iso){ const d = nfeDate(iso), w = d.getDay(); return w!==0 && w!==6 && !NFE_FERIADOS.includes(iso.slice(5)); }
+function nfeProxUtil(iso){ let d = nfeDate(iso); while(!nfeDiaUtil(nfeISO(d))) d.setDate(d.getDate()+1); return nfeISO(d); }
+function nfeAddDias(iso, n){ const d = nfeDate(iso); d.setDate(d.getDate()+n); return nfeISO(d); }
+function nfeSegunda(iso){ const d = nfeDate(iso), w = (d.getDay()+6)%7; d.setDate(d.getDate()-w); return nfeISO(d); }
+function nfeFimMes(ym){ const [a,m] = ym.split("-").map(Number); return nfeISO(new Date(a, m, 0, 12)); }
+function nfeMesSeg(ym){ const [a,m] = ym.split("-").map(Number); return nfeISO(new Date(a, m, 1, 12)).slice(0,7); }
+const nfeBR = (iso) => `${iso.slice(8,10)}/${iso.slice(5,7)}`;
+const nfeNomeMes = (ym) => `${MESES_HE[Number(ym.slice(5,7))-1]}/${ym.slice(2,4)}`;
+
+// Período = { chave, ini, fim, prazo, rotulo }
+function nfePeriodoDe(cad, iso){
+  if(cad === "semanal"){ const ini = nfeSegunda(iso), fim = nfeAddDias(ini, 6);
+    return { chave:`S:${ini}`, ini, fim, prazo:nfeProxUtil(nfeAddDias(ini, 7)), rotulo:`Semana ${nfeBR(ini)} a ${nfeBR(fim)}` }; }
+  if(cad === "quinzenal"){ const ym = iso.slice(0,7), q1 = Number(iso.slice(8,10)) <= 15;
+    return q1 ? { chave:`Q:${ym}-1`, ini:`${ym}-01`, fim:`${ym}-15`, prazo:nfeProxUtil(`${ym}-16`), rotulo:`1ª quinzena ${nfeNomeMes(ym)} (01 a 15)` }
+              : { chave:`Q:${ym}-2`, ini:`${ym}-16`, fim:nfeFimMes(ym), prazo:nfeProxUtil(`${nfeMesSeg(ym)}-01`), rotulo:`2ª quinzena ${nfeNomeMes(ym)} (16 a ${nfeFimMes(ym).slice(8)})` }; }
+  const ym = iso.slice(0,7);
+  return { chave:`M:${ym}`, ini:`${ym}-01`, fim:nfeFimMes(ym), prazo:nfeProxUtil(`${nfeMesSeg(ym)}-01`), rotulo:`${MESES_HE[Number(ym.slice(5,7))-1][0].toUpperCase()+MESES_HE[Number(ym.slice(5,7))-1].slice(1)}/${ym.slice(2,4)}` };
+}
+function nfePeriodoPorChave(cad, chave){ if(!chave) return null; const iso = chave.startsWith("Q:") ? `${chave.slice(2,9)}-${chave.endsWith("-1") ? "01" : "16"}` : chave.startsWith("M:") ? `${chave.slice(2)}-01` : chave.slice(2); return nfePeriodoDe(cad, iso); }
+// Períodos do início do controle até o atual (inclusive), do mais recente para o mais antigo
+function nfePeriodos(cad){
+  const hoje = frotaHojeISO(), lista = [];
+  let p = nfePeriodoDe(cad, NFE_INICIO_CONTROLE);
+  while(p.ini <= hoje && lista.length < 80){ lista.push(p); p = nfePeriodoDe(cad, nfeAddDias(p.fim, 1)); }
+  return lista.reverse();
+}
+
+/* ---------- Status de um período ---------- */
+function nfeStatus(atividade, p){
+  const hoje = frotaHojeISO();
+  const nfs = NFE.lista.filter(r=>r.atividade===atividade && r.periodo===p.chave);
+  const man = NFE.painel[`${atividade}|${p.chave}`] || {};
+  if(nfs.length) return { cor:"verde", texto:"NF emitida", nfs, man };
+  if(man.status === "sem_operacao") return { cor:"verde", texto:"Sem operação no período", nfs, man };
+  if(man.status === "andamento") return { cor:"amarelo", texto: hoje >= p.prazo ? "Em andamento (prazo vencido)" : "Em andamento", nfs, man };
+  if(hoje >= p.prazo) return { cor:"vermelho", texto:`Atrasada — prazo era ${nfeBR(p.prazo)}`, nfs, man };
+  if(hoje <= p.fim) return { cor:"cinza", texto:"Período em execução", nfs, man };
+  return { cor:"cinza", texto:`Aguardando — prazo ${nfeBR(p.prazo)}`, nfs, man };
+}
+function nfeResumoAtividade(a){
+  const per = nfePeriodos(a.cad).map(p=>({ p, st:nfeStatus(a.chave, p) }));
+  const vermelhos = per.filter(x=>x.st.cor==="vermelho"), amarelos = per.filter(x=>x.st.cor==="amarelo");
+  const cor = vermelhos.length ? "vermelho" : amarelos.length ? "amarelo" : per.some(x=>x.st.cor==="verde") ? "verde" : "cinza";
+  // período em foco: o pendente mais antigo; senão o último que já passou do fim; senão o atual
+  const foco = vermelhos[vermelhos.length-1] || amarelos[amarelos.length-1] || per.find(x=>x.p.fim < frotaHojeISO()) || per[0];
+  return { per, cor, vermelhos:vermelhos.length, amarelos:amarelos.length, foco };
+}
+// Período sugerido no formulário: o pendente mais antigo, ou o último período encerrado
+function nfePeriodoSugerido(ch){
+  const a = nfeAtiv(ch); if(!a.cad) return "";
+  const r = nfeResumoAtividade(a); return r.foco ? r.foco.p.chave : "";
+}
+
+/* ---------- Carga e gravação ---------- */
 async function nfeCarregar(){
   NFE.carregando = true;
-  if(!sb){ try{ NFE.lista = JSON.parse(localStorage.getItem(NFE_LOCAL_KEY)||"[]"); }catch(e){ NFE.lista = []; } }
-  else{
-    const { data, error } = await sb.from("nf_emitidas").select("*").order("data_emissao", { ascending:false });
-    if(error){ NFE.erro = error.message; NFE.carregando = false; NFE.carregado = true; nfeRerender(); return; }
+  if(!sb){
+    try{ NFE.lista = JSON.parse(localStorage.getItem(NFE_LOCAL_KEY)||"[]"); NFE.painel = JSON.parse(localStorage.getItem(NFE_PAINEL_LOCAL)||"{}"); }catch(e){ NFE.lista = []; NFE.painel = {}; }
+  } else {
+    const [l, p] = await Promise.all([ sb.from("nf_emitidas").select("*").order("data_emissao", { ascending:false }), sb.from("nf_painel").select("*") ]);
+    if(l.error){ NFE.erro = l.error.message; NFE.carregando = false; NFE.carregado = true; nfeRerender(); return; }
     NFE.erro = null;
-    NFE.lista = data.map(r=>({ id:r.id, atividade:r.atividade, sentido:r.sentido||"", numero:r.numero||"", nf:r.nf||"", valor:Number(r.valor)||0,
+    NFE.lista = l.data.map(r=>({ id:r.id, atividade:r.atividade, sentido:r.sentido||"", periodo:r.periodo||"", numero:r.numero||"", nf:r.nf||"", valor:Number(r.valor)||0,
       dataEmissao:r.data_emissao, obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+    NFE.painel = {};
+    if(!p.error) p.data.forEach(r=>{ NFE.painel[`${r.atividade}|${r.periodo}`] = { status:r.status||"", obs:r.obs||"", por:(r.atualizado_por||"").split("@")[0], em:r.atualizado_em }; });
+    else NFE.erroPainel = p.error.message;
   }
   NFE.carregando = false; NFE.carregado = true; nfeRerender();
 }
-function nfeSalvarLocal(){ if(!sb) try{ localStorage.setItem(NFE_LOCAL_KEY, JSON.stringify(NFE.lista)); }catch(e){} }
+function nfeSalvarLocal(){ if(!sb) try{ localStorage.setItem(NFE_LOCAL_KEY, JSON.stringify(NFE.lista)); localStorage.setItem(NFE_PAINEL_LOCAL, JSON.stringify(NFE.painel)); }catch(e){} }
 function nfeRerender(){
   if(document.querySelector('nav.menu button.active')?.dataset.page !== "emissaonf" || NF_ABA !== "nfe") return;
   const foco = document.activeElement;
-  if(foco && foco.closest && foco.closest("#nfe-form") && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
+  if(foco && foco.closest && (foco.closest("#nfe-form") || foco.closest(".nfe-card")) && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
   const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); window.scrollTo(0,y);
   requestAnimationFrame(nfeGrafico);
 }
+async function nfeGravarPainel(atividade, periodo, campos){
+  const k = `${atividade}|${periodo}`, atual = NFE.painel[k] || {};
+  const novo = { ...atual, ...campos, por:(MEU_EMAIL||"").split("@")[0], em:new Date().toISOString() };
+  NFE.painel[k] = novo;
+  if(sb){
+    const { error } = await sb.from("nf_painel").upsert({ atividade, periodo, status:novo.status||null, obs:novo.obs||null, atualizado_por:MEU_EMAIL, atualizado_em:novo.em }, { onConflict:"atividade,periodo" });
+    if(error){ toast("⚠ Não salvou o status: " + error.message); return false; }
+  }
+  nfeSalvarLocal(); return true;
+}
+window.nfeCardPeriodo = (ch, chave) => { NFE_CARD_SEL[ch] = chave; nfeRerender(); };
+window.nfeMarcar = async (ch, chave, status) => {
+  const atual = (NFE.painel[`${ch}|${chave}`]||{}).status;
+  const obsEl = document.getElementById(`nfe-obs-${ch}`);
+  if(await nfeGravarPainel(ch, chave, { status: atual===status ? "" : status, ...(obsEl ? { obs: obsEl.value.trim() } : {}) }))
+    toast(atual===status ? "Status removido" : status==="andamento" ? "Marcado como em andamento 🟡" : "Marcado como sem operação 🟢");
+  nfeRerender();
+};
+window.nfeSalvarObsPainel = async (ch, chave, el) => { if(await nfeGravarPainel(ch, chave, { obs: el.value.trim() })) toast("Observação salva ✓"); };
+window.nfeLancarDoPainel = (ch, chave) => {
+  NFE_EDIT = null; NFE_ATIV = ch; NFE_SENTIDO = ""; NFE_PERIODO = chave;
+  nfeRedesenhar(); document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
+  setTimeout(()=>document.getElementById("nfe-nf")?.focus(), 400);
+};
 
+/* ---------- Formulário ---------- */
 function nfeLerForm(){ const g = (id)=>document.getElementById(id)?.value || ""; return { numero:g("nfe-numero"), nf:g("nfe-nf"), valor:g("nfe-valor"), data:g("nfe-data"), obs:g("nfe-obs") }; }
 function nfePreencher(d){ const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; }; s("nfe-numero", d.numero); s("nfe-nf", d.nf); s("nfe-valor", d.valor); s("nfe-data", d.data); s("nfe-obs", d.obs); }
 function nfeRedesenhar(){ const d = nfeLerForm(); const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); nfePreencher(d); window.scrollTo(0,y); requestAnimationFrame(nfeGrafico); }
-window.nfeEscolherAtiv = (ch) => { NFE_ATIV = ch; if(!nfeAtiv(ch).sentido) NFE_SENTIDO = ""; nfeRedesenhar(); };
+window.nfeEscolherAtiv = (ch) => { NFE_ATIV = ch; if(!nfeAtiv(ch).sentido) NFE_SENTIDO = ""; NFE_PERIODO = nfePeriodoSugerido(ch); nfeRedesenhar(); };
 window.nfeEscolherSentido = (s) => { NFE_SENTIDO = s; nfeRedesenhar(); };
 window.nfeFiltro = (campo, v) => { NFE_FILTRO[campo] = v; nfeRerender(); };
 window.nfeBuscar = (t) => { NFE_FILTRO.busca = t; nfeRerender(); const el = document.getElementById("nfe-busca"); if(el){ el.focus(); el.setSelectionRange(t.length,t.length); } };
 
 window.nfeSalvar = async () => {
   const f = nfeLerForm(), valor = osNum("nfe-valor"), a = nfeAtiv(NFE_ATIV);
+  const perSel = document.getElementById("nfe-periodo"); if(perSel) NFE_PERIODO = perSel.value;
   if(!NFE_ATIV){ toast("Escolha a atividade."); return; }
   if(a.sentido && !NFE_SENTIDO){ toast("Escolha o sentido: Subindo ou Descendo."); return; }
+  if(a.cad && !NFE_PERIODO){ toast("Escolha o período a que a NF se refere."); return; }
   if(!f.nf.replace(/\D/g,"")){ toast("Informe o número da NF."); return; }
   if(!valor){ toast("Informe o valor."); return; }
   if(!f.data){ toast("Informe a data de emissão."); return; }
   const nf = progLimparNF(f.nf).replace(/^\/|\/$/g,"");
   if(NFE.lista.some(r=>r.nf===nf && r.id!==NFE_EDIT) && !confirm(`A NF ${nf} já está registrada. Registrar de novo?`)) return;
-  const reg = { atividade:NFE_ATIV, sentido:a.sentido ? NFE_SENTIDO : "", numero:f.numero.trim(), nf, valor, dataEmissao:f.data, obs:f.obs.trim() };
-  const banco = { atividade:reg.atividade, sentido:reg.sentido||null, numero:reg.numero||null, nf:reg.nf, valor:reg.valor, data_emissao:reg.dataEmissao, obs:reg.obs||null,
+  const reg = { atividade:NFE_ATIV, sentido:a.sentido ? NFE_SENTIDO : "", periodo:a.cad ? NFE_PERIODO : "", numero:f.numero.trim(), nf, valor, dataEmissao:f.data, obs:f.obs.trim() };
+  const banco = { atividade:reg.atividade, sentido:reg.sentido||null, periodo:reg.periodo||null, numero:reg.numero||null, nf:reg.nf, valor:reg.valor, data_emissao:reg.dataEmissao, obs:reg.obs||null,
     atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
   if(NFE_EDIT){
     if(sb){ const { error } = await sb.from("nf_emitidas").update(banco).eq("id", NFE_EDIT); if(error){ toast("⚠ Não salvou: " + error.message); return; } }
@@ -7778,17 +7877,16 @@ window.nfeSalvar = async () => {
     const novo = { id:"tmp"+osNovoId(), ...reg, por:(MEU_EMAIL||"").split("@")[0] };
     if(sb){ const { data, error } = await sb.from("nf_emitidas").insert({ ...banco, criado_por:MEU_EMAIL }).select().single(); if(error){ toast("⚠ Não salvou: " + error.message); return; } novo.id = data.id; }
     NFE.lista.unshift(novo);
-    toast(`NF ${nf} registrada ✓`);
+    toast(`NF ${nf} registrada ✓${reg.periodo ? " — painel atualizado 🟢" : ""}`);
   }
   nfeSalvarLocal();
-  NFE_EDIT = null; NFE_SENTIDO = "";
+  NFE_EDIT = null; NFE_SENTIDO = ""; NFE_PERIODO = nfePeriodoSugerido(NFE_ATIV);
   NFE_FILTRO.mes = reg.dataEmissao.slice(0,7);
-  const manter = { data:reg.dataEmissao };      // mantém atividade e data para lançar a próxima mais rápido
-  nfeRedesenhar(); nfePreencher({ numero:"", nf:"", valor:"", obs:"", ...manter });
+  nfeRedesenhar(); nfePreencher({ numero:"", nf:"", valor:"", obs:"", data:reg.dataEmissao });
 };
 window.nfeEditar = (id) => {
   const r = NFE.lista.find(x=>x.id===id); if(!r) return;
-  NFE_EDIT = id; NFE_ATIV = r.atividade; NFE_SENTIDO = r.sentido || "";
+  NFE_EDIT = id; NFE_ATIV = r.atividade; NFE_SENTIDO = r.sentido || ""; NFE_PERIODO = r.periodo || "";
   nfeRedesenhar();
   nfePreencher({ numero:r.numero, nf:r.nf, valor:"R$ "+r.valor.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}), data:r.dataEmissao, obs:r.obs });
   document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
@@ -7800,27 +7898,70 @@ window.nfeExcluir = async (id) => {
   NFE.lista = NFE.lista.filter(x=>x.id!==id); nfeSalvarLocal(); nfeRerender();
 };
 
+/* ---------- Painel de emissão ---------- */
+function nfePainelHTML(){
+  const ativs = NFE_ATIVIDADES.filter(a=>a.cad);
+  const resumos = ativs.map(a=>({ a, r:nfeResumoAtividade(a) }));
+  const cont = { vermelho:0, amarelo:0, verde:0, cinza:0 }; resumos.forEach(x=>cont[x.r.cor]++);
+  const ICON = { vermelho:"🔴", amarelo:"🟡", verde:"🟢", cinza:"⚪" };
+  return `
+    <div class="panel" style="margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">🚦 Painel de emissão de NF</h3>
+          <div class="hint">Cada serviço no seu ritmo de faturamento. Prazos em dia útil (fim de semana e feriado nacional passam para o próximo dia útil). Controle a partir de ${nfeBR(NFE_INICIO_CONTROLE)}/${NFE_INICIO_CONTROLE.slice(2,4)}.</div></div>
+        <div class="nfe-legenda"><span>🔴 ${sumArr(resumos.map(x=>x.r.vermelhos))} NF(s) atrasada(s)</span><span>🟡 ${sumArr(resumos.map(x=>x.r.amarelos))} em andamento</span><span>🟢 ${cont.verde} serviço(s) em dia</span></div>
+      </div>
+      ${NFE.erroPainel ? `<div class="os-alerta amber">⚠️ O status manual (em andamento / sem operação) ainda não pode ser salvo: rode o SQL do painel de emissão. (${osEsc(NFE.erroPainel)})</div>` : ""}
+      <div class="nfe-cards">${resumos.map(({a, r})=>{
+        const selChave = NFE_CARD_SEL[a.chave] || (r.foco && r.foco.p.chave);
+        const sel = r.per.find(x=>x.p.chave===selChave) || r.foco;
+        const st = sel ? sel.st : null;
+        return `<div class="nfe-card ${r.cor}">
+          <div class="nfe-card-top"><b>${ICON[r.cor]} ${a.label}</b>${a.doc ? `<span class="badge gray">doc: ${a.doc}</span>` : ""}</div>
+          <div class="hint" style="margin:2px 0 8px;">${NFE_CAD_LABEL[a.cad]}${r.vermelhos ? ` · <b style="color:var(--red-dark);">${r.vermelhos} período(s) atrasado(s)</b>` : ""}</div>
+          <div class="nfe-pers">${r.per.slice(0,6).map(x=>`<button class="nfe-per ${x.st.cor} ${x.p.chave===sel?.p.chave?"sel":""}" title="${osEsc(x.p.rotulo)} — ${osEsc(x.st.texto)}" onclick="nfeCardPeriodo('${a.chave}','${x.p.chave}')">${a.cad==="mensal" ? nfeNomeMes(x.p.ini.slice(0,7)) : a.cad==="quinzenal" ? `${x.p.chave.endsWith("-1") ? "1ª" : "2ª"} ${MESES_HE[Number(x.p.ini.slice(5,7))-1]}` : nfeBR(x.p.ini)}</button>`).join("")}</div>
+          ${sel ? `<div class="nfe-det">
+            <div><b>${osEsc(sel.p.rotulo)}</b> · prazo da NF: <b>${nfeBR(sel.p.prazo)}</b></div>
+            <div class="nfe-st ${st.cor}">${ICON[st.cor]} ${osEsc(st.texto)}</div>
+            ${st.nfs.length ? `<div class="hint" style="margin:4px 0 0;">${st.nfs.map(n=>`NF <b>${osEsc(n.nf)}</b> · ${fmtBRL2(n.valor)} · ${fmtDataBR(n.dataEmissao)}`).join("<br>")}</div>` : `
+            <label class="nfe-obs-lbl">Motivo / observação<input id="nfe-obs-${a.chave}" value="${osEsc(st.man.obs||"")}" placeholder="ex: aguardando RQ do cliente" onchange="nfeSalvarObsPainel('${a.chave}','${sel.p.chave}', this)"></label>
+            <div class="nfe-acoes">
+              <button class="os-btn sm ${st.man.status==="andamento"?"amarelo-on":""}" onclick="nfeMarcar('${a.chave}','${sel.p.chave}','andamento')">🟡 ${st.man.status==="andamento" ? "Em andamento ✓" : "Em andamento"}</button>
+              <button class="os-btn sm" onclick="nfeMarcar('${a.chave}','${sel.p.chave}','sem_operacao')">${st.man.status==="sem_operacao" ? "↩ Desfazer sem operação" : "Sem operação"}</button>
+              <button class="os-btn sm green" onclick="nfeLancarDoPainel('${a.chave}','${sel.p.chave}')">🧾 Lançar NF</button>
+            </div>`}
+            ${st.man.por && (st.man.status || st.man.obs) ? `<div class="hint" style="margin:4px 0 0;">atualizado por ${osEsc(st.man.por)}</div>` : ""}
+          </div>` : ""}
+        </div>`; }).join("")}</div>
+    </div>`;
+}
+
 function nfeFiltradas(){
   const busca = nfSemAcento(NFE_FILTRO.busca);
   return NFE.lista.filter(r=>(NFE_FILTRO.mes==="todos" || (r.dataEmissao||"").startsWith(NFE_FILTRO.mes))
     && (NFE_FILTRO.atividade==="todas" || r.atividade===NFE_FILTRO.atividade)
     && (!busca || nfSemAcento(`${r.nf} ${r.numero} ${r.obs} ${nfeRotulo(r)}`).includes(busca)));
 }
+function nfeRotuloPeriodo(r){ const a = nfeAtiv(r.atividade); const p = a.cad && r.periodo ? nfePeriodoPorChave(a.cad, r.periodo) : null; return p ? p.rotulo : "—"; }
 
 function nfePagina(){
   if(!NFE.carregado && !NFE.carregando){ NFE.carregando = true; setTimeout(()=>nfeCarregar(), 0); }
-  if(NFE.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar as NF emitidas</h4><p>${osEsc(NFE.erro)}</p><p>Se falar em tabela inexistente ("nf_emitidas"), rode o SQL das NF Emitidas no Supabase.</p></div></div>`;
+  if(NFE.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar as NF emitidas</h4><p>${osEsc(NFE.erro)}</p><p>Se falar em tabela inexistente ("nf_emitidas") ou coluna "periodo", rode o SQL das NF Emitidas no Supabase.</p></div></div>`;
   const meses = [...new Set(NFE.lista.map(r=>(r.dataEmissao||"").slice(0,7)).filter(Boolean))].sort().reverse();
   const hojeMes = frotaHojeISO().slice(0,7);
   if(!NFE_FILTRO.mes) NFE_FILTRO.mes = hojeMes;
   if(!meses.includes(hojeMes)) meses.unshift(hojeMes);
-  const nomeMes = (m) => m==="todos" ? "Todos os meses" : `${MESES_HE[Number(m.slice(5,7))-1]}/${m.slice(2,4)}`;
+  const nomeMes = (m) => m==="todos" ? "Todos os meses" : nfeNomeMes(m);
   const opt = (v,l,a) => `<option value="${v}" ${v===a?"selected":""}>${osEsc(l)}</option>`;
   const doMes = NFE.lista.filter(r=>NFE_FILTRO.mes==="todos" || (r.dataEmissao||"").startsWith(NFE_FILTRO.mes));
   const lista = nfeFiltradas().sort((a,b)=>(b.dataEmissao||"").localeCompare(a.dataEmissao||"") || (b.nf||"").localeCompare(a.nf||""));
   const total = sumArr(doMes.map(r=>r.valor));
   const a = nfeAtiv(NFE_ATIV);
+  const perOpcoes = a.cad ? nfePeriodos(a.cad) : [];
+  if(a.cad && NFE_PERIODO && !perOpcoes.some(p=>p.chave===NFE_PERIODO)){ const extra = nfePeriodoPorChave(a.cad, NFE_PERIODO); if(extra) perOpcoes.push(extra); }
   return `
+    ${nfePainelHTML()}
+
     <div class="panel os-form" id="nfe-form" style="margin-bottom:16px; ${NFE_EDIT ? "border:2px solid var(--amber);" : ""}">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
         <h3 style="margin:0;">${NFE_EDIT ? "✏️ Editando NF" : "➕ Registrar NF emitida"}</h3>
@@ -7831,6 +7972,9 @@ function nfePagina(){
       ${a.sentido ? `<div class="prog-chips"><span class="hint" style="margin:0;">Sentido:</span>
         <button type="button" class="sub-tab-btn ${NFE_SENTIDO==="sobe"?"active":""}" onclick="nfeEscolherSentido('sobe')">⬆️ Subindo</button>
         <button type="button" class="sub-tab-btn ${NFE_SENTIDO==="desce"?"active":""}" onclick="nfeEscolherSentido('desce')">⬇️ Descendo</button></div>` : ""}
+      ${a.cad ? `<label>Período (o que a NF fatura)<select id="nfe-periodo" onchange="NFE_PERIODO=this.value">
+        <option value="">Selecione</option>${perOpcoes.map(p=>{ const st = nfeStatus(a.chave, p); return `<option value="${p.chave}" ${p.chave===NFE_PERIODO?"selected":""}>${({vermelho:"🔴",amarelo:"🟡",verde:"🟢",cinza:"⚪"})[st.cor]} ${osEsc(p.rotulo)} — prazo ${nfeBR(p.prazo)}</option>`; }).join("")}
+      </select></label>` : ""}
       <div class="nf-grid">
         <label>Número<input id="nfe-numero" inputmode="numeric" placeholder="contrato / O.S / viagem" oninput="nfLimparDigitos(this,'/\\-')"></label>
         <label>NF<input id="nfe-nf" inputmode="numeric" placeholder="ex: 1234 ou 1234/1235" oninput="progNF(this)"></label>
@@ -7864,14 +8008,15 @@ function nfePagina(){
     <div class="panel">
       <h3>NF emitidas (${lista.length})</h3>
       ${lista.length ? `<div style="overflow-x:auto;"><table class="nf-tab">
-        <thead><tr><th>Atividade</th><th>Número</th><th>NF</th><th class="num">Valor</th><th>Data de emissão</th><th>Observação</th><th></th></tr></thead>
+        <thead><tr><th>Atividade</th><th>Período</th><th>Número</th><th>NF</th><th class="num">Valor</th><th>Data de emissão</th><th>Observação</th><th></th></tr></thead>
         <tbody>${lista.map(r=>`<tr ${NFE_EDIT===r.id?'style="background:#FCF1DE;"':""}>
           <td><span class="nfe-dot" style="--c:${nfeAtiv(r.atividade).cor};"></span>${osEsc(nfeRotulo(r))}</td>
+          <td style="font-size:12px;">${osEsc(nfeRotuloPeriodo(r))}</td>
           <td>${osEsc(r.numero)||"—"}</td><td><b>${osEsc(r.nf)}</b></td><td class="num"><b>${fmtBRL2(r.valor)}</b></td>
           <td>${fmtDataBR(r.dataEmissao)}</td><td>${osEsc(r.obs)||"—"}</td>
           <td style="white-space:nowrap;"><button class="os-link" onclick="nfeEditar('${r.id}')" title="Editar">✏️</button> <button class="os-link" onclick="nfeExcluir('${r.id}')" title="Excluir">🗑️</button></td>
         </tr>`).join("")}</tbody>
-        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="3">Total</td><td class="num">${fmtBRL2(sumArr(lista.map(r=>r.valor)))}</td><td colspan="3"></td></tr></tfoot>
+        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="4">Total</td><td class="num">${fmtBRL2(sumArr(lista.map(r=>r.valor)))}</td><td colspan="3"></td></tr></tfoot>
       </table></div>` : `<div class="empty-state" style="padding:18px;"><p>${NFE.carregando ? "Carregando..." : "Nenhuma NF com esses filtros."}</p></div>`}
     </div>`;
 }
@@ -7882,7 +8027,7 @@ function nfeGrafico(){
   const meses = [...new Set(NFE.lista.map(r=>(r.dataEmissao||"").slice(0,7)).filter(Boolean))].sort();
   mkChart("ch-nfe", {
     type:"bar",
-    data:{ labels:meses.map(m=>`${MESES_HE[Number(m.slice(5,7))-1]}/${m.slice(2,4)}`), datasets:NFE_ATIVIDADES.map(x=>({
+    data:{ labels:meses.map(nfeNomeMes), datasets:NFE_ATIVIDADES.map(x=>({
       label:x.label, data:meses.map(m=>sumArr(NFE.lista.filter(r=>r.atividade===x.chave && (r.dataEmissao||"").startsWith(m)).map(r=>r.valor))),
       backgroundColor:x.cor, stack:"a", borderColor:"#fff", borderWidth:{ top:2 }, borderRadius:4, maxBarThickness:52 })) },
     options:{ responsive:true, maintainAspectRatio:false,
