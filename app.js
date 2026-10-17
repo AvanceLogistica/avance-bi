@@ -6606,6 +6606,8 @@ const PROG_SERVICOS = ["ENTREGA","COLETA","DESCARGA"];
 const PROG_HORARIOS = ["06:00","07:00","08:00","09:00","10:00","11:00","13:00","14:00","15:00","16:00","17:00","18:00"];
 const PROG_SUG_CLIENTES = ["BNB","AMAZON INDUSTRIA","THAP","CENTER CARGO","ATACADÃO","SENDAS","NOVA ERA","COSTA BRASIL","ITAM","RUFINO","EBD","CREDIE","CARREFOUR","SUPERMERCADOS DB","ORTOBOM","SEMILLON","DUNORTE","CB COMERCIO","HAVAN","NATUREZA COMERCIO","EMPRESA BRASILEIRA DE DISTRIBUIÇÃO","PETROBRAS","M MOTA COELHO","ARROW","ETERNIT","WAISON","CREDY","MILK 92","AMERICANAS","BEGUR","RCL COMERCIO","BEMOL","AROSUCO","ROCHA E PAIVA","ESTALEIRO SÃO JOÃO","SAINT-GOBAIN","ITARANA","CORREIOS","MARTINS","METALFINO","PIARARA","COEMA"];
 const PROG_SUG_TRANSP = ["COMPAR","SUZANO","BRILUX","GOIAS MINAS","ALBRAS","OVER TRUCK","TRANSUL","COOPERCARGA","QUIMICA","CCGL","ITALAC","ARROW","SOLAR","PETONY","BENEVIDES","1500 TRANSPORTES","TAMBAU","NOVA ROCHA","BBT","REAL 94","GIVOVA","ALCOA","HEINEKEN","ITAM","MIRASSOL","TRANSBEN","HILEIA","HNK","HU TRANSPORTES","FB SERVIÇOS","BRASKEN","CONCEITO","CLIK","APOTEOSE","BNB","MILI S/A","SÓ FRUTAS","PQA QUIMICA","P&G","LSL"];
+// Motivos de entrega não realizada (vão para a lista e para a mensagem do WhatsApp)
+const PROG_MOTIVOS = ["Problema OP Combitrans","Problema OP Avance","Falta de cavalo","Cancelamento do cliente","Falta de motorista","Problema com carga","Outros"];
 const PROG_SITUACAO = {
   pendente:      { label:"Pendente",      icone:"⏳", badge:"gray"  },
   realizada:     { label:"Realizada",     icone:"✅", badge:"green" },
@@ -6650,7 +6652,7 @@ async function progCarregar(silencioso){
   PROG.erro = null;
   PROG.linhas = lin.data.map(r=>({ id:r.id, data:r.data, veiculoId:r.veiculo_id, frota:r.frota||"", motorista:r.motorista||"", cliente:r.cliente||"",
     transportadora:r.transportadora||"", servico:r.servico||"ENTREGA", horario:r.horario||"", nf:r.nf||"", planejado:r.planejado!==false,
-    situacao:r.situacao||"pendente", horaReal:r.hora_real||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+    situacao:r.situacao||"pendente", horaReal:r.hora_real||"", motivo:r.motivo||"", motivoObs:r.motivo_obs||"", _tinhaMotivo:!!(r.motivo||r.motivo_obs), por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
   if(!vei.error) PROG.veiculos = vei.data.map(v=>({ id:v.id, ordem:v.ordem, placa:v.placa, motorista:v.motorista||"" }));
   PROG.motoristaDoDia = {};
   if(!st.error) st.data.forEach(r=>{ if(r.motorista) PROG.motoristaDoDia[r.veiculo_id] = r.motorista; });
@@ -6703,11 +6705,21 @@ async function progGravar(linha){
   const reg = { data:linha.data, veiculo_id:linha.veiculoId||null, frota:linha.frota, motorista:linha.motorista||null, cliente:linha.cliente||null,
     transportadora:linha.transportadora||null, servico:linha.servico, horario:linha.horario||null, nf:linha.nf||null, planejado:linha.planejado,
     situacao:linha.situacao, hora_real:linha.horaReal||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
-  const q = linha.id && !String(linha.id).startsWith("tmp")
-    ? sb.from("entregas_programacao").update(reg).eq("id", linha.id).select().single()
-    : sb.from("entregas_programacao").insert({ ...reg, criado_por:MEU_EMAIL }).select().single();
-  const { data, error } = await q;
+  // motivo/detalhe só vão quando existem — assim, se o SQL das colunas novas ainda não foi rodado,
+  // os demais lançamentos continuam salvando normalmente
+  const temMotivo = linha.situacao==="nao_realizada" && (linha.motivo || linha.motivoObs);
+  const comMotivo = temMotivo ? { ...reg, motivo:linha.motivo||null, motivo_obs:linha.motivoObs||null }
+                  : (linha.situacao!=="nao_realizada" && linha._tinhaMotivo ? { ...reg, motivo:null, motivo_obs:null } : reg);
+  const enviar = async (campos) => linha.id && !String(linha.id).startsWith("tmp")
+    ? sb.from("entregas_programacao").update(campos).eq("id", linha.id).select().single()
+    : sb.from("entregas_programacao").insert({ ...campos, criado_por:MEU_EMAIL }).select().single();
+  let { data, error } = await enviar(comMotivo);
+  if(error && /motivo/i.test(error.message||"")){
+    ({ data, error } = await enviar(reg));
+    if(!error) toast("⚠ Salvo, mas o motivo não foi gravado: falta rodar o SQL do motivo no Supabase.");
+  }
   if(error){ toast("⚠ Não salvou: " + error.message); return false; }
+  linha._tinhaMotivo = !!temMotivo;
   linha.id = data.id; return true;
 }
 
@@ -6731,12 +6743,14 @@ window.progSituacao = async (id, sit) => {
   const l = PROG.linhas.find(x=>x.id===id); if(!l) return;
   l.situacao = l.situacao===sit ? "pendente" : sit;
   l.horaReal = l.situacao==="realizada" ? frotaHora() : "";
+  if(l.situacao!=="nao_realizada"){ l.motivo = ""; l.motivoObs = ""; }
   l.por = (MEU_EMAIL||"").split("@")[0];
   progRerender(); await progGravar(l);
+  if(l.situacao==="nao_realizada") setTimeout(()=>document.getElementById(`pg-mot-${id}`)?.focus(), 60);
 };
 window.progEditar = async (id, campo, valor) => {
   const l = PROG.linhas.find(x=>x.id===id); if(!l) return;
-  l[campo] = campo==="nf" ? progLimparNF(valor).replace(/^\/|\/$/g,"") : campo==="horario" ? valor : valor.toUpperCase();
+  l[campo] = campo==="nf" ? progLimparNF(valor).replace(/^\/|\/$/g,"") : ["horario","motivo","motivoObs"].includes(campo) ? valor.trim() : valor.toUpperCase();
   await progGravar(l); progRerender();
 };
 window.progExcluir = async (id) => {
@@ -6771,7 +6785,8 @@ function progTextoWhatsApp(){
     const h = l.horario || "Sem horário";
     // emojis só no cabeçalho/resumo; nas linhas das entregas, a situação vai escrita
     if(h !== horaAtual){ t += `\n*${h}*\n`; horaAtual = h; }
-    t += `${l.frota}${l.motorista ? ` · ${l.motorista}` : ""} — ${PROG_SITUACAO[l.situacao].label.toUpperCase()}\n`;
+    const motivoTxt = l.situacao==="nao_realizada" && (l.motivo || l.motivoObs) ? ` — Motivo: ${[l.motivo, l.motivoObs].filter(Boolean).join(" / ")}` : "";
+    t += `${l.frota}${l.motorista ? ` · ${l.motorista}` : ""} — ${PROG_SITUACAO[l.situacao].label.toUpperCase()}${motivoTxt}\n`;
     t += `   ${l.cliente}${l.transportadora ? ` · ${l.transportadora}` : ""}${l.nf ? ` · NF ${l.nf}` : ""}${l.servico!=="ENTREGA" ? ` · ${l.servico}` : ""}${!l.planejado ? " · EXTRA" : ""}\n`;
   });
   if(!itens.length) t += `\nNenhuma entrega lançada para o dia.\n`;
@@ -6875,6 +6890,12 @@ function progPagina(){
             <button class="prog-sit ${l.situacao==="realizada"?"on ok":""}" onclick="progSituacao('${l.id}','realizada')" title="Realizada">✅</button>
             <button class="prog-sit ${l.situacao==="nao_realizada"?"on no":""}" onclick="progSituacao('${l.id}','nao_realizada')" title="Não realizada">❌</button>
             <span class="hint" style="margin:0 0 0 4px;">${l.situacao==="realizada" && l.horaReal ? `às ${l.horaReal}` : PROG_SITUACAO[l.situacao].label}</span>
+            ${l.situacao==="nao_realizada" ? `<div class="prog-motivo">
+              <select id="pg-mot-${l.id}" class="${l.motivo ? "" : "falta"}" onchange="progEditar('${l.id}','motivo',this.value)">
+                <option value="">⚠️ Informe o motivo</option>${PROG_MOTIVOS.map(m=>`<option ${m===l.motivo?"selected":""}>${m}</option>`).join("")}
+              </select>
+              <input value="${osEsc(l.motivoObs)}" placeholder="detalhe (opcional)" onchange="progEditar('${l.id}','motivoObs',this.value)">
+            </div>` : ""}
           </td>
           <td><button class="os-link" onclick="progExcluir('${l.id}')">excluir</button></td>
         </tr>`).join("")}</tbody></table></div>` : `<div class="empty-state" style="padding:18px;"><p>Nenhuma entrega lançada para este dia.</p></div>`}
