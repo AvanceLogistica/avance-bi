@@ -2753,11 +2753,7 @@ function entregasReceita(){
         <div class="chart-insight">${insightComposicao(e.porTipo, "tipo", "valor")}</div>
       </div>
     </div>
-    <div class="panel" style="margin-bottom:16px;">
-      <h3>Demonstrativo em Quantidade (por quinzena)</h3>
-      <div class="chart-wrap" style="height:260px;"><canvas id="ch-ent-quinzena"></canvas></div>
-      <div class="chart-insight">${insightSerie(e.quinzenaLabels, e.quinzenaQtd, fmtNum)}</div>
-    </div>
+    ${entQuinzenaPainel()}
     <div class="grid-2">
       <div class="panel">
         <h3>Viagens por Motorista</h3>
@@ -2805,16 +2801,87 @@ function entregasReceitaCharts(){
         datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex]/totalTipo > 0.02, color:"#fff", font:{size:10, weight:700},
           formatter:(v)=> totalTipo? (v/totalTipo*100).toFixed(2)+"%" : "" } } }
   });
-  mkChart("ch-ent-quinzena", {
-    type:"bar",
-    data:{ labels:e.quinzenaLabels, datasets:[{ data:e.quinzenaQtd, backgroundColor:COLORS.redDark, borderRadius:4 }]},
-    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false},
-        datalabels:{ display:true, anchor:"end", align:"top", offset:2, color:COLORS.ink, font:{size:9, weight:700}, formatter:fmtLabelNum } },
-      layout:{ padding:{ top:16 } },
-      scales:{ y:{grid:{color:COLORS.grid}}, x:{grid:{display:false}, ticks:{maxRotation:60, minRotation:60}} } }
-  });
+  entQuinzenaGrafico();
 };
 
+/* ---------- Entregas: viagens por quinzena, com filtros ----------
+   Cada linha da planilha é uma viagem (coluna QNT; vazia conta como 1). Os filtros valem só para este
+   painel: quinzena (todas / só 1ª / só 2ª), tipo de serviço e período (mês inicial e final). */
+const FILTRO_ENT_Q = { quinzena:"todas", servico:"todos", de:"", ate:"" };
+const ENT_Q_CORES = { "ENTREGA":"#8C0011", "COLETA":"#D0021B", "RETIRADA":"#E1971F", "DESCARGA":"#5B5F6B" };
+window.setFiltroEntQ = (campo, v) => { FILTRO_ENT_Q[campo] = v; navigate("entregas"); };
+function entQuinzenaDados(){
+  const e = entregasView || DATA.entregas;
+  const lanc = (e.lancamentos || DATA.entregas.lancamentos || []);
+  const servNome = (s) => (s||"").trim().toUpperCase() || "SEM TIPO";
+  const servicos = [...new Set(lanc.map(r=>servNome(r.servico)))].sort((a,b)=>(ENT_Q_CORES[a]?0:1)-(ENT_Q_CORES[b]?0:1) || a.localeCompare(b));
+  const meses = [...new Set(lanc.map(r=>r.d.slice(0,7)))].sort();
+  const f = FILTRO_ENT_Q;
+  const filtrados = lanc.filter(r=>{
+    const q = Number(r.d.slice(8,10)) <= 15 ? "Q1" : "Q2", ym = r.d.slice(0,7);
+    return (f.quinzena==="todas" || f.quinzena===q) && (f.servico==="todos" || servNome(r.servico)===f.servico)
+      && (!f.de || ym >= f.de) && (!f.ate || ym <= f.ate);
+  });
+  const chaves = [...new Set(filtrados.map(r=>`${r.d.slice(0,7)}-${Number(r.d.slice(8,10))<=15?"Q1":"Q2"}`))].sort();
+  const serie = (s) => chaves.map(k=>sumArr(filtrados.filter(r=>`${r.d.slice(0,7)}-${Number(r.d.slice(8,10))<=15?"Q1":"Q2"}`===k && (!s || servNome(r.servico)===s)).map(r=>r.qnt||1)));
+  const totais = serie(null);
+  const labels = chaves.map(k=>{ const [y,mm,q] = k.split("-"); return `${q} ${MONTH_ABBR[parseInt(mm,10)-1]}${meses.some(m=>m.slice(0,4)!==y) ? "/"+y.slice(2) : ""}`; });
+  const servDoFiltro = servicos.filter(s=>filtrados.some(r=>servNome(r.servico)===s));
+  return { lanc, servicos, meses, filtrados, chaves, labels, totais, serie, servDoFiltro };
+}
+function entQuinzenaPainel(){
+  const D = entQuinzenaDados(), f = FILTRO_ENT_Q;
+  const opt = (v,l,a) => `<option value="${v}" ${v===a?"selected":""}>${l}</option>`;
+  const nomeMes = (m) => `${MONTH_ABBR[parseInt(m.slice(5,7),10)-1]}/${m.slice(2,4)}`;
+  const total = sumArr(D.totais), n = D.totais.length;
+  const media = n ? total/n : 0;
+  const maxI = n ? D.totais.indexOf(Math.max(...D.totais)) : -1, minI = n ? D.totais.indexOf(Math.min(...D.totais)) : -1;
+  const doQ = (q) => { const ks = D.chaves.map((k,i)=>k.endsWith(q) ? D.totais[i] : null).filter(v=>v!=null); return ks.length ? sumArr(ks)/ks.length : 0; };
+  return `
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Viagens por quinzena</h3>
+      <div class="hint">Cada lançamento da planilha é uma viagem (coluna QNT). Os filtros abaixo valem só para este painel.</div>
+      <div class="filtro-bar" style="margin-bottom:12px;">
+        <label>Quinzena<select onchange="setFiltroEntQ('quinzena',this.value)">${opt("todas","Todas",f.quinzena)}${opt("Q1","Só a 1ª quinzena (dia 1 a 15)",f.quinzena)}${opt("Q2","Só a 2ª quinzena (dia 16 ao fim)",f.quinzena)}</select></label>
+        <label>Serviço<select onchange="setFiltroEntQ('servico',this.value)">${opt("todos","Todos",f.servico)}${D.servicos.map(s=>opt(s, s[0]+s.slice(1).toLowerCase(), f.servico)).join("")}</select></label>
+        <label>De<select onchange="setFiltroEntQ('de',this.value)">${opt("","Início",f.de)}${D.meses.map(m=>opt(m, nomeMes(m), f.de)).join("")}</select></label>
+        <label>Até<select onchange="setFiltroEntQ('ate',this.value)">${opt("","Último mês",f.ate)}${D.meses.map(m=>opt(m, nomeMes(m), f.ate)).join("")}</select></label>
+      </div>
+      <div class="os-resumo prog-resumo" style="margin:0 0 12px;">
+        <div>Viagens no filtro<b>${fmtNum(total)}</b><small>${n} quinzena(s)</small></div>
+        <div>Média por quinzena<b>${fmtNum(Math.round(media))}</b></div>
+        <div>Maior quinzena<b>${maxI>=0 ? fmtNum(D.totais[maxI]) : "—"}</b><small>${maxI>=0 ? D.labels[maxI] : ""}</small></div>
+        <div>Menor quinzena<b>${minI>=0 ? fmtNum(D.totais[minI]) : "—"}</b><small>${minI>=0 ? D.labels[minI] : ""}</small></div>
+        ${f.quinzena==="todas" ? `<div>Média 1ª x 2ª quinzena<b>${fmtNum(Math.round(doQ("Q1")))} x ${fmtNum(Math.round(doQ("Q2")))}</b><small>viagens por quinzena</small></div>` : ""}
+      </div>
+      <div class="chart-wrap" style="height:290px;"><canvas id="ch-ent-quinzena"></canvas></div>
+      <div class="chart-insight">${insightSerie(D.labels, D.totais, fmtNum)}</div>
+    </div>`;
+}
+function entQuinzenaGrafico(){
+  if(!document.getElementById("ch-ent-quinzena")) return;
+  const D = entQuinzenaDados();
+  const empilhar = FILTRO_ENT_Q.servico === "todos" && D.servDoFiltro.length > 1;
+  const datasets = empilhar
+    ? D.servDoFiltro.map(s=>({ label:s[0]+s.slice(1).toLowerCase(), data:D.serie(s), backgroundColor:ENT_Q_CORES[s]||"#B9BBC6", stack:"q", borderColor:"#fff", borderWidth:{ top:1 }, borderRadius:3, maxBarThickness:44 }))
+    : [{ label:"Viagens", data:D.totais, backgroundColor:COLORS.redDark, borderRadius:4, maxBarThickness:44 }];
+  const totalNoTopo = { id:"entQTot", afterDatasetsDraw(chart){
+    const { ctx } = chart; ctx.save(); ctx.font = "700 10.5px Inter, system-ui, sans-serif"; ctx.fillStyle = COLORS.ink; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+    D.totais.forEach((v,i)=>{ let topo = Infinity, x = null; chart.data.datasets.forEach((_,di)=>{ const b = chart.getDatasetMeta(di).data[i]; if(b && chart.data.datasets[di].data[i]){ topo = Math.min(topo, b.y); x = b.x; } });
+      if(x!=null) ctx.fillText(fmtNum(v), x, topo - 4); });
+    ctx.restore(); } };
+  mkChart("ch-ent-quinzena", {
+    type:"bar", data:{ labels:D.labels, datasets },
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:empilhar, position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"rectRounded" } },
+        tooltip:{ mode:"index", filter:(it)=>it.raw>0, callbacks:{ footer:(its)=>`Total: ${fmtNum(D.totais[its[0].dataIndex])} viagens` } },
+        datalabels:{ display:false } },
+      layout:{ padding:{ top:18 } },
+      scales:{ y:{ stacked:empilhar, beginAtZero:true, grid:{ color:COLORS.grid }, ticks:{ precision:0 } },
+               x:{ stacked:empilhar, grid:{ display:false }, ticks:{ maxRotation:60, minRotation:D.labels.length>14 ? 60 : 0 } } } },
+    plugins:[totalNoTopo]
+  });
+}
 /* -------------------- ACIDENTES -------------------- */
 renderers.acidentes = () => {
   const ac = DATA.acidentes;
