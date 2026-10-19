@@ -6783,7 +6783,7 @@ async function progGravar(linha){
   let { data, error } = await enviar(comMotivo);
   if(error && /motivo/i.test(error.message||"")){
     ({ data, error } = await enviar(reg));
-    if(!error) toast("⚠ Salvo, mas o motivo não foi gravado: falta rodar o SQL do motivo no Supabase.");
+    if(!error){ PROG.semColunaMotivo = true; toast("⚠ Salvo, mas o motivo não foi gravado: falta rodar o SQL do motivo no Supabase."); }
   }
   if(error){ toast("⚠ Não salvou: " + error.message); return false; }
   linha._tinhaMotivo = !!temMotivo;
@@ -6946,6 +6946,7 @@ function progPagina(){
     <div class="panel" style="margin-bottom:16px;">
       <h3>Entregas do dia (${itens.length})</h3>
       <div class="hint">Marque ✅ quando a entrega for realizada ou ❌ se não acontecer. Clique de novo para voltar a pendente. NF e horário podem ser ajustados aqui.</div>
+      ${PROG.semColunaMotivo ? `<div class="os-alerta red">⛔ O <b>motivo da não realização não está sendo gravado</b>: falta criar as colunas no banco. Peça ao diretor para rodar o SQL do motivo no Supabase.</div>` : ""}
       ${itens.length ? `<div style="overflow-x:auto;"><table class="os-form prog-tab">
         <thead><tr><th>Horário</th><th>Frota</th><th>Motorista</th><th>Cliente</th><th>Transportadora</th><th>NF</th><th>Situação</th><th></th></tr></thead>
         <tbody>${itens.map(l=>`<tr class="sit-${l.situacao}">
