@@ -371,6 +371,62 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .he-alerta-lista li span{ color:var(--ink-soft); text-align:right; }
 .he-alerta-lista li.mais{ color:var(--ink-soft); border:none; }
 
+/* Organograma */
+.og-barra{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+.og-barra input{ flex:1; min-width:220px; font-family:inherit; font-size:13.5px; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--paper); outline:none; }
+.og-chips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+.og-chip{ font-family:inherit; font-size:12px; font-weight:600; padding:6px 12px; border-radius:20px; border:1px solid var(--line); background:var(--card); cursor:pointer; display:flex; align-items:center; gap:6px; }
+.og-chip i{ width:9px; height:9px; border-radius:50%; background:var(--c); } .og-chip b{ color:var(--ink-soft); }
+.og-chip.on{ border-color:var(--c); box-shadow:0 0 0 1.5px var(--c) inset; }
+.og-ctrl{ display:flex; gap:6px; justify-content:flex-end; margin-bottom:8px; }
+.og-wrap{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px 16px; overflow:auto; max-height:78vh; margin-bottom:16px; }
+.og-tree{ display:flex; justify-content:center; min-width:max-content; transform-origin:top center; }
+.og-tree ul{ padding-top:22px; position:relative; display:flex; justify-content:center; margin:0; padding-left:0; }
+.og-tree li{ list-style:none; position:relative; padding:22px 8px 0; display:flex; flex-direction:column; align-items:center; }
+.og-tree li::before,.og-tree li::after{ content:""; position:absolute; top:0; right:50%; width:50%; height:22px; border-top:2px solid #C9CBD4; }
+.og-tree li::after{ right:auto; left:50%; border-left:2px solid #C9CBD4; }
+.og-tree li:only-child::before,.og-tree li:only-child::after{ display:none; }
+.og-tree li:only-child{ padding-top:0; }
+.og-tree li:first-child::before,.og-tree li:last-child::after{ border:0 none; }
+.og-tree li:last-child::before{ border-right:2px solid #C9CBD4; border-radius:0 6px 0 0; }
+.og-tree li:first-child::after{ border-radius:6px 0 0 0; }
+.og-tree ul ul::before{ content:""; position:absolute; top:0; left:50%; height:22px; border-left:2px solid #C9CBD4; }
+.og-tree > ul{ padding-top:0; }
+.og-node{ background:var(--card); border:1px solid var(--line); border-top:4px solid var(--c); border-radius:12px; padding:10px 12px; display:flex; align-items:center; gap:10px; min-width:190px; cursor:pointer; position:relative; box-shadow:0 2px 8px rgba(23,24,28,.06); transition:transform .12s, box-shadow .12s; }
+.og-node:hover{ transform:translateY(-2px); box-shadow:0 8px 20px rgba(23,24,28,.12); }
+.og-nm{ font-weight:800; font-size:13px; line-height:1.2; } .og-fn{ font-size:11.5px; color:var(--c); font-weight:700; } .og-dt{ font-size:10.5px; color:var(--ink-soft); }
+.og-tg{ position:absolute; bottom:-11px; left:50%; transform:translateX(-50%); font-family:inherit; font-size:10.5px; font-weight:700; background:var(--ink); color:#fff; border:0; border-radius:10px; padding:2px 9px; cursor:pointer; white-space:nowrap; }
+.og-av{ width:44px; height:44px; border-radius:50%; object-fit:cover; flex:none; background:#E9EAEE; display:flex; align-items:center; justify-content:center; font-weight:800; color:var(--ink-soft); font-size:15px; border:2px solid #fff; box-shadow:0 0 0 2px var(--c, #C9CBD4); }
+.og-av.sm{ width:34px; height:34px; font-size:12px; }
+.og-equipe{ width:200px; background:var(--paper); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+.og-equipe h4{ margin:0; background:var(--c); color:#fff; font-size:11.5px; letter-spacing:.03em; text-transform:uppercase; padding:8px 10px; display:flex; justify-content:space-between; align-items:center; }
+.og-equipe h4 span{ background:rgba(255,255,255,.25); border-radius:10px; padding:0 8px; }
+.og-pessoa{ display:flex; align-items:center; gap:9px; padding:7px 10px; border-bottom:1px solid var(--line); cursor:pointer; background:var(--card); }
+.og-pessoa:last-child{ border-bottom:0; } .og-pessoa:hover{ background:#FAFAFC; }
+.og-novo{ font-size:9.5px; font-weight:800; color:#fff; background:var(--green); border-radius:8px; padding:1px 6px; margin-left:4px; vertical-align:middle; }
+.og-match{ outline:3px solid #FFC21A; outline-offset:1px; } .og-apagado{ opacity:.25; }
+.og-rb{ display:grid; grid-template-columns:160px 1fr 40px; align-items:center; gap:10px; margin:6px 0; font-size:12.5px; cursor:pointer; }
+.og-rt{ height:20px; background:var(--paper); border-radius:6px; overflow:hidden; } .og-rt div{ height:100%; background:var(--c); border-radius:6px; } .og-rb b{ text-align:right; }
+.og-setores{ display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; margin-bottom:16px; }
+.og-setor{ background:var(--card); border:1px solid var(--line); border-top:5px solid var(--c); border-radius:14px; overflow:hidden; }
+.og-cab{ padding:12px 14px; display:flex; justify-content:space-between; align-items:flex-end; } .og-cab b{ font-size:14px; } .og-cab small{ display:block; color:var(--ink-soft); font-size:11.5px; margin-top:2px; }
+.og-q{ font-size:26px; font-weight:800; color:var(--c); line-height:1; }
+.og-badge{ display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700; padding:2px 8px; border-radius:20px; background:var(--paper); white-space:nowrap; } .og-badge i{ width:8px; height:8px; border-radius:50%; background:var(--c); }
+.og-fundo{ position:fixed; inset:0; background:rgba(23,24,28,.45); display:none; z-index:50; } .og-fundo.aberta{ display:block; }
+.og-ficha{ position:fixed; top:0; right:0; bottom:0; width:min(420px,100%); background:var(--card); z-index:51; transform:translateX(100%); transition:transform .2s; overflow-y:auto; box-shadow:-10px 0 30px rgba(0,0,0,.2); }
+.og-ficha.aberta{ transform:none; }
+.og-topo{ background:var(--c); padding:26px 20px 18px; color:#fff; text-align:center; position:relative; }
+.og-topo .og-av{ width:110px; height:110px; margin:0 auto 10px; font-size:34px; box-shadow:0 0 0 4px rgba(255,255,255,.6); }
+.og-topo h2{ margin:0; font-size:20px; } .og-topo p{ margin:4px 0 6px; font-weight:600; opacity:.9; }
+.og-x{ position:absolute; top:10px; right:12px; background:rgba(0,0,0,.25); border:0; color:#fff; width:30px; height:30px; border-radius:50%; font-size:16px; cursor:pointer; }
+.og-campos{ padding:8px 20px 4px; } .og-campos label{ margin-top:10px; }
+.og-campos select, .og-campos input{ width:100%; box-sizing:border-box; }
+.og-foto-acoes{ display:flex; align-items:center; gap:10px; } .og-foto-acoes input{ font-size:12px; padding:6px; }
+.og-info{ display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); font-size:12.5px; } .og-info span{ color:var(--ink-soft); }
+.og-btns{ display:flex; gap:8px; padding:14px 20px; flex-wrap:wrap; align-items:center; }
+.og-desl{ margin:0 20px 20px; padding:12px; border:1px solid var(--red); border-radius:10px; background:var(--red-soft); }
+.og-desl h4{ margin:0 0 6px; } .og-desl label{ display:flex; flex-direction:column; gap:4px; font-size:11.5px; font-weight:600; color:var(--ink-soft); margin:8px 0; }
+.og-desl input, .og-desl select{ font-family:inherit; font-size:13px; padding:7px 9px; border:1px solid var(--line); border-radius:7px; }
 /* NF Emitidas — painel de emissão */
 .nfe-legenda{ display:flex; gap:12px; font-size:12.5px; font-weight:700; flex-wrap:wrap; }
 .nfe-cards{ display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:12px; margin-top:12px; }
@@ -640,7 +696,8 @@ body.pending #pendingScreen{display:flex;}
     <div class="grp-label">Pessoas</div>
     <button data-page="folha"><span class="ic">💰</span> Folha (Benefícios+Salário)</button>
     <button data-page="horaextra"><span class="ic">⏱️</span> Hora Extra</button>
-    <button data-page="atestados"><span class="ic">🩺</span> Atestados</button>
+    <button data-page="atestados"><span class="ic">🩺</span> Atestados</button>
+    <button data-page="organograma" data-requer="diretor"><span class="ic">🧑‍🤝‍🧑</span> Organograma</button>
 
     <div class="grp-label" data-requer="diretor">Financeiro</div>
     <button data-page="emissaonf" data-requer="diretor"><span class="ic">📝</span> Emissão de NF</button>

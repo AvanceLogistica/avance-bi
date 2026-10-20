@@ -439,8 +439,8 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","acessos"];
-const PAGINAS_SO_DIRETOR = ["faturamento","emissaonf","contaspagar","belem","ordens","acessos"];
+const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","acessos"];
+const PAGINAS_SO_DIRETOR = ["faturamento","emissaonf","contaspagar","belem","ordens","organograma","acessos"];
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
@@ -449,6 +449,7 @@ const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
+  organograma: ["Organograma","Colaboradores por local, função e liderança"],
   emissaonf: ["Emissão de NF","Lançamento das notas por contrato, serviço ou balsa, minuta e vencimento"],
   faturamento: ["Faturamento","Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem"],
   acessos: ["Gestão de Acessos","Libere ou altere o perfil de cada pessoa cadastrada no sistema"],
@@ -8178,6 +8179,315 @@ renderers.emissaonf = () => {
   return cab + abas + (NF_ABA === "nfe" ? nfePagina() : NF_ABA === "fin" ? osfPagina() : NF_ABA === "os" ? osmPagina() : nfPaginaNotas());
 };
 initCharts.emissaonf = () => { if(NF_ABA === "nfe") nfeGrafico(); };
+/* -------------------- ORGANOGRAMA (Pessoas · só Diretoria) --------------------
+   Colaboradores com foto, função, local, data de admissão e a quem respondem (gestor). Dados na tabela
+   "colaboradores" do banco (acesso só do Diretor) — nada de dado pessoal no código do site. Fotos são
+   reduzidas no navegador (160x160 JPEG) e gravadas junto do cadastro. Desligar tira a pessoa do
+   organograma e guarda no histórico de desligados (com data e motivo), podendo reativar depois.
+   A carga inicial (94 pessoas do organograma de setembro) é importada uma vez de um arquivo .json. */
+const ORG_LOCAIS_PADRAO = [
+  { nome:"Diretoria",           cor:"#17181C" },
+  { nome:"Administração",       cor:"#5B5F6B" },
+  { nome:"Entregas 1T",         cor:"#2E6DB0" },
+  { nome:"Entregas/Honda 1T",   cor:"#4A86C8" },
+  { nome:"Moto Honda 1T",       cor:"#D0021B" },
+  { nome:"Porto 1T",            cor:"#1C9A6C" },
+  { nome:"Moto Honda 2T",       cor:"#8C0011" },
+  { nome:"Porto 2T",            cor:"#147A55" },
+  { nome:"Mecânica",            cor:"#E1971F" },
+  { nome:"Manutenção Carreta",  cor:"#B87410" },
+  { nome:"Intermediário",       cor:"#8E2EB0" },
+  { nome:"Operação Belém",      cor:"#C9A227" },
+];
+const ORG_CORES_EXTRAS = ["#0F6E8C","#6B4E9B","#A0522D","#2F7D32","#9E1B5C","#4B5563"];
+let ORG = { lista:[], carregado:false, carregando:false, erro:null };
+let ORG_VIEW = "arvore", ORG_LOCAL = null, ORG_BUSCA = "", ORG_ABERTOS = null, ORG_ZOOM = 1, ORG_SORT = ["local",1];
+let ORG_FICHA = null;          // id em edição | "novo" | null
+let ORG_FOTO_NOVA = undefined; // dataURL escolhida na ficha (undefined = não mexeu, null = remover)
+
+function orgAtivos(){ return ORG.lista.filter(p=>p.ativo); }
+function orgLocais(){
+  const extras = [...new Set(ORG.lista.map(p=>p.local).filter(l=>l && !ORG_LOCAIS_PADRAO.some(x=>x.nome===l)))].sort();
+  return [...ORG_LOCAIS_PADRAO, ...extras.map((nome,i)=>({ nome, cor:ORG_CORES_EXTRAS[i % ORG_CORES_EXTRAS.length] }))];
+}
+const orgCor = (l) => (orgLocais().find(x=>x.nome===l)||{ cor:"#5B5F6B" }).cor;
+const orgHoje = () => frotaHojeISO();
+function orgTempoCasa(iso){
+  if(!iso) return "—";
+  const hoje = nfeDate(orgHoje()), d = nfeDate(iso);
+  let m = (hoje.getFullYear()-d.getFullYear())*12 + hoje.getMonth()-d.getMonth(); if(hoje.getDate()<d.getDate()) m--;
+  if(m<1) return `${Math.max(0, nfeDias(iso, orgHoje()))} dias`;
+  const a = Math.floor(m/12), r = m%12;
+  return [a?`${a} ano${a>1?"s":""}`:"", r?`${r} ${r>1?"meses":"mês"}`:""].filter(Boolean).join(" e ");
+}
+const orgExperiencia = (p) => { if(!p.adm) return false; const d = nfeDias(p.adm, orgHoje()); return d>=0 && d<=90; };
+function orgAvatar(p, cls=""){
+  const ini = (p.nome||"?").split(" ").map(s=>s[0]).slice(0,2).join("").toUpperCase();
+  return p.foto ? `<img class="og-av ${cls}" src="${p.foto}" alt="">` : `<div class="og-av ${cls}">${osEsc(ini)}</div>`;
+}
+const orgFilhos = (id) => orgAtivos().filter(p=>p.gestorId===id);
+function orgEquipeTotal(id, vistos=new Set()){ if(vistos.has(id)) return 0; vistos.add(id); return orgFilhos(id).reduce((n,f)=>n+1+orgEquipeTotal(f.id, vistos),0); }
+function orgDescendentes(id, acc=new Set()){ orgFilhos(id).forEach(f=>{ if(!acc.has(f.id)){ acc.add(f.id); orgDescendentes(f.id, acc); } }); return acc; }
+function orgBate(p){
+  const q = nfSemAcento(ORG_BUSCA);
+  return (!q || nfSemAcento(`${p.nome} ${p.funcao}`).includes(q)) && (!ORG_LOCAL || p.local===ORG_LOCAL);
+}
+const orgFiltrando = () => !!(ORG_BUSCA.trim() || ORG_LOCAL);
+
+/* ---------- Banco ---------- */
+function orgDoBanco(r){ return { id:r.id, nome:r.nome, funcao:r.funcao||"", local:r.local||"", gestorId:r.gestor_id||null, adm:r.data_admissao||"", foto:r.foto||"",
+  ativo:r.ativo!==false, deslData:r.data_desligamento||"", deslMotivo:r.motivo_desligamento||"", obs:r.obs||"", ordem:r.ordem||0 }; }
+function orgParaBanco(p){ return { id:p.id, nome:p.nome, funcao:p.funcao||null, local:p.local||null, gestor_id:p.gestorId||null, data_admissao:p.adm||null, foto:p.foto||null,
+  ativo:p.ativo, data_desligamento:p.deslData||null, motivo_desligamento:p.deslMotivo||null, obs:p.obs||null, ordem:p.ordem||0,
+  atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() }; }
+async function orgCarregar(){
+  ORG.carregando = true;
+  if(!sb){ try{ ORG.lista = JSON.parse(localStorage.getItem("avance_organograma_local")||"[]"); }catch(e){ ORG.lista = []; } }
+  else {
+    const { data, error } = await sb.from("colaboradores").select("*").order("ordem");
+    if(error){ ORG.erro = error.message; ORG.carregando = false; ORG.carregado = true; orgRerender(); return; }
+    ORG.erro = null; ORG.lista = data.map(orgDoBanco);
+  }
+  ORG.carregando = false; ORG.carregado = true; orgRerender();
+}
+function orgSalvarLocal(){ if(!sb) try{ localStorage.setItem("avance_organograma_local", JSON.stringify(ORG.lista)); }catch(e){ toast("⚠ Sem espaço para salvar fotos no modo local."); } }
+async function orgGravar(lista){
+  if(sb){ const { error } = await sb.from("colaboradores").upsert(lista.map(orgParaBanco)); if(error){ toast("⚠ Não salvou: " + error.message); return false; } }
+  lista.forEach(p=>{ const i = ORG.lista.findIndex(x=>x.id===p.id); if(i>=0) ORG.lista[i] = p; else ORG.lista.push(p); });
+  orgSalvarLocal(); return true;
+}
+function orgRerender(){ if(document.querySelector('nav.menu button.active')?.dataset.page === "organograma"){ document.getElementById("content").innerHTML = renderers.organograma(); orgDepoisDeDesenhar(); } }
+
+/* ---------- Importação da carga inicial ---------- */
+window.orgImportar = async () => {
+  const file = document.getElementById("og-carga")?.files[0], st = document.getElementById("og-carga-st");
+  if(!file){ st.textContent = "⚠ Escolha o arquivo Organograma_Avance_CARGA_sistema.json"; return; }
+  try{
+    const carga = JSON.parse(await file.text());
+    if(carga.tipo !== "avance-organograma" || !Array.isArray(carga.colaboradores)){ st.textContent = "⚠ Esse arquivo não é a carga do organograma."; return; }
+    if(ORG.lista.length && !confirm(`Já existem ${ORG.lista.length} colaboradores cadastrados. Importar mesmo assim? (pessoas já existentes, pelo mesmo código, são atualizadas)`)) return;
+    st.textContent = `Gravando ${carga.colaboradores.length} colaboradores...`;
+    const lista = carga.colaboradores.map(r=>orgDoBanco(r));
+    if(sb){
+      for(let i=0;i<lista.length;i+=25){
+        const { error } = await sb.from("colaboradores").upsert(lista.slice(i,i+25).map(orgParaBanco));
+        if(error){ st.textContent = "⚠ " + error.message; return; }
+        st.textContent = `Gravando... ${Math.min(i+25, lista.length)} de ${lista.length}`;
+      }
+    }
+    ORG.lista = lista; orgSalvarLocal(); ORG_ABERTOS = null;
+    toast(`✓ ${lista.length} colaboradores importados`); orgRerender();
+  }catch(e){ st.textContent = "⚠ Erro ao ler o arquivo: " + (e.message||e); }
+};
+
+/* ---------- Ações de tela ---------- */
+window.orgSetView = (v) => { ORG_VIEW = v; orgRerender(); };
+window.orgSetLocal = (l) => { ORG_LOCAL = ORG_LOCAL===l ? null : l; orgRerender(); };
+window.orgBuscar = (t) => { ORG_BUSCA = t; orgRerender(); const el = document.getElementById("og-busca"); if(el){ el.focus(); el.setSelectionRange(t.length,t.length); } };
+window.orgAlternar = (id) => { ORG_ABERTOS.has(id) ? ORG_ABERTOS.delete(id) : ORG_ABERTOS.add(id); orgRerender(); };
+window.orgAbrirTudo = (sim) => { ORG_ABERTOS = new Set(sim ? orgAtivos().filter(p=>orgFilhos(p.id).length).map(p=>p.id) : orgAtivos().filter(p=>!p.gestorId).map(p=>p.id)); if(sim && ORG_ZOOM===1) ORG_ZOOM = 0.6; orgRerender(); };
+window.orgZoom = (d) => { ORG_ZOOM = d===0 ? 1 : Math.min(1.4, Math.max(0.4, +(ORG_ZOOM+d).toFixed(1))); orgRerender(); };
+window.orgOrdenar = (k) => { ORG_SORT = [k, ORG_SORT[0]===k ? -ORG_SORT[1] : 1]; orgRerender(); };
+function orgDepoisDeDesenhar(){
+  const w = document.querySelector(".og-wrap"), r = w && w.querySelector(".og-node");
+  if(w && r){ const a = w.getBoundingClientRect(), b = r.getBoundingClientRect(); w.scrollLeft += (b.left + b.width/2) - (a.left + a.width/2); }
+}
+
+/* ---------- Ficha (cadastro / edição / desligamento) ---------- */
+window.orgAbrirFicha = (id) => { ORG_FICHA = id; ORG_FOTO_NOVA = undefined; orgDesenharFicha(); };
+window.orgNovo = () => orgAbrirFicha("novo");
+window.orgFecharFicha = () => { ORG_FICHA = null; document.getElementById("og-ficha")?.classList.remove("aberta"); document.getElementById("og-fundo")?.classList.remove("aberta"); };
+function orgDesenharFicha(){
+  const novo = ORG_FICHA === "novo";
+  const p = novo ? { id:"", nome:"", funcao:"", local:ORG_LOCAL||"", gestorId:null, adm:"", foto:"", ativo:true, obs:"" } : ORG.lista.find(x=>x.id===ORG_FICHA);
+  if(!p) return;
+  const foto = ORG_FOTO_NOVA === undefined ? p.foto : (ORG_FOTO_NOVA || "");
+  const proibidos = novo ? new Set() : new Set([p.id, ...orgDescendentes(p.id)]);
+  const gestores = orgAtivos().filter(x=>!proibidos.has(x.id)).sort((a,b)=>a.nome.localeCompare(b.nome,"pt-BR"));
+  const g = ORG.lista.find(x=>x.id===p.gestorId), eq = novo ? 0 : orgEquipeTotal(p.id);
+  const f = document.getElementById("og-ficha"); if(!f) return;
+  f.style.setProperty("--c", orgCor(p.local));
+  f.innerHTML = `
+    <div class="og-topo"><button class="og-x" onclick="orgFecharFicha()">✕</button>
+      ${orgAvatar({ ...p, foto })}
+      <h2>${novo ? "Novo colaborador" : osEsc(p.nome)}</h2><p>${osEsc(p.funcao)||"&nbsp;"}</p>
+      ${!p.ativo ? `<span class="badge red">desligado em ${fmtDataBR(p.deslData)}</span>` : ""}
+    </div>
+    <div class="og-campos os-form">
+      <label>Foto<div class="og-foto-acoes">
+        <input type="file" id="og-foto" accept="image/*" onchange="orgEscolherFoto(this)">
+        ${foto ? `<button class="os-link" onclick="orgRemoverFoto()">remover foto</button>` : ""}</div></label>
+      <label>Nome<input id="og-nome" value="${osEsc(p.nome)}" placeholder="Nome do colaborador"></label>
+      <label>Função<input id="og-funcao" list="og-l-funcoes" value="${osEsc(p.funcao)}" placeholder="ex: Motorista">
+        <datalist id="og-l-funcoes">${[...new Set(ORG.lista.map(x=>x.funcao).filter(Boolean))].sort().map(x=>`<option value="${osEsc(x)}">`).join("")}</datalist></label>
+      <label>Local<select id="og-local" onchange="if(this.value==='__novo'){ const n=(prompt('Nome do novo local:')||'').trim(); if(n){ const o=document.createElement('option'); o.text=n; o.value=n; this.add(o, this.options.length-1); this.value=n; } else this.value=''; }">
+        <option value="">Selecione</option>${orgLocais().map(l=>`<option ${l.nome===p.local?"selected":""}>${osEsc(l.nome)}</option>`).join("")}<option value="__novo">+ novo local…</option></select></label>
+      <label>Responde a<select id="og-gestor"><option value="">— ninguém (topo do organograma)</option>${gestores.map(x=>`<option value="${x.id}" ${x.id===p.gestorId?"selected":""}>${osEsc(x.nome)} · ${osEsc(x.funcao)}</option>`).join("")}</select></label>
+      <label>Data de admissão<input type="date" id="og-adm" value="${p.adm||""}"></label>
+      <label>Observação<input id="og-obs" value="${osEsc(p.obs)}" placeholder="opcional"></label>
+      ${!novo ? `<div class="og-info"><span>Tempo de casa</span><b>${orgTempoCasa(p.adm)}${orgExperiencia(p) ? ' <span class="og-novo">EM EXPERIÊNCIA</span>' : ""}</b></div>
+        <div class="og-info"><span>Responde hoje a</span><b>${g ? osEsc(g.nome) : "—"}</b></div>
+        ${eq ? `<div class="og-info"><span>Equipe</span><b>${eq} pessoa(s)</b></div>` : ""}` : ""}
+    </div>
+    <div class="og-btns">
+      <button class="entry-submit" style="margin:0;" onclick="orgSalvarFicha()">${novo ? "Cadastrar" : "Salvar"}</button>
+      <button class="os-btn" onclick="orgFecharFicha()">Fechar</button>
+      ${!novo && p.ativo ? `<button class="os-btn red" style="margin-left:auto;" onclick="orgPedirDesligamento()">Desligar</button>` : ""}
+      ${!novo && !p.ativo ? `<button class="os-btn green" style="margin-left:auto;" onclick="orgReativar('${p.id}')">Reativar</button>` : ""}
+    </div>
+    <div id="og-desl" class="og-desl" style="display:none;">
+      <h4>Desligar ${osEsc(p.nome)}</h4>
+      <label>Data do desligamento<input type="date" id="og-desl-data" value="${orgHoje()}"></label>
+      <label>Motivo<select id="og-desl-motivo"><option>Pedido de demissão</option><option>Dispensa sem justa causa</option><option>Dispensa com justa causa</option><option>Término de contrato / experiência</option><option>Acordo</option><option>Outros</option></select></label>
+      ${eq ? `<div class="os-alerta amber">A equipe de ${osEsc(p.nome)} (${orgFilhos(p.id).length} pessoa(s) direta(s)) passa a responder a <b>${g ? osEsc(g.nome) : "ninguém"}</b>.</div>` : ""}
+      <button class="os-btn red" onclick="orgConfirmarDesligamento('${p.id}')">Confirmar desligamento</button>
+    </div>`;
+  f.classList.add("aberta"); document.getElementById("og-fundo")?.classList.add("aberta");
+}
+// Foto: recorta no centro e reduz para 160x160 (JPEG), para o cadastro ficar leve
+window.orgEscolherFoto = (inp) => {
+  const file = inp.files[0]; if(!file) return;
+  const img = new Image(), url = URL.createObjectURL(file);
+  img.onload = () => {
+    const lado = Math.min(img.width, img.height), c = document.createElement("canvas"); c.width = c.height = 160;
+    c.getContext("2d").drawImage(img, (img.width-lado)/2, (img.height-lado)/2, lado, lado, 0, 0, 160, 160);
+    ORG_FOTO_NOVA = c.toDataURL("image/jpeg", 0.78); URL.revokeObjectURL(url);
+    const dados = orgLerFicha(); orgDesenharFicha(); orgPreencherFicha(dados);
+  };
+  img.onerror = () => toast("⚠ Não consegui abrir essa imagem.");
+  img.src = url;
+};
+window.orgRemoverFoto = () => { ORG_FOTO_NOVA = null; const d = orgLerFicha(); orgDesenharFicha(); orgPreencherFicha(d); };
+function orgLerFicha(){ const g = (id)=>document.getElementById(id)?.value ?? ""; return { nome:g("og-nome"), funcao:g("og-funcao"), local:g("og-local"), gestor:g("og-gestor"), adm:g("og-adm"), obs:g("og-obs") }; }
+function orgPreencherFicha(d){ const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; }; s("og-nome", d.nome); s("og-funcao", d.funcao); s("og-local", d.local); s("og-gestor", d.gestor); s("og-adm", d.adm); s("og-obs", d.obs); }
+window.orgSalvarFicha = async () => {
+  const d = orgLerFicha(), novo = ORG_FICHA === "novo";
+  if(!d.nome.trim()){ toast("Informe o nome."); return; }
+  if(!d.local || d.local==="__novo"){ toast("Escolha o local."); return; }
+  const base = novo ? { id:crypto.randomUUID(), ativo:true, foto:"", ordem:Math.max(0, ...ORG.lista.map(x=>x.ordem||0))+1, deslData:"", deslMotivo:"" } : { ...ORG.lista.find(x=>x.id===ORG_FICHA) };
+  const p = { ...base, nome:d.nome.trim(), funcao:d.funcao.trim(), local:d.local, gestorId:d.gestor||null, adm:d.adm||"", obs:d.obs.trim() };
+  if(ORG_FOTO_NOVA !== undefined) p.foto = ORG_FOTO_NOVA || "";
+  if(await orgGravar([p])){ toast(novo ? `${p.nome} cadastrado(a) ✓` : `${p.nome} atualizado(a) ✓`); if(ORG_ABERTOS && p.gestorId) ORG_ABERTOS.add(p.gestorId); orgFecharFicha(); orgRerender(); }
+};
+window.orgPedirDesligamento = () => { const el = document.getElementById("og-desl"); if(el){ el.style.display = "block"; el.scrollIntoView({ behavior:"smooth" }); } };
+window.orgConfirmarDesligamento = async (id) => {
+  const p = ORG.lista.find(x=>x.id===id); if(!p) return;
+  const data = document.getElementById("og-desl-data")?.value || orgHoje(), motivo = document.getElementById("og-desl-motivo")?.value || "";
+  const mudar = orgFilhos(id).map(f=>({ ...f, gestorId:p.gestorId || null }));      // equipe sobe para o gestor dele
+  const desligado = { ...p, ativo:false, deslData:data, deslMotivo:motivo };
+  if(await orgGravar([desligado, ...mudar])){ toast(`${p.nome} desligado(a) em ${fmtDataBR(data)}`); orgFecharFicha(); orgRerender(); }
+};
+window.orgReativar = async (id) => {
+  const p = ORG.lista.find(x=>x.id===id); if(!p) return;
+  const gestorOk = p.gestorId && ORG.lista.some(x=>x.id===p.gestorId && x.ativo);
+  if(await orgGravar([{ ...p, ativo:true, deslData:"", deslMotivo:"", gestorId: gestorOk ? p.gestorId : null }])){ toast(`${p.nome} reativado(a) ✓${gestorOk ? "" : " — confira a quem ele(a) responde"}`); orgFecharFicha(); orgRerender(); }
+};
+window.orgExcluir = async (id) => {
+  const p = ORG.lista.find(x=>x.id===id); if(!p || !confirm(`Excluir DEFINITIVAMENTE o cadastro de ${p.nome}? Isso não pode ser desfeito.`)) return;
+  if(sb){ const { error } = await sb.from("colaboradores").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  ORG.lista = ORG.lista.filter(x=>x.id!==id); orgSalvarLocal(); orgRerender();
+};
+
+/* ---------- Visões ---------- */
+function orgNo(p){
+  const fs = orgFilhos(p.id), gestores = fs.filter(f=>orgFilhos(f.id).length), folhas = fs.filter(f=>!orgFilhos(f.id).length);
+  const aberto = ORG_ABERTOS.has(p.id) || orgFiltrando(), total = orgEquipeTotal(p.id);
+  const cls = orgFiltrando() ? (orgBate(p) ? "og-match" : "og-apagado") : "";
+  const card = `<div class="og-node ${cls}" style="--c:${orgCor(p.local)}" onclick="orgAbrirFicha('${p.id}')">
+      ${orgAvatar(p)}<div><div class="og-nm">${osEsc(p.nome)}</div><div class="og-fn">${osEsc(p.funcao)}</div><div class="og-dt">${fmtDataBR(p.adm)}</div></div>
+      ${total ? `<button class="og-tg" onclick="event.stopPropagation(); orgAlternar('${p.id}')">${aberto?"▲":"▼"} ${total}</button>` : ""}</div>`;
+  if(!fs.length || !aberto) return `<li>${card}</li>`;
+  const porLocal = {}; folhas.forEach(f=>{ (porLocal[f.local] = porLocal[f.local] || []).push(f); });
+  const ordemLocal = orgLocais().map(l=>l.nome);
+  const colunas = Object.entries(porLocal).sort((a,b)=>ordemLocal.indexOf(a[0])-ordemLocal.indexOf(b[0])).map(([loc, ps])=>`
+    <li><div class="og-equipe" style="--c:${orgCor(loc)}"><h4>${osEsc(loc)}<span>${ps.length}</span></h4>
+      ${ps.sort((a,b)=>(a.ordem||0)-(b.ordem||0)).map(f=>`<div class="og-pessoa ${orgFiltrando() ? (orgBate(f) ? "og-match" : "og-apagado") : ""}" style="--c:${orgCor(f.local)}" onclick="orgAbrirFicha('${f.id}')">${orgAvatar(f,"sm")}
+        <div><div class="og-nm">${osEsc(f.nome)}${orgExperiencia(f)?'<span class="og-novo">NOVO</span>':""}</div><div class="og-dt">${osEsc(f.funcao)} · ${fmtDataBR(f.adm)}</div></div></div>`).join("")}
+    </div></li>`).join("");
+  return `<li>${card}<ul>${gestores.map(orgNo).join("")}${colunas}</ul></li>`;
+}
+function orgViewArvore(){
+  const ids = new Set(orgAtivos().map(p=>p.id));
+  const raiz = orgAtivos().filter(p=>!p.gestorId || !ids.has(p.gestorId));
+  return `<div class="og-ctrl"><button class="os-btn sm" onclick="orgAbrirTudo(true)">⊕ Abrir tudo</button><button class="os-btn sm" onclick="orgAbrirTudo(false)">⊖ Recolher</button>
+      <button class="os-btn sm" onclick="orgZoom(-0.1)">－</button><button class="os-btn sm" onclick="orgZoom(0)">${Math.round(ORG_ZOOM*100)}%</button><button class="os-btn sm" onclick="orgZoom(0.1)">＋</button></div>
+    <div class="og-wrap"><div class="og-tree" style="zoom:${ORG_ZOOM}"><ul>${raiz.map(orgNo).join("")}</ul></div></div>`;
+}
+function orgViewLocais(){
+  const ativos = orgAtivos(), locais = orgLocais().filter(l=>ativos.some(p=>p.local===l.nome));
+  const max = Math.max(1, ...locais.map(l=>ativos.filter(p=>p.local===l.nome).length));
+  return `<div class="panel" style="margin-bottom:16px;"><h3>Resumo por local — ${ativos.length} colaboradores</h3>
+    ${locais.map(l=>{ const n = ativos.filter(p=>p.local===l.nome).length; return `<div class="og-rb" style="--c:${l.cor}" onclick="orgSetLocal('${osEsc(l.nome)}')"><span>${osEsc(l.nome)}</span><div class="og-rt"><div style="width:${n/max*100}%"></div></div><b>${n}</b></div>`; }).join("")}
+  </div>
+  <div class="og-setores">${locais.filter(l=>!ORG_LOCAL || l.nome===ORG_LOCAL).map(l=>{ const ps = ativos.filter(p=>p.local===l.nome && orgBate(p)); const lider = ativos.find(p=>p.local===l.nome && /l[íi]der/i.test(p.funcao));
+    return `<div class="og-setor" style="--c:${l.cor}"><div class="og-cab"><div><b>${osEsc(l.nome)}</b><small>${lider ? `Líder: ${osEsc(lider.nome)}` : ""}</small></div><span class="og-q">${ps.length}</span></div>
+      ${ps.map(f=>`<div class="og-pessoa" style="--c:${l.cor}" onclick="orgAbrirFicha('${f.id}')">${orgAvatar(f,"sm")}<div><div class="og-nm">${osEsc(f.nome)}${orgExperiencia(f)?'<span class="og-novo">NOVO</span>':""}</div><div class="og-dt">${osEsc(f.funcao)} · ${fmtDataBR(f.adm)} · ${orgTempoCasa(f.adm)}</div></div></div>`).join("") || '<div class="hint" style="padding:12px;">Ninguém encontrado</div>'}
+    </div>`; }).join("")}</div>`;
+}
+function orgViewLista(desligados){
+  const [k, dir] = ORG_SORT, ordemLocal = orgLocais().map(l=>l.nome);
+  const base = desligados ? ORG.lista.filter(p=>!p.ativo) : orgAtivos().filter(orgBate);
+  const val = (p) => k==="local" ? ordemLocal.indexOf(p.local) : k==="adm" ? (p.adm||"9") : k==="desl" ? (p.deslData||"") : nfSemAcento(p[k]||"");
+  const ord = base.sort((a,b)=>(val(a)>val(b)?1:val(a)<val(b)?-1:0)*dir || a.nome.localeCompare(b.nome,"pt-BR"));
+  const th = (key,l) => `<th onclick="orgOrdenar('${key}')" style="cursor:pointer;">${l}${k===key?(dir>0?" ▲":" ▼"):""}</th>`;
+  if(!ord.length) return `<div class="panel"><div class="empty-state" style="padding:20px;"><p>${desligados ? "Nenhum desligado." : "Ninguém encontrado."}</p></div></div>`;
+  return `<div class="panel"><div style="overflow-x:auto;"><table class="nf-tab">
+    <thead><tr><th></th>${th("nome","Nome")}${th("funcao","Função")}${th("local","Local")}${th("adm","Admissão")}${desligados ? th("desl","Desligamento")+"<th>Motivo</th><th></th>" : "<th>Tempo de casa</th><th>Responde a</th>"}</tr></thead>
+    <tbody>${ord.map(p=>`<tr onclick="orgAbrirFicha('${p.id}')" style="cursor:pointer;"><td style="width:46px;">${orgAvatar(p,"sm").replace('class="og-av','style="--c:'+orgCor(p.local)+'" class="og-av')}</td>
+      <td><b>${osEsc(p.nome)}</b>${!desligados && orgExperiencia(p)?'<span class="og-novo">NOVO</span>':""}</td><td>${osEsc(p.funcao)}</td>
+      <td><span class="og-badge" style="--c:${orgCor(p.local)}"><i></i>${osEsc(p.local)}</span></td><td>${fmtDataBR(p.adm)}</td>
+      ${desligados ? `<td>${fmtDataBR(p.deslData)}</td><td>${osEsc(p.deslMotivo)}</td><td style="white-space:nowrap;"><button class="os-btn sm green" onclick="event.stopPropagation(); orgReativar('${p.id}')">Reativar</button> <button class="os-link" onclick="event.stopPropagation(); orgExcluir('${p.id}')">excluir</button></td>`
+        : `<td>${orgTempoCasa(p.adm)}</td><td>${osEsc((ORG.lista.find(g=>g.id===p.gestorId)||{}).nome||"—")}</td>`}</tr>`).join("")}</tbody>
+  </table></div></div>`;
+}
+
+renderers.organograma = () => {
+  if(!ORG.carregado && !ORG.carregando){ ORG.carregando = true; setTimeout(()=>orgCarregar(), 0); }
+  const cab = `<div class="page-head"><h2>Organograma</h2><p>Colaboradores por local, função e liderança — só a Diretoria vê esta tela</p></div>`;
+  if(ORG.erro) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar o organograma</h4><p>${osEsc(ORG.erro)}</p><p>Se falar em tabela inexistente ("colaboradores"), rode o SQL do organograma no Supabase.</p></div></div>`;
+  if(ORG.carregando && !ORG.lista.length) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando...</p></div></div>`;
+  const ativos = orgAtivos();
+  if(!ORG_ABERTOS){ ORG_ABERTOS = new Set(ativos.filter(p=>!p.gestorId || ["Coordenação Geral"].includes(p.funcao)).map(p=>p.id)); }
+  const importar = `
+    <details class="panel" style="margin-bottom:16px;" ${ORG.lista.length ? "" : "open"}>
+      <summary style="cursor:pointer; font-weight:700;">📥 Importar carga inicial ${ORG.lista.length ? "" : '<span class="badge amber">faça isso uma vez para começar</span>'}</summary>
+      <div class="hint" style="margin-top:8px;">Escolha o arquivo <b>Organograma_Avance_CARGA_sistema.json</b> (pasta Desktop › 3-Avance › RH). Ele traz as 94 pessoas do organograma de setembro, com foto, função, local, admissão e a quem respondem.</div>
+      <input type="file" id="og-carga" accept=".json" style="font-size:12.5px;"> <button class="entry-submit" style="margin-top:10px;" onclick="orgImportar()">Importar</button>
+      <div id="og-carga-st" class="hint" style="margin-top:8px;"></div>
+    </details>`;
+  if(!ORG.lista.length) return cab + importar + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">🧑‍🤝‍🧑</div><p>Nenhum colaborador cadastrado ainda. Importe a carga inicial acima ou cadastre um a um.</p><button class="entry-submit" onclick="orgNovo()">+ Cadastrar colaborador</button></div></div>`;
+
+  const mot = ativos.filter(p=>/motorista/i.test(p.funcao)).length, lid = ativos.filter(p=>/l[íi]der/i.test(p.funcao)).length;
+  const exp = ativos.filter(orgExperiencia), comData = ativos.filter(p=>p.adm);
+  const media = comData.length ? sumArr(comData.map(p=>nfeDias(p.adm, orgHoje())))/comData.length/365 : 0;
+  const deslig = ORG.lista.filter(p=>!p.ativo), deslig90 = deslig.filter(p=>p.deslData && nfeDias(p.deslData, orgHoje())<=90);
+  const aba = (k,l) => `<button class="tab-btn ${ORG_VIEW===k?"active":""}" onclick="orgSetView('${k}')">${l}</button>`;
+  const corpo = ORG_VIEW==="locais" ? orgViewLocais() : ORG_VIEW==="lista" ? orgViewLista(false) : ORG_VIEW==="desligados" ? orgViewLista(true) : orgViewArvore();
+  return cab + `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Colaboradores ativos</div><div class="val">${ativos.length}</div><div class="delta flat">${orgLocais().filter(l=>ativos.some(p=>p.local===l.nome)).length} locais</div></div>
+      <div class="kpi"><div class="lbl">Motoristas</div><div class="val">${mot}</div><div class="delta flat">${ativos.length ? (mot/ativos.length*100).toFixed(0) : 0}% do quadro</div></div>
+      <div class="kpi"><div class="lbl">Líderes</div><div class="val">${lid}</div><div class="delta flat">${lid ? (mot/lid).toFixed(1).replace(".",",") : "—"} motoristas por líder</div></div>
+      <div class="kpi"><div class="lbl">Em experiência</div><div class="val" style="color:var(--green);">${exp.length}</div><div class="delta flat">admitidos há 90 dias ou menos</div></div>
+      <div class="kpi"><div class="lbl">Tempo médio de casa</div><div class="val">${media.toFixed(1).replace(".",",")} anos</div><div class="delta flat">${ativos.length-comData.length} sem data</div></div>
+      <div class="kpi"><div class="lbl">Desligados (90 dias)</div><div class="val">${deslig90.length}</div><div class="delta flat">${deslig.length} no histórico</div></div>
+    </div>
+    <div class="panel" style="margin-bottom:12px;">
+      <div class="og-barra">
+        <input id="og-busca" value="${osEsc(ORG_BUSCA)}" placeholder="🔎 Buscar por nome ou função" oninput="orgBuscar(this.value)">
+        <div class="tabs" style="margin:0;">${aba("arvore","🌳 Organograma")}${aba("locais","🧩 Por local")}${aba("lista","📋 Lista")}${aba("desligados",`🗂️ Desligados (${deslig.length})`)}</div>
+        <button class="entry-submit" style="margin:0;" onclick="orgNovo()">+ Novo colaborador</button>
+      </div>
+      <div class="og-chips"><button class="og-chip ${!ORG_LOCAL?"on":""}" style="--c:#17181C" onclick="orgSetLocal(null)">Todos <b>${ativos.length}</b></button>
+        ${orgLocais().map(l=>{ const n = ativos.filter(p=>p.local===l.nome).length; return n ? `<button class="og-chip ${ORG_LOCAL===l.nome?"on":""}" style="--c:${l.cor}" onclick="orgSetLocal('${osEsc(l.nome)}')"><i></i>${osEsc(l.nome)} <b>${n}</b></button>` : ""; }).join("")}</div>
+    </div>
+    ${corpo}
+    ${importar}
+    <div class="og-fundo" id="og-fundo" onclick="orgFecharFicha()"></div>
+    <aside class="og-ficha" id="og-ficha"></aside>`;
+};
+initCharts.organograma = () => { orgDepoisDeDesenhar(); if(ORG_FICHA) orgDesenharFicha(); };
+
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
 renderers.belem = () => {
   const b = DATA.belem;
