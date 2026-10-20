@@ -444,7 +444,7 @@ const PAGINAS_SO_DIRETOR = ["faturamento","emissaonf","contaspagar","belem","ord
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf"], manutencao:["emissaonf"], rh:["organograma"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"] };
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -1659,7 +1659,8 @@ initCharts.overview = () => {
 };
 
 /* -------------------- MANUTENÇÃO DE CARRETA -------------------- */
-renderers.manutencao = () => {
+// Aba "Custos" da Manutenção de Carreta (a tela em si é montada junto com o Controle diário)
+function manutencaoCustos(){
   const filtro = FILTRO_ANO.manutencao;
   const m = manutencaoView = (filtro === "todos" || DATA.manutencao.lancamentos.length === 0)
     ? DATA.manutencao
@@ -1739,7 +1740,7 @@ renderers.manutencao = () => {
     </div>`}
   `;
 };
-initCharts.manutencao = () => {
+function manutencaoCustosCharts(){
   const m = manutencaoView || DATA.manutencao;
   // Total do mês escrito em preto acima de cada coluna, sem "R$" (ex: 146,5K)
   const totMes = m.labels.map((_,i)=>(m.manutencaoGeral[i]||0)+(m.pinturaTeto[i]||0)+(m.outrosServicos[i]||0));
@@ -7314,7 +7315,7 @@ function osmCobrarAuto(s){ return s.mo && s.mat ? null : s.mat && !s.mo ? "mat" 
 let OSM_COBRAR = null;
 let OSM_ITEM_EDIT = null;   // posição do serviço que está sendo editado (volta para o mesmo lugar)
 function osmValorOS(os){ return sumArr((os.itens||[]).map(osmValorItem)); }
-function osmRotuloCarreta(c){ return `${c.frota} · ${c.placa}`; }
+function osmRotuloCarreta(c){ return c.frota && c.frota!==c.placa ? `${c.frota} · ${c.placa}` : c.placa; }
 function osmAcharCarreta(txt){
   const t = String(txt||"").toUpperCase().replace(/\s+/g," ").trim(); if(!t) return null;
   const sem = t.replace(/[\s·.\-]/g,"");
@@ -7496,8 +7497,16 @@ window.osmImportarTabela = async () => {
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[nome], { header:1, defval:null });
       const ehPlacas = rows.slice(0,6).some(r=>r && r.some(c=>String(c||"").trim().toUpperCase()==="PLACA"));
       if(ehPlacas){
-        rows.forEach(r=>{ if(!r) return; for(let k=0;k<r.length;k+=4){ const p = r[k+1], f = r[k+2];
-          if(p && f!=null && /^[A-Z]{3}-?\w{4}$/i.test(String(p).trim())) carretas.push({ placa:String(p).trim().toUpperCase(), frota:String(f).trim() }); } });
+        // A aba tem blocos de formatos diferentes (QT·PLACA·FROTA e QT·PLACA·(vazio)·FROTA). Para cada célula
+        // com cara de placa, a frota é o próximo valor à direita — e só vale se for nº de frota de verdade
+        // (ex: 2021, CB1101); "PORTO", "PEÇA" ou o final da própria placa são ignorados (fica só a placa).
+        const PL = /^[A-Z]{3}-?[0-9][A-Z0-9][0-9]{2}$/i, FROTA_OK = /^(CB)?\d{3,5}$/i;
+        rows.slice(2).forEach(r=>{ if(!r) return; r.forEach((v,c)=>{
+          if(v==null || !PL.test(String(v).trim())) return;
+          const viz = [r[c+1], r[c+2]].find(x=>x!=null && String(x).trim()!=="" && !PL.test(String(x).trim()));
+          const placa = String(v).trim().toUpperCase(), f = viz!=null ? String(viz).trim().toUpperCase() : "";
+          carretas.push({ placa, frota: FROTA_OK.test(f) ? f : placa });
+        }); });
         return;
       }
       let grupo = null;
@@ -7513,6 +7522,8 @@ window.osmImportarTabela = async () => {
     });
     // código repetido na planilha: fica o primeiro
     const vistos = new Set(), servUnicos = servicos.filter(s=>vistos.has(s.cod) ? false : vistos.add(s.cod));
+    const porPlaca = {}; carretas.forEach(c=>{ const a = porPlaca[c.placa]; if(!a || (a.frota===a.placa && c.frota!==c.placa)) porPlaca[c.placa] = c; });
+    carretas.length = 0; Object.values(porPlaca).forEach(c=>carretas.push(c));
     if(!servUnicos.length){ st.textContent = "⚠ Não encontrei a tabela de serviços (colunas CÓD / SERVIÇOS / M.OBRA / MATERIAL)."; return; }
     if(sb){
       st.textContent = `Gravando ${servUnicos.length} serviços e ${carretas.length} carretas no banco...`;
@@ -8495,6 +8506,244 @@ renderers.organograma = () => {
 };
 initCharts.organograma = () => { orgDepoisDeDesenhar(); if(ORG_FICHA) orgDesenharFicha(); };
 
+/* -------------------- CONTROLE DIÁRIO DE CARRETAS (aba da Manutenção de Carreta) --------------------
+   Para o líder da oficina: cada carreta que o cliente traz entra na FILA do pátio; ao ficar pronta é
+   marcada como concluída no dia. Por dia: Planejado (meta informada pelo líder), Realizado (concluídas),
+   Diferença, Recebidas (novas que chegaram) e Fila no pátio ao fim do dia. Lista de carretas = a mesma da
+   O.S de Manutenção (tabela os_carretas). Tabelas: carretas_fila e carretas_plano. */
+let MAN_ABA = "custos";               // custos | diario
+let CAR = { fila:[], plano:{}, carretas:[], carregado:false, carregando:false, erro:null, mesCarregado:null };
+let CAR_DIA = frotaHojeISO();
+const CAR_LOCAL = "avance_carretas_local_v1";
+
+window.setManAba = (a) => { MAN_ABA = a; navigate("manutencao"); };
+function carRotulo(c){ return c.frota && c.frota!==c.placa ? `${c.frota} · ${c.placa}` : c.placa; }
+function carAchar(txt){
+  const t = String(txt||"").toUpperCase().replace(/\s+/g," ").trim(); if(!t) return null;
+  const sem = t.replace(/[\s·.\-]/g,"");
+  return CAR.carretas.find(c=>carRotulo(c).toUpperCase()===t) || CAR.carretas.find(c=>c.placa.replace(/[\s-]/g,"")===sem) || CAR.carretas.find(c=>String(c.frota)===t) || null;
+}
+async function carCarregar(silencioso){
+  if(!silencioso) CAR.carregando = true;
+  if(!sb){
+    try{ const d = JSON.parse(localStorage.getItem(CAR_LOCAL)||"{}"); CAR.fila = d.fila||[]; CAR.plano = d.plano||{}; }catch(e){}
+    CAR.carregado = true; CAR.carregando = false; carRerender(); return;
+  }
+  const [f, p, c] = await Promise.all([ sbFetchAll("carretas_fila"), sbFetchAll("carretas_plano"), CAR.carretas.length ? Promise.resolve(null) : sbFetchAll("os_carretas") ]);
+  const t = await sb.from("carretas_fila").select("id").limit(1);
+  if(t.error){ CAR.erro = t.error.message; CAR.carregando = false; CAR.carregado = true; carRerender(); return; }
+  CAR.erro = null;
+  CAR.fila = f.map(r=>({ id:r.id, frota:r.frota||"", placa:r.placa||"", entrada:r.data_entrada, conclusao:r.data_conclusao||"", obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+  CAR.plano = {}; p.forEach(r=>{ CAR.plano[r.data] = { planejado:Number(r.planejado)||0, obs:r.obs||"" }; });
+  if(c) CAR.carretas = c.map(x=>({ placa:x.placa, frota:String(x.frota) })).sort((a,b)=>a.frota.localeCompare(b.frota, undefined, { numeric:true }));
+  CAR.carregado = true; CAR.carregando = false;
+  const assin = JSON.stringify([CAR.fila, CAR.plano]); const mudou = assin !== CAR.assin; CAR.assin = assin;
+  if(!silencioso || mudou) carRerender();
+}
+function carSalvarLocal(){ if(!sb) try{ localStorage.setItem(CAR_LOCAL, JSON.stringify({ fila:CAR.fila, plano:CAR.plano })); }catch(e){} }
+function carRerender(){
+  if(document.querySelector('nav.menu button.active')?.dataset.page !== "manutencao" || MAN_ABA !== "diario") return;
+  const foco = document.activeElement;
+  if(foco && foco.closest && foco.closest("#car-form") && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
+  const y = window.scrollY; document.getElementById("content").innerHTML = renderers.manutencao(); window.scrollTo(0,y);
+  requestAnimationFrame(carGrafico);
+}
+setInterval(()=>{ if(sb && MAN_ABA==="diario" && document.visibilityState==="visible" && document.querySelector('nav.menu button.active')?.dataset.page==="manutencao") carCarregar(true); }, 30000);
+
+// Situação de um dia
+function carDia(d){
+  const recebidas = CAR.fila.filter(c=>c.entrada===d);
+  const realizadas = CAR.fila.filter(c=>c.conclusao===d);
+  const filaFim = CAR.fila.filter(c=>c.entrada<=d && (!c.conclusao || c.conclusao>d));
+  const filaInicio = CAR.fila.filter(c=>c.entrada<d && (!c.conclusao || c.conclusao>=d));
+  const plano = CAR.plano[d] || { planejado:0, obs:"" };
+  return { recebidas, realizadas, filaFim, filaInicio, planejado:plano.planejado, obsPlano:plano.obs };
+}
+
+window.carSetDia = (d) => { if(d){ CAR_DIA = d; carRerender(); } };
+window.carMoverDia = (n) => { const d = new Date(CAR_DIA+"T12:00:00"); d.setDate(d.getDate()+n); carSetDia(d.toISOString().slice(0,10)); };
+window.carSalvarPlano = async (valor) => {
+  const n = Math.max(0, parseInt(valor,10)||0);
+  CAR.plano[CAR_DIA] = { ...(CAR.plano[CAR_DIA]||{}), planejado:n };
+  if(sb){ const { error } = await sb.from("carretas_plano").upsert({ data:CAR_DIA, planejado:n, obs:CAR.plano[CAR_DIA].obs||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }, { onConflict:"data" });
+    if(error){ toast("⚠ Não salvou: " + error.message); return; } }
+  carSalvarLocal(); toast(`Planejado de ${frotaDataBR(CAR_DIA)}: ${n} carreta(s) ✓`); carRerender();
+};
+window.carSalvarObsPlano = async (txt) => {
+  CAR.plano[CAR_DIA] = { planejado:(CAR.plano[CAR_DIA]||{}).planejado||0, obs:txt.trim() };
+  if(sb){ const { error } = await sb.from("carretas_plano").upsert({ data:CAR_DIA, planejado:CAR.plano[CAR_DIA].planejado, obs:CAR.plano[CAR_DIA].obs||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }, { onConflict:"data" });
+    if(error){ toast("⚠ Não salvou: " + error.message); return; } }
+  carSalvarLocal(); toast("Observação salva ✓");
+};
+window.carReceber = async () => {
+  const el = document.getElementById("car-nova"); const txt = (el?.value||"").trim(); if(!txt){ toast("Informe a frota ou a placa."); return; }
+  const c = carAchar(txt);
+  const frota = c ? c.frota : txt.toUpperCase(), placa = c ? c.placa : "";
+  if(CAR.fila.some(x=>!x.conclusao && x.entrada<=CAR_DIA && (x.frota===frota || (placa && x.placa===placa))) && !confirm(`${frota} já está na fila do pátio. Registrar outra entrada?`)) return;
+  const reg = { id:"tmp"+osNovoId(), frota, placa, entrada:CAR_DIA, conclusao:"", obs:"", por:(MEU_EMAIL||"").split("@")[0] };
+  if(sb){ const { data, error } = await sb.from("carretas_fila").insert({ frota, placa:placa||null, data_entrada:CAR_DIA, criado_por:MEU_EMAIL, atualizado_por:MEU_EMAIL }).select().single();
+    if(error){ toast("⚠ Não salvou: " + error.message); return; } reg.id = data.id; }
+  CAR.fila.push(reg); carSalvarLocal();
+  el.value = ""; carRerender(); setTimeout(()=>document.getElementById("car-nova")?.focus(), 50);
+  toast(`${frota} entrou na fila ✓`);
+};
+window.carConcluir = async (id, desfazer) => {
+  const c = CAR.fila.find(x=>x.id===id); if(!c) return;
+  const nova = desfazer ? "" : CAR_DIA;
+  if(sb){ const { error } = await sb.from("carretas_fila").update({ data_conclusao:nova||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id);
+    if(error){ toast("⚠ Não salvou: " + error.message); return; } }
+  c.conclusao = nova; carSalvarLocal(); carRerender();
+};
+window.carExcluir = async (id) => {
+  const c = CAR.fila.find(x=>x.id===id); if(!c || !confirm(`Excluir o lançamento da carreta ${c.frota} (entrada ${frotaDataBR(c.entrada)})?`)) return;
+  if(sb){ const { error } = await sb.from("carretas_fila").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  CAR.fila = CAR.fila.filter(x=>x.id!==id); carSalvarLocal(); carRerender();
+};
+
+function carTextoWhatsApp(){
+  const D = carDia(CAR_DIA), dif = D.planejado - D.realizadas.length;
+  const pct = D.planejado ? Math.round(D.realizadas.length/D.planejado*100) : 0;
+  let t = `🔧 *MANUTENÇÃO DE CARRETAS*\n📅 ${frotaDataBR(CAR_DIA)} (${progDiaSemana(CAR_DIA)})\n\n`;
+  t += `📋 Planejado: *${D.planejado}*\n✅ Realizado: *${D.realizadas.length}*\n`;
+  t += `${dif>0 ? "⏳" : "✔️"} Diferença: *${dif>0 ? dif : 0}*${dif<0 ? ` (${-dif} acima do plano)` : ""}\n`;
+  t += `🚚 Recebidas do cliente no dia: *${D.recebidas.length}*\n🅿️ Fila no pátio (fim do dia): *${D.filaFim.length}*\n`;
+  if(D.planejado) t += `🎯 Atendimento: *${pct}%*\n`;
+  if(D.obsPlano) t += `\n📝 ${D.obsPlano}\n`;
+  if(D.realizadas.length) t += `\n*Realizadas:* ${D.realizadas.map(c=>c.frota).join(", ")}\n`;
+  if(D.recebidas.length) t += `*Recebidas:* ${D.recebidas.map(c=>c.frota).join(", ")}\n`;
+  return t.trim();
+}
+window.carCopiarWhatsApp = async () => {
+  const txt = carTextoWhatsApp();
+  try{ await navigator.clipboard.writeText(txt); toast("Mensagem copiada ✓ — é só colar no WhatsApp"); }
+  catch(e){ document.getElementById("car-wpp")?.select(); toast("Selecione o texto e copie (Ctrl+C)."); }
+};
+window.carAbrirWhatsApp = () => window.open("https://wa.me/?text=" + encodeURIComponent(carTextoWhatsApp()), "_blank");
+
+function carPagina(){
+  if(!CAR.carregado && !CAR.carregando){ CAR.carregando = true; setTimeout(()=>carCarregar(), 0); }
+  if(CAR.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar o controle de carretas</h4><p>${osEsc(CAR.erro)}</p><p>Se falar em tabela inexistente ("carretas_fila"), rode o SQL do controle de carretas no Supabase.</p></div></div>`;
+  if(CAR.carregando && !CAR.carregado) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando...</p></div></div>`;
+  const D = carDia(CAR_DIA), hoje = CAR_DIA === frotaHojeISO();
+  const dif = D.planejado - D.realizadas.length;
+  const pct = D.planejado ? D.realizadas.length/D.planejado*100 : 0;
+  const filaAgora = D.filaFim.sort((a,b)=>a.entrada.localeCompare(b.entrada));
+  const mes = CAR_DIA.slice(0,7), nomeMes = `${MESES_HE[Number(mes.slice(5,7))-1]}/${mes.slice(2,4)}`;
+  const doMesReal = CAR.fila.filter(c=>c.conclusao.startsWith(mes)).length, doMesRec = CAR.fila.filter(c=>c.entrada.startsWith(mes)).length;
+  const doMesPlan = sumArr(Object.entries(CAR.plano).filter(([d])=>d.startsWith(mes)).map(([,p])=>p.planejado||0));
+  return `
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="prog-topo">
+        <div class="prog-dia">
+          <button class="os-btn" onclick="carMoverDia(-1)">◀</button>
+          <input type="date" value="${CAR_DIA}" onchange="carSetDia(this.value)">
+          <button class="os-btn" onclick="carMoverDia(1)">▶</button>
+          ${hoje ? `<span class="badge green">hoje</span>` : `<button class="os-link" onclick="carSetDia('${frotaHojeISO()}')">ir para hoje</button>`}
+          <b style="text-transform:capitalize;">${progDiaSemana(CAR_DIA)}</b>
+        </div>
+        ${sb ? `<span class="hint" style="margin:0;">🟢 compartilhado · atualiza sozinho a cada 30s</span>` : `<span class="hint" style="margin:0;">🧪 modo local</span>`}
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">📋 Planejado</div><div class="val"><input type="number" min="0" class="car-plan" value="${D.planejado||""}" placeholder="0" onchange="carSalvarPlano(this.value)"></div><div class="delta flat">meta do dia — digite e saia do campo</div></div>
+      <div class="kpi"><div class="lbl">✅ Realizado</div><div class="val" style="color:var(--green);">${D.realizadas.length}</div><div class="delta flat">${D.planejado ? `${pct.toFixed(0)}% do planejado` : "informe o planejado"}</div></div>
+      <div class="kpi"><div class="lbl">⏳ Diferença</div><div class="val" style="color:var(--${dif>0?"red":"green"});">${dif>0 ? dif : 0}</div><div class="delta flat">${dif<0 ? `${-dif} acima do plano` : "planejado − realizado"}</div></div>
+      <div class="kpi"><div class="lbl">🚚 Recebidas no dia</div><div class="val">${D.recebidas.length}</div><div class="delta flat">novas trazidas pelo cliente</div></div>
+      <div class="kpi"><div class="lbl">🅿️ Fila no pátio</div><div class="val" style="color:var(--${D.filaFim.length?"amber":"green"});">${D.filaFim.length}</div><div class="delta flat">começou o dia com ${D.filaInicio.length}</div></div>
+    </div>
+
+    <div class="panel os-form" id="car-form" style="margin-bottom:16px;">
+      <h3 style="margin:0;">🚚 Registrar carreta recebida — ${frotaDataBR(CAR_DIA)}</h3>
+      <div class="hint">Digite o nº da frota ou a placa (a lista é a mesma da O.S de Manutenção) e tecle Enter. Ela entra na fila do pátio.</div>
+      <div class="car-add">
+        <input id="car-nova" list="car-l" placeholder="nº da frota ou placa" autocomplete="off" style="text-transform:uppercase;" onkeydown="if(event.key==='Enter') carReceber()">
+        <button class="entry-submit" style="margin:0;" onclick="carReceber()">+ Entrou na fila</button>
+      </div>
+      <datalist id="car-l">${CAR.carretas.map(c=>`<option value="${osEsc(carRotulo(c))}">`).join("")}</datalist>
+      <label>Observação do dia (vai para o WhatsApp)<input value="${osEsc(D.obsPlano)}" placeholder="ex: 2 mecânicos de folga" onchange="carSalvarObsPlano(this.value)"></label>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>🅿️ Fila do pátio (${filaAgora.length})</h3>
+        <div class="hint">Carretas aguardando manutenção ao fim de ${frotaDataBR(CAR_DIA)}. Marque ✅ quando ficar pronta.</div>
+        ${filaAgora.length ? `<table class="nf-tab"><thead><tr><th>Frota</th><th>Placa</th><th>Entrada</th><th class="num">No pátio</th><th></th></tr></thead><tbody>
+          ${filaAgora.map(c=>{ const dias = nfeDias(c.entrada, CAR_DIA); return `<tr><td><b>${osEsc(c.frota)}</b></td><td>${osEsc(c.placa)||"—"}</td><td>${frotaDataBR(c.entrada)}</td>
+            <td class="num"><span class="badge ${dias>=3?"red":dias>=1?"amber":"gray"}">${dias} dia(s)</span></td>
+            <td style="white-space:nowrap;"><button class="os-btn sm green" onclick="carConcluir('${c.id}')">✅ Pronta</button> <button class="os-link" onclick="carExcluir('${c.id}')" title="Excluir lançamento">🗑️</button></td></tr>`; }).join("")}
+        </tbody></table>` : `<div class="empty-state" style="padding:16px;"><p>Pátio vazio. ✓</p></div>`}
+      </div>
+      <div class="panel">
+        <h3>✅ Realizadas em ${frotaDataBR(CAR_DIA)} (${D.realizadas.length})</h3>
+        ${D.realizadas.length ? `<table class="nf-tab"><thead><tr><th>Frota</th><th>Placa</th><th>Entrada</th><th class="num">Tempo</th><th></th></tr></thead><tbody>
+          ${D.realizadas.map(c=>`<tr><td><b>${osEsc(c.frota)}</b></td><td>${osEsc(c.placa)||"—"}</td><td>${frotaDataBR(c.entrada)}</td><td class="num">${nfeDias(c.entrada, c.conclusao)} dia(s)</td>
+            <td><button class="os-link" onclick="carConcluir('${c.id}', true)">desfazer</button></td></tr>`).join("")}
+        </tbody></table>` : `<div class="empty-state" style="padding:16px;"><p>Nenhuma carreta concluída neste dia.</p></div>`}
+        ${D.recebidas.length ? `<div class="hint" style="margin-top:10px;"><b>Recebidas no dia (${D.recebidas.length}):</b> ${D.recebidas.map(c=>osEsc(c.frota)).join(", ")}</div>` : ""}
+      </div>
+    </div>
+
+    <div class="panel" style="margin:16px 0;">
+      <h3>💬 Mensagem do dia para o WhatsApp</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="entry-submit" style="margin-top:0;" onclick="carCopiarWhatsApp()">📋 Copiar mensagem</button>
+        <button class="os-btn green" onclick="carAbrirWhatsApp()">🟢 Abrir no WhatsApp</button>
+      </div>
+      <textarea id="car-wpp" readonly class="frota-wpp">${osEsc(carTextoWhatsApp())}</textarea>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>📊 Planejado x Realizado por dia — ${nomeMes}</h3>
+      <div class="os-resumo prog-resumo" style="margin:4px 0 12px;">
+        <div>Planejado no mês<b>${doMesPlan}</b></div>
+        <div>Realizado no mês<b style="color:var(--green);">${doMesReal}</b></div>
+        <div>Recebidas no mês<b>${doMesRec}</b></div>
+        <div>Atendimento do plano<b>${doMesPlan ? Math.round(doMesReal/doMesPlan*100) : 0}%</b></div>
+      </div>
+      <div class="chart-wrap" style="height:300px;"><canvas id="ch-car"></canvas></div>
+      <div class="hint" style="margin:8px 0 0;">Barra cinza = planejado · vermelha = realizado · número = realizado/planejado. Passe o mouse para ver recebidas e fila.</div>
+    </div>`;
+}
+function carGrafico(){
+  const el = document.getElementById("ch-car"); if(!el) return;
+  const mes = CAR_DIA.slice(0,7), hoje = frotaHojeISO();
+  const nDias = new Date(Number(mes.slice(0,4)), Number(mes.slice(5,7)), 0).getDate();
+  const dias = Array.from({ length:nDias }, (_,i)=>`${mes}-${String(i+1).padStart(2,"0")}`).filter(d=>mes!==hoje.slice(0,7) || d<=hoje);
+  const D = dias.map(d=>{ const x = carDia(d); return { d, plan:x.planejado, real:x.realizadas.length, rec:x.recebidas.length, fila:x.filaFim.length }; });
+  const mobile = (el.parentElement.clientWidth || window.innerWidth) < 600;
+  el.parentElement.style.height = mobile ? `${Math.max(220, D.length*30+70)}px` : "300px";
+  const SEM = ["dom","seg","ter","qua","qui","sex","sáb"], sem = (d)=>SEM[new Date(d+"T12:00:00").getDay()];
+  mkChart("ch-car", {
+    type:"bar",
+    data:{ labels:D.map(x=>mobile ? `${x.d.slice(8,10)} ${sem(x.d)}` : [x.d.slice(8,10), sem(x.d)]),
+      datasets:[
+        { label:"Planejado", data:D.map(x=>x.plan), backgroundColor:"#D5D7DF", borderRadius:5, grouped:false, order:2, barPercentage:0.85 },
+        { label:"Realizado", data:D.map(x=>x.real), backgroundColor:COLORS.red, borderRadius:4, grouped:false, order:1, barPercentage:0.45 } ]},
+    options:{ responsive:true, maintainAspectRatio:false, indexAxis: mobile ? "y" : "x",
+      onClick:(_e, els)=>{ if(els.length) carSetDia(D[els[0].index].d); },
+      plugins:{ legend:{ position: mobile ? "top" : "bottom", labels:{ boxWidth:12, usePointStyle:true, pointStyle:"rectRounded" } },
+        tooltip:{ mode:"index", intersect:false, callbacks:{ afterBody:(its)=>{ const x = D[its[0].dataIndex]; return [`Recebidas: ${x.rec}`, `Fila no fim do dia: ${x.fila}`]; } } },
+        datalabels:{ display:(c)=>{ const x = D[c.dataIndex]; if(!(x.plan||x.real)) return false; return c.datasetIndex===0 ? x.plan>=x.real : x.real>x.plan; },
+          formatter:(_v,c)=>{ const x = D[c.dataIndex]; return `${x.real}/${x.plan}`; }, color:(c)=>{ const x = D[c.dataIndex]; return !x.plan ? COLORS.inkSoft : x.real>=x.plan ? COLORS.green : COLORS.red; },
+          anchor:"end", align: mobile ? "right" : "top", offset:2, clamp:true, font:{ size: mobile ? 11 : 10, weight:800 } } },
+      layout:{ padding: mobile ? { right:40 } : { top:18 } },
+      scales: mobile ? { y:{ grid:{ display:false } }, x:{ beginAtZero:true, position:"top", ticks:{ precision:0 } } }
+                     : { x:{ grid:{ display:false } }, y:{ beginAtZero:true, grid:{ color:COLORS.grid }, ticks:{ precision:0 } } } }
+  });
+}
+
+renderers.manutencao = () => {
+  if(MEU_PAPEL === "oficina") MAN_ABA = "diario";
+  const abas = MEU_PAPEL === "oficina" ? "" : `
+    <div class="tabs" style="margin-bottom:14px;">
+      <button class="tab-btn ${MAN_ABA==="custos"?"active":""}" onclick="setManAba('custos')">💰 Custos</button>
+      <button class="tab-btn ${MAN_ABA==="diario"?"active":""}" onclick="setManAba('diario')">🚛 Controle diário de carretas</button>
+    </div>`;
+  if(MAN_ABA === "diario") return `<div class="page-head"><h2>Controle diário de carretas</h2><p>Planejado x realizado, carretas recebidas do cliente e fila do pátio — dia a dia</p></div>${abas}${carPagina()}`;
+  return abas + manutencaoCustos();
+};
+initCharts.manutencao = () => { if(MAN_ABA === "diario") carGrafico(); else manutencaoCustosCharts(); };
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
 renderers.belem = () => {
   const b = DATA.belem;
@@ -8728,6 +8977,7 @@ async function carregarGestaoAcessos(){
               <option value="coordenacao" ${u.papel==="coordenacao"?"selected":""}>Coordenação (só Emissão de NF)</option>
               <option value="manutencao" ${u.papel==="manutencao"?"selected":""}>Manutenção (só O.S de Manutenção)</option>
               <option value="rh" ${u.papel==="rh"?"selected":""}>RH (só Organograma)</option>
+              <option value="oficina" ${u.papel==="oficina"?"selected":""}>Oficina (só Controle de carretas)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
           </td>
@@ -8748,7 +8998,7 @@ window.salvarPapelUsuario = async (userId, email) => {
   } else {
     const { error } = await sb.from("user_roles").upsert({ user_id:userId, email, papel });
     if(error){ toast("⚠ Falha ao salvar: " + error.message); return; }
-    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)", coordenacao:"Coordenação (só Emissão de NF)", manutencao:"Manutenção (só O.S de Manutenção)", rh:"RH (só Organograma)" })[papel]} ✓`);
+    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)", coordenacao:"Coordenação (só Emissão de NF)", manutencao:"Manutenção (só O.S de Manutenção)", rh:"RH (só Organograma)", oficina:"Oficina (só Controle de carretas)" })[papel]} ✓`);
   }
   carregarGestaoAcessos();
 };
