@@ -444,7 +444,7 @@ const PAGINAS_SO_DIRETOR = ["faturamento","emissaonf","contaspagar","belem","ord
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf"], manutencao:["emissaonf"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf"], manutencao:["emissaonf"], rh:["organograma"] };
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -8727,6 +8727,7 @@ async function carregarGestaoAcessos(){
               <option value="monitoramento" ${u.papel==="monitoramento"?"selected":""}>Monitoramento (só Programação de Entregas)</option>
               <option value="coordenacao" ${u.papel==="coordenacao"?"selected":""}>Coordenação (só Emissão de NF)</option>
               <option value="manutencao" ${u.papel==="manutencao"?"selected":""}>Manutenção (só O.S de Manutenção)</option>
+              <option value="rh" ${u.papel==="rh"?"selected":""}>RH (só Organograma)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
           </td>
@@ -8747,7 +8748,7 @@ window.salvarPapelUsuario = async (userId, email) => {
   } else {
     const { error } = await sb.from("user_roles").upsert({ user_id:userId, email, papel });
     if(error){ toast("⚠ Falha ao salvar: " + error.message); return; }
-    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)", coordenacao:"Coordenação (só Emissão de NF)", manutencao:"Manutenção (só O.S de Manutenção)" })[papel]} ✓`);
+    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)", coordenacao:"Coordenação (só Emissão de NF)", manutencao:"Manutenção (só O.S de Manutenção)", rh:"RH (só Organograma)" })[papel]} ✓`);
   }
   carregarGestaoAcessos();
 };
