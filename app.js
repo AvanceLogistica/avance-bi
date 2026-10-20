@@ -8177,7 +8177,7 @@ renderers.emissaonf = () => {
     ? `<div class="page-head"><h2>O.S de Manutenção</h2><p>Carretas que entram na oficina — entrada, saída, frota, serviços (código e quantidade) e observação</p></div>`
     : `<div class="page-head"><h2>Emissão de NF</h2><p>Lançamento das notas por contrato — serviço ou balsa, deadline, entrega da minuta e vencimento · mesmos dados da tela Faturamento</p></div>`;
   return cab + abas + (NF_ABA === "nfe" ? nfePagina() : NF_ABA === "fin" ? osfPagina() : NF_ABA === "os" ? osmPagina() : nfPaginaNotas());
-};
+};
 initCharts.emissaonf = () => { if(NF_ABA === "nfe") nfeGrafico(); };
 /* -------------------- ORGANOGRAMA (Pessoas · só Diretoria) --------------------
    Colaboradores com foto, função, local, data de admissão e a quem respondem (gestor). Dados na tabela
@@ -8269,10 +8269,17 @@ window.orgImportar = async () => {
     st.textContent = `Gravando ${carga.colaboradores.length} colaboradores...`;
     const lista = carga.colaboradores.map(r=>orgDoBanco(r));
     if(sb){
+      // 1ª etapa: grava todo mundo SEM o gestor (o gestor pode vir depois no arquivo e o banco
+      // recusaria apontar para alguém que ainda não existe); 2ª etapa: liga cada um ao seu gestor.
+      for(let i=0;i<lista.length;i+=25){
+        const { error } = await sb.from("colaboradores").upsert(lista.slice(i,i+25).map(p=>({ ...orgParaBanco(p), gestor_id:null })));
+        if(error){ st.textContent = "⚠ " + error.message; return; }
+        st.textContent = `Gravando pessoas... ${Math.min(i+25, lista.length)} de ${lista.length}`;
+      }
       for(let i=0;i<lista.length;i+=25){
         const { error } = await sb.from("colaboradores").upsert(lista.slice(i,i+25).map(orgParaBanco));
         if(error){ st.textContent = "⚠ " + error.message; return; }
-        st.textContent = `Gravando... ${Math.min(i+25, lista.length)} de ${lista.length}`;
+        st.textContent = `Ligando cada um ao seu gestor... ${Math.min(i+25, lista.length)} de ${lista.length}`;
       }
     }
     ORG.lista = lista; orgSalvarLocal(); ORG_ABERTOS = null;
