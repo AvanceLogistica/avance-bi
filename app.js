@@ -7817,13 +7817,13 @@ function osfPagina(){
      cinza    = período em execução / ainda antes do prazo
    Tabelas: nf_emitidas (com a coluna "periodo") e nf_painel (status manual + observação por período). */
 const NFE_ATIVIDADES = [
-  { chave:"lr_sw",            label:"Logística Reversa SW",          sentido:true,  cad:"semanal",   doc:"RQ",     cor:"#2E6DB0" },
-  { chave:"desatrelamento",   label:"Desatrelamento SW",             sentido:false, cad:"semanal",   doc:"RQ",     cor:"#8E2EB0" },
-  { chave:"puxadas",          label:"Puxada de carreta avaria NC",   sentido:false, cad:"semanal",   doc:"E-mail", cor:"#E1971F" },
+  { chave:"lr_sw",            label:"Logística Reversa SW",          sentido:true,  cad:"semanal",   semPeriodo:true, doc:"RQ",     cor:"#2E6DB0" },
+  { chave:"desatrelamento",   label:"Desatrelamento SW",             sentido:false, cad:"semanal",   semPeriodo:true, doc:"RQ",     cor:"#8E2EB0" },
+  { chave:"puxadas",          label:"Puxada de carreta avaria NC",   sentido:false, cad:"semanal",   semPeriodo:true, doc:"E-mail", cor:"#E1971F" },
   { chave:"devolucao_motos",  label:"Devolução de motos",            sentido:false, cad:"mensal",    doc:"E-mail", cor:"#147A55" },
-  { chave:"contrato_sw_motos",label:"Contrato SW motos",             sentido:false, cad:"mensal",    doc:"",       cor:"#8C0011" },
-  { chave:"entregas",         label:"Entregas",                      sentido:false, cad:"quinzenal", doc:"",       cor:"#4A86C8" },
-  { chave:"manutencao",       label:"Manutenção de Carreta",         sentido:false, cad:"quinzenal", doc:"",       cor:"#D0021B" },
+  { chave:"contrato_sw_motos",label:"Contrato SW motos",             sentido:false, cad:null, oculto:true, doc:"", cor:"#8C0011" },   // não emite NF (fica só para lançamentos antigos)
+  { chave:"entregas",         label:"Entregas",                      sentido:false, cad:null, oculto:true, doc:"", cor:"#4A86C8" },   // não emite NF (fica só para lançamentos antigos)
+  { chave:"manutencao",       label:"Manutenção de Carreta",         sentido:false, cad:"quinzenal", periodoLivre:true, doc:"", cor:"#D0021B" },
   { chave:"lr_carreteira",    label:"Logística Reversa Carreteira",  sentido:true,  cad:null,        doc:"",       cor:"#1C9A6C" },
   { chave:"outros",           label:"Outros serviços (LSL / outros)",sentido:false, cad:null,        doc:"",       cor:"#5B5F6B" },
 ];
@@ -7874,7 +7874,7 @@ function nfePeriodos(cad){
 /* ---------- Status de um período ---------- */
 function nfeStatus(atividade, p){
   const hoje = frotaHojeISO();
-  const nfs = NFE.lista.filter(r=>r.atividade===atividade && r.periodo===p.chave);
+  const nfs = NFE.lista.filter(r=>r.atividade===atividade && nfeCobre(r, p, nfeAtiv(atividade)));
   const man = NFE.painel[`${atividade}|${p.chave}`] || {};
   if(nfs.length) return { cor:"verde", texto:"NF emitida", nfs, man };
   if(man.status === "sem_operacao") return { cor:"verde", texto:"Sem operação no período", nfs, man };
@@ -7891,10 +7891,20 @@ function nfeResumoAtividade(a){
   const foco = vermelhos[vermelhos.length-1] || amarelos[amarelos.length-1] || per.find(x=>x.p.fim < frotaHojeISO()) || per[0];
   return { per, cor, vermelhos:vermelhos.length, amarelos:amarelos.length, foco };
 }
+// A NF conta para o período quando: é do próprio período (chave), cobre parte dele com datas livres
+// ("D:inicio:fim", Manutenção) ou — nas semanais sem campo de período — foi emitida na semana seguinte.
+function nfeCobre(r, p, a){
+  if(r.periodo === p.chave) return true;
+  if(r.periodo && r.periodo.startsWith("D:")){ const [, ini, fim] = r.periodo.split(":"); return ini <= p.fim && fim >= p.ini; }
+  if(a && a.semPeriodo && !r.periodo && r.dataEmissao){ const ini = nfeAddDias(p.fim, 1), fim = nfeAddDias(p.fim, 7); return r.dataEmissao >= ini && r.dataEmissao <= fim; }
+  return false;
+}
+const NFE_VISIVEIS = () => NFE_ATIVIDADES.filter(a=>!a.oculto || NFE.lista.some(r=>r.atividade===a.chave));
 // Período sugerido no formulário: o pendente mais antigo, ou o último período encerrado
 function nfePeriodoSugerido(ch){
-  const a = nfeAtiv(ch); if(!a.cad) return "";
-  const r = nfeResumoAtividade(a); return r.foco ? r.foco.p.chave : "";
+  const a = nfeAtiv(ch); if(!a.cad || a.semPeriodo) return "";
+  const r = nfeResumoAtividade(a); if(!r.foco) return "";
+  return a.periodoLivre ? `D:${r.foco.p.ini}:${r.foco.p.fim}` : r.foco.p.chave;
 }
 
 /* ---------- Carga e gravação ---------- */
@@ -7942,7 +7952,9 @@ window.nfeMarcar = async (ch, chave, status) => {
 };
 window.nfeSalvarObsPainel = async (ch, chave, el) => { if(await nfeGravarPainel(ch, chave, { obs: el.value.trim() })) toast("Observação salva ✓"); };
 window.nfeLancarDoPainel = (ch, chave) => {
-  NFE_EDIT = null; NFE_ATIV = ch; NFE_SENTIDO = ""; NFE_PERIODO = chave;
+  NFE_EDIT = null; NFE_ATIV = ch; NFE_SENTIDO = "";
+  const a = nfeAtiv(ch), p = a.cad ? nfePeriodoPorChave(a.cad, chave) : null;
+  NFE_PERIODO = a.semPeriodo ? "" : a.periodoLivre && p ? `D:${p.ini}:${p.fim}` : chave;
   nfeRedesenhar(); document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
   setTimeout(()=>document.getElementById("nfe-nf")?.focus(), 400);
 };
@@ -7959,15 +7971,21 @@ window.nfeBuscar = (t) => { NFE_FILTRO.busca = t; nfeRerender(); const el = docu
 window.nfeSalvar = async () => {
   const f = nfeLerForm(), valor = osNum("nfe-valor"), a = nfeAtiv(NFE_ATIV);
   const perSel = document.getElementById("nfe-periodo"); if(perSel) NFE_PERIODO = perSel.value;
+  const pDe = document.getElementById("nfe-pde")?.value, pAte = document.getElementById("nfe-pate")?.value;
+  if(a.periodoLivre){
+    if(!pDe || !pAte){ toast("Informe o período: data inicial e data final."); return; }
+    if(pAte < pDe){ toast("A data final do período está antes da inicial."); return; }
+    NFE_PERIODO = `D:${pDe}:${pAte}`;
+  }
   if(!NFE_ATIV){ toast("Escolha a atividade."); return; }
   if(a.sentido && !NFE_SENTIDO){ toast("Escolha o sentido: Subindo ou Descendo."); return; }
-  if(a.cad && !NFE_PERIODO){ toast("Escolha o período a que a NF se refere."); return; }
+  if(a.cad && !a.semPeriodo && !NFE_PERIODO){ toast("Escolha o período a que a NF se refere."); return; }
   if(!f.nf.replace(/\D/g,"")){ toast("Informe o número da NF."); return; }
   if(!valor){ toast("Informe o valor."); return; }
   if(!f.data){ toast("Informe a data de emissão."); return; }
   const nf = progLimparNF(f.nf).replace(/^\/|\/$/g,"");
   if(NFE.lista.some(r=>r.nf===nf && r.id!==NFE_EDIT) && !confirm(`A NF ${nf} já está registrada. Registrar de novo?`)) return;
-  const reg = { atividade:NFE_ATIV, sentido:a.sentido ? NFE_SENTIDO : "", periodo:a.cad ? NFE_PERIODO : "", numero:f.numero.trim(), nf, valor, dataEmissao:f.data, obs:f.obs.trim() };
+  const reg = { atividade:NFE_ATIV, sentido:a.sentido ? NFE_SENTIDO : "", periodo:a.cad && !a.semPeriodo ? NFE_PERIODO : "", numero:f.numero.trim(), nf, valor, dataEmissao:f.data, obs:f.obs.trim() };
   const banco = { atividade:reg.atividade, sentido:reg.sentido||null, periodo:reg.periodo||null, numero:reg.numero||null, nf:reg.nf, valor:reg.valor, data_emissao:reg.dataEmissao, obs:reg.obs||null,
     atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
   if(NFE_EDIT){
@@ -8062,7 +8080,7 @@ function nfeFiltradas(){
     && (NFE_FILTRO.atividade==="todas" || r.atividade===NFE_FILTRO.atividade)
     && (!busca || nfSemAcento(`${r.nf} ${r.numero} ${r.obs} ${nfeRotulo(r)}`).includes(busca)));
 }
-function nfeRotuloPeriodo(r){ const a = nfeAtiv(r.atividade); const p = a.cad && r.periodo ? nfePeriodoPorChave(a.cad, r.periodo) : null; return p ? p.rotulo : "—"; }
+function nfeRotuloPeriodo(r){ if(r.periodo && r.periodo.startsWith("D:")){ const [, i, f] = r.periodo.split(":"); return `${nfeBR(i)} a ${nfeBR(f)}`; } const a = nfeAtiv(r.atividade); const p = a.cad && r.periodo ? nfePeriodoPorChave(a.cad, r.periodo) : null; return p ? p.rotulo : "—"; }
 
 function nfePagina(){
   if(!NFE.carregado && !NFE.carregando){ NFE.carregando = true; setTimeout(()=>nfeCarregar(), 0); }
@@ -8088,11 +8106,12 @@ function nfePagina(){
         ${NFE_EDIT ? `<button class="os-btn" onclick="nfeCancelar()">Cancelar edição</button>` : ""}
       </div>
       <label style="margin-top:10px;">Atividade</label>
-      <div class="prog-chips">${NFE_ATIVIDADES.map(x=>`<button type="button" class="sub-tab-btn nfe-chip ${NFE_ATIV===x.chave?"active":""}" style="--c:${x.cor};" onclick="nfeEscolherAtiv('${x.chave}')">${x.label}</button>`).join("")}</div>
+      <div class="prog-chips">${NFE_ATIVIDADES.filter(x=>!x.oculto).map(x=>`<button type="button" class="sub-tab-btn nfe-chip ${NFE_ATIV===x.chave?"active":""}" style="--c:${x.cor};" onclick="nfeEscolherAtiv('${x.chave}')">${x.label}</button>`).join("")}</div>
       ${a.sentido ? `<div class="prog-chips"><span class="hint" style="margin:0;">Sentido:</span>
         <button type="button" class="sub-tab-btn ${NFE_SENTIDO==="sobe"?"active":""}" onclick="nfeEscolherSentido('sobe')">⬆️ Subindo</button>
         <button type="button" class="sub-tab-btn ${NFE_SENTIDO==="desce"?"active":""}" onclick="nfeEscolherSentido('desce')">⬇️ Descendo</button></div>` : ""}
-      ${a.cad ? `<label>Período (o que a NF fatura)<select id="nfe-periodo" onchange="NFE_PERIODO=this.value">
+      ${a.periodoLivre ? (()=>{ const [, i, f] = (NFE_PERIODO||"").startsWith("D:") ? NFE_PERIODO.split(":") : ["","",""]; return `<div class="nf-grid" style="grid-template-columns:repeat(2,minmax(150px,220px));"><label>Período — de<input type="date" id="nfe-pde" value="${i}"></label><label>até<input type="date" id="nfe-pate" value="${f}"></label></div>`; })() : ""}
+      ${a.cad && !a.semPeriodo && !a.periodoLivre ? `<label>Período (o que a NF fatura)<select id="nfe-periodo" onchange="NFE_PERIODO=this.value">
         <option value="">Selecione</option>${perOpcoes.map(p=>{ const st = nfeStatus(a.chave, p); return `<option value="${p.chave}" ${p.chave===NFE_PERIODO?"selected":""}>${({vermelho:"🔴",amarelo:"🟡",verde:"🟢",cinza:"⚪"})[st.cor]} ${osEsc(p.rotulo)} — prazo ${nfeBR(p.prazo)}</option>`; }).join("")}
       </select></label>` : ""}
       <div class="nf-grid">
@@ -8108,7 +8127,7 @@ function nfePagina(){
     <div class="panel" style="margin-bottom:16px;">
       <div class="filtro-bar">
         <label>Mês de emissão<select onchange="nfeFiltro('mes',this.value)">${opt("todos","Todos os meses",NFE_FILTRO.mes)}${meses.map(m=>opt(m, nomeMes(m), NFE_FILTRO.mes)).join("")}</select></label>
-        <label>Atividade<select onchange="nfeFiltro('atividade',this.value)">${opt("todas","Todas",NFE_FILTRO.atividade)}${NFE_ATIVIDADES.map(x=>opt(x.chave,x.label,NFE_FILTRO.atividade)).join("")}</select></label>
+        <label>Atividade<select onchange="nfeFiltro('atividade',this.value)">${opt("todas","Todas",NFE_FILTRO.atividade)}${NFE_VISIVEIS().map(x=>opt(x.chave,x.label,NFE_FILTRO.atividade)).join("")}</select></label>
         <label>Situação<select onchange="nfeFiltro('sit',this.value)">${opt("pendentes","Pendentes (a receber)",NFE_FILTRO.sit)}${opt("pagas","Pagas",NFE_FILTRO.sit)}${opt("todas","Todas",NFE_FILTRO.sit)}</select></label>
         <label>Buscar<input id="nfe-busca" value="${osEsc(NFE_FILTRO.busca)}" placeholder="NF, número ou observação" oninput="nfeBuscar(this.value)"
           style="font-family:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--paper);"></label>
@@ -8125,7 +8144,7 @@ function nfePagina(){
           <div>% recebido<b>${total ? (vPago/total*100).toFixed(1).replace(".",",") : "0"}%</b><small>do valor emitido no período</small></div>
         </div>`; })()}
       <div class="hint">Período pela data de emissão (filtro "Mês de emissão" acima). Clique numa atividade para filtrar a lista.</div>
-      <div class="frota-ativs">${NFE_ATIVIDADES.map(x=>{ const ls = doMes.filter(r=>r.atividade===x.chave), v = sumArr(ls.map(r=>r.valor));
+      <div class="frota-ativs">${NFE_VISIVEIS().map(x=>{ const ls = doMes.filter(r=>r.atividade===x.chave), v = sumArr(ls.map(r=>r.valor));
         const sobe = ls.filter(r=>r.sentido==="sobe").length, desce = ls.filter(r=>r.sentido==="desce").length;
         return `<button class="frota-ativ ${NFE_FILTRO.atividade===x.chave?"sel":""}" style="--c:${x.cor};" onclick="nfeFiltro('atividade','${NFE_FILTRO.atividade===x.chave?"todas":x.chave}')">
           <span class="frota-ativ-lbl">${x.label}</span><span class="frota-ativ-qtd" style="font-size:22px;">${fmtBRL(v)}</span>
@@ -8168,7 +8187,7 @@ function nfeGrafico(){
   const meses = [...new Set(NFE.lista.map(r=>(r.dataEmissao||"").slice(0,7)).filter(Boolean))].sort();
   mkChart("ch-nfe", {
     type:"bar",
-    data:{ labels:meses.map(nfeNomeMes), datasets:NFE_ATIVIDADES.map(x=>({
+    data:{ labels:meses.map(nfeNomeMes), datasets:NFE_VISIVEIS().map(x=>({
       label:x.label, data:meses.map(m=>sumArr(NFE.lista.filter(r=>r.atividade===x.chave && (r.dataEmissao||"").startsWith(m)).map(r=>r.valor))),
       backgroundColor:x.cor, stack:"a", borderColor:"#fff", borderWidth:{ top:2 }, borderRadius:4, maxBarThickness:52 })) },
     options:{ responsive:true, maintainAspectRatio:false,
@@ -8182,7 +8201,7 @@ renderers.emissaonf = () => {
   if(MEU_PAPEL === "manutencao") NF_ABA = "os";
   const abas = MEU_PAPEL === "manutencao" ? "" : `
     <div class="tabs" style="margin-bottom:14px;">
-      <button class="tab-btn ${NF_ABA==="nf"?"active":""}" onclick="setNfAba('nf')">🧾 Notas fiscais</button>
+      <button class="tab-btn ${NF_ABA==="nf"?"active":""}" onclick="setNfAba('nf')">🧾 Contratos</button>
       <button class="tab-btn ${NF_ABA==="os"?"active":""}" onclick="setNfAba('os')">🔧 O.S de Manutenção</button>
       <button class="tab-btn ${NF_ABA==="fin"?"active":""}" onclick="setNfAba('fin')">💰 O.S Financeira</button>
       <button class="tab-btn ${NF_ABA==="nfe"?"active":""}" onclick="setNfAba('nfe')">📑 NF Emitidas</button>
