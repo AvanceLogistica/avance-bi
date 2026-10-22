@@ -8117,12 +8117,19 @@ function nfePagina(){
 
     <div class="panel" style="margin-bottom:16px;">
       <h3>Emitido por atividade — ${nomeMes(NFE_FILTRO.mes)}</h3>
-      <div class="hint">Total: <b>${fmtBRL2(total)}</b> em ${doMes.length} NF(s). Clique numa atividade para filtrar a lista.</div>
+      ${(()=>{ const pagas = doMes.filter(r=>r.dataPagamento), vPago = sumArr(pagas.map(r=>r.valor)), vAberto = total - vPago;
+        return `<div class="os-resumo prog-resumo nfe-tot" style="margin:6px 0 10px;">
+          <div>Emitido no período<b>${fmtBRL2(total)}</b><small>${doMes.length} NF(s)</small></div>
+          <div>Pago<b style="color:var(--green);">${fmtBRL2(vPago)}</b><small>${pagas.length} NF(s) já pagas</small></div>
+          <div>A receber<b style="color:var(--${vAberto>0.005?"amber":"green"});">${fmtBRL2(vAberto)}</b><small>${doMes.length-pagas.length} NF(s) em aberto</small></div>
+          <div>% recebido<b>${total ? (vPago/total*100).toFixed(1).replace(".",",") : "0"}%</b><small>do valor emitido no período</small></div>
+        </div>`; })()}
+      <div class="hint">Período pela data de emissão (filtro "Mês de emissão" acima). Clique numa atividade para filtrar a lista.</div>
       <div class="frota-ativs">${NFE_ATIVIDADES.map(x=>{ const ls = doMes.filter(r=>r.atividade===x.chave), v = sumArr(ls.map(r=>r.valor));
         const sobe = ls.filter(r=>r.sentido==="sobe").length, desce = ls.filter(r=>r.sentido==="desce").length;
         return `<button class="frota-ativ ${NFE_FILTRO.atividade===x.chave?"sel":""}" style="--c:${x.cor};" onclick="nfeFiltro('atividade','${NFE_FILTRO.atividade===x.chave?"todas":x.chave}')">
           <span class="frota-ativ-lbl">${x.label}</span><span class="frota-ativ-qtd" style="font-size:22px;">${fmtBRL(v)}</span>
-          <span class="frota-ativ-sub">${ls.length} NF(s)${x.sentido && ls.length ? ` · ⬆️ ${sobe} · ⬇️ ${desce}` : ""}${total ? ` · ${(v/total*100).toFixed(0)}%` : ""}</span></button>`; }).join("")}</div>
+          <span class="frota-ativ-sub">${ls.length} NF(s)${x.sentido && ls.length ? ` · ⬆️ ${sobe} · ⬇️ ${desce}` : ""}${total ? ` · ${(v/total*100).toFixed(0)}%` : ""}</span>${ls.length ? `<span class="frota-ativ-sub">💵 pago ${fmtBRL(sumArr(ls.filter(r=>r.dataPagamento).map(r=>r.valor)))}${ls.some(r=>!r.dataPagamento) ? ` · a receber ${fmtBRL(sumArr(ls.filter(r=>!r.dataPagamento).map(r=>r.valor)))}` : " ✓"}</span>` : ""}</button>`; }).join("")}</div>
       <div class="chart-wrap" style="height:${NFE_FILTRO.mes==="todos" ? 280 : 0}px; ${NFE_FILTRO.mes==="todos" ? "" : "display:none;"} margin-top:14px;"><canvas id="ch-nfe"></canvas></div>
     </div>
 
