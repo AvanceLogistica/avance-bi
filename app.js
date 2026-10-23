@@ -7858,7 +7858,7 @@ const MAN_ETAPAS = {
   execucao:   { label:"Semana 1 · em execução",               cor:"#2E6DB0", icone:"🔧" },
   pend_doc:   { label:"Pendente de documento (adm.)",         cor:"#E1971F", icone:"📄" },
   pend_os:    { label:"Pendente de O.S p/ Combitrans",        cor:"#C77700", icone:"🧾" },
-  assinatura: { label:"Combitrans analisando / assinatura",   cor:"#B8860B", icone:"✍️" },
+  assinatura: { label:"Combitrans analisando / aprovação",    cor:"#B8860B", icone:"✍️" },
   pend_nf:    { label:"Pendente de NF",                       cor:"#D0021B", icone:"🔴" },
   nf_emitida: { label:"NF emitida — aguardando pagamento",    cor:"#8E2EB0", icone:"🟣" },
   recebida:   { label:"Recebida",                             cor:"#1C9A6C", icone:"🟢" },
@@ -7897,7 +7897,8 @@ async function manCarregar(){
     const { data, error } = await sb.from("manut_ciclos").select("*");
     if(error) MAN.erro = error.message;
     else { MAN.erro = null; MAN.ciclos = {};
-      data.forEach(r=>{ MAN.ciclos[r.semana] = { dataDocumento:r.data_documento||"", dataOS:r.data_os||"", dataAssinatura:r.data_assinatura||"", semOperacao:!!r.sem_operacao, obs:r.obs||"", por:(r.atualizado_por||"").split("@")[0] }; }); }
+      data.forEach(r=>{ MAN.ciclos[r.semana] = { dataDocumento:r.data_documento||"", dataOS:r.data_os||"", dataAssinatura:r.data_assinatura||"", semOperacao:!!r.sem_operacao, obs:r.obs||"",
+        osNumero:r.os_numero||"", osValor:r.os_valor!=null ? Number(r.os_valor) : null, osValorAprovado:r.os_valor_aprovado!=null ? Number(r.os_valor_aprovado) : null, por:(r.atualizado_por||"").split("@")[0] }; }); }
   }
   MAN.carregando = false; MAN.carregado = true; nfeRerender();
 }
@@ -7906,19 +7907,35 @@ async function manGravar(ini, campos){
   const novo = { ...(MAN.ciclos[ini] || {}), ...campos };
   if(sb){
     const { error } = await sb.from("manut_ciclos").upsert({ semana:ini, data_documento:novo.dataDocumento||null, data_os:novo.dataOS||null, data_assinatura:novo.dataAssinatura||null,
-      sem_operacao:!!novo.semOperacao, obs:novo.obs||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }, { onConflict:"semana" });
-    if(error){ toast(/manut_ciclos/i.test(error.message) ? "⚠ Falta rodar o SQL do ciclo da Manutenção de Carreta no Supabase." : "⚠ Não salvou: " + error.message); return false; }
+      sem_operacao:!!novo.semOperacao, obs:novo.obs||null, atualizado_por:MEU_EMAIL,
+      ...(novo.osNumero || novo.osValor || novo.osValorAprovado || MAN.ciclos[ini]?.osNumero ? { os_numero:novo.osNumero||null, os_valor:novo.osValor||null, os_valor_aprovado:novo.osValorAprovado||null } : {}), atualizado_em:new Date().toISOString() }, { onConflict:"semana" });
+    if(error){ toast(/manut_ciclos/i.test(error.message) ? "⚠ Falta rodar o SQL do ciclo da Manutenção de Carreta no Supabase." : /os_numero|os_valor/i.test(error.message) ? "⚠ Falta rodar o SQL do registro da O.S (nº e valor) no Supabase." : "⚠ Não salvou: " + error.message); return false; }
   }
   MAN.ciclos[ini] = novo; if(!sb) try{ localStorage.setItem(MAN_LOCAL, JSON.stringify(MAN.ciclos)); }catch(e){}
   return true;
 }
 window.manAvancar = async (ini, etapa) => {
   const v = document.getElementById(`man-dt-${ini}`)?.value || frotaHojeISO();
-  const c = MAN.ciclos[ini] || {};
-  if(etapa==="os" && c.dataDocumento && v < c.dataDocumento){ toast("A O.S está antes do envio do documento."); return; }
-  if(etapa==="assinatura" && c.dataOS && v < c.dataOS){ toast("A assinatura está antes da emissão da O.S."); return; }
-  if(await manGravar(ini, { [MAN_CAMPO[etapa]]:v })) toast(({ documento:"Documento enviado ao administrativo ✓", os:"O.S emitida para a Combitrans ✓", assinatura:"O.S assinada pela Combitrans ✓" })[etapa]);
+  const c = MAN.ciclos[ini] || {}, campos = { [MAN_CAMPO[etapa]]:v };
+  if(etapa==="os"){
+    const num = (document.getElementById(`man-osn-${ini}`)?.value||"").trim(), val = osNum(`man-osv-${ini}`);
+    if(!num){ toast("Informe o nº de controle da O.S."); return; }
+    if(!val){ toast("Informe o valor total da O.S."); return; }
+    if(c.dataDocumento && v < c.dataDocumento){ toast("A O.S está antes do envio do documento."); return; }
+    campos.osNumero = num; campos.osValor = val;
+    if(!c.dataDocumento) campos.dataDocumento = v;   // o documento seguiu junto com a O.S
+  }
+  if(etapa==="assinatura"){
+    if(c.dataOS && v < c.dataOS){ toast("A aprovação está antes da emissão da O.S."); return; }
+    campos.osValorAprovado = osNum(`man-osa-${ini}`) || c.osValor || null;
+  }
+  if(await manGravar(ini, campos)) toast(({ documento:"Documento enviado ao administrativo ✓", os:`O.S ${campos.osNumero||""} registrada ✓`, assinatura:"O.S aprovada pela Combitrans ✓" })[etapa]);
   nfeRerender();
+};
+// Corrige nº / valor da O.S direto na tabela
+window.manOSCampo = async (ini, campo, el) => {
+  const v = campo==="osNumero" ? el.value.trim() : (()=>{ const t = el.value.replace(/[R$\s]/g,""); const n = parseFloat(t.includes(",") ? t.replace(/\./g,"").replace(",",".") : t); return isNaN(n) ? null : n; })();
+  if(await manGravar(ini, { [campo]:v })) toast("O.S atualizada ✓");
 };
 window.manData = async (ini, etapa, v) => { if(await manGravar(ini, { [MAN_CAMPO[etapa]]:v||"" })) toast("Data salva ✓"); nfeRerender(); };
 window.manSemOp = async (ini, v) => { if(v && !confirm(`Marcar a semana ${nfeBR(ini)} a ${nfeBR(nfeAddDias(ini,6))} como SEM manutenção?`)) return; if(await manGravar(ini, { semOperacao:v })) nfeRerender(); };
@@ -7929,7 +7946,10 @@ window.manVoltar = async (ini) => {
 };
 window.manEmitirNF = (ini) => {
   NF_ABA = "nfe"; NFE_EDIT = null; NFE_BALSA_ID = null; NFE_ATIV = "manutencao"; NFE_SENTIDO = ""; NFE_PERIODO = `D:${ini}:${nfeAddDias(ini, 6)}`;
-  navigate("emissaonf"); setTimeout(()=>document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60);
+  const c = MAN.ciclos[ini] || {}, val = c.osValorAprovado || c.osValor;
+  navigate("emissaonf");
+  setTimeout(()=>{ nfePreencher({ valor: val ? "R$ " + val.toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }) : "", obs: c.osNumero ? `O.S Combitrans nº ${c.osNumero}` : "" });
+    document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" }); }, 60);
 };
 window.manFiltro = (f) => { MAN_FILTRO = MAN_FILTRO===f ? "pendentes" : f; nfeRerender(); };
 
@@ -7939,15 +7959,17 @@ function manTabela(lista){
   const hoje = frotaHojeISO();
   const dt = (x, etapa) => { const v = x.c[MAN_CAMPO[etapa]]; return v ? `<input type="date" class="nfe-pg bal-dt" value="${v}" onchange="manData('${x.ini}','${etapa}',this.value)">` : "—"; };
   return `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab bal-tab">
-    <thead><tr><th>Semana</th><th>Etapa</th><th>Doc. ao adm.</th><th>O.S Combitrans</th><th>Assinatura</th><th>NF</th><th>Pagamento</th><th>Próxima ação</th><th></th></tr></thead>
+    <thead><tr><th>Semana</th><th>Etapa</th><th>Doc. ao adm.</th><th>O.S Combitrans</th><th>Aprovação</th><th>NF</th><th>Pagamento</th><th>Próxima ação</th><th></th></tr></thead>
     <tbody>${lista.map(x=>{ const s = MAN_ETAPAS[x.st];
       const prazoTxt = x.st==="execucao" ? `termina ${nfeBR(x.fim)}` : x.prazo && !["recebida","sem_op"].includes(x.st)
         ? (x.atrasado ? `<b style="color:var(--red);">atrasado ${x.diasAtraso} dia(s)</b> · prazo era ${nfeBR(x.prazo)}` : `prazo ${nfeBR(x.prazo)}`) : "";
       const dataIn = `<input type="date" id="man-dt-${x.ini}" value="${hoje}" class="nfe-pg">`;
+      const brl = (v) => v ? "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }) : "";
+      const osForm = `${dataIn} <input id="man-osn-${x.ini}" class="bal-num" placeholder="nº O.S" inputmode="numeric"> <input id="man-osv-${x.ini}" class="bal-num man-val" placeholder="R$ valor total" inputmode="numeric" oninput="osMascaraBRL(this)"> <button class="os-btn sm" onclick="manAvancar('${x.ini}','os')">🧾 Registrar O.S</button>`;
       const acao = x.st==="execucao" ? `<button class="os-link" onclick="manSemOp('${x.ini}', true)">marcar sem manutenção</button>`
-        : x.st==="pend_doc" ? `${dataIn} <button class="os-btn sm" onclick="manAvancar('${x.ini}','documento')">📄 Documento enviado</button> <button class="os-link" onclick="manSemOp('${x.ini}', true)" title="Semana sem manutenção">sem manutenção</button>`
-        : x.st==="pend_os" ? `${dataIn} <button class="os-btn sm" onclick="manAvancar('${x.ini}','os')">🧾 O.S emitida</button>`
-        : x.st==="assinatura" ? `${dataIn} <button class="os-btn sm" onclick="manAvancar('${x.ini}','assinatura')">✍️ O.S assinada</button>`
+        : x.st==="pend_doc" ? `${osForm}<div style="margin-top:4px; font-size:12px;"><button class="os-link" onclick="manAvancar('${x.ini}','documento')">só o documento foi ao adm. (O.S ainda não)</button> · <button class="os-link" onclick="manSemOp('${x.ini}', true)">sem manutenção</button></div>`
+        : x.st==="pend_os" ? osForm
+        : x.st==="assinatura" ? `${dataIn} <input id="man-osa-${x.ini}" class="bal-num man-val" placeholder="R$ valor aprovado" value="${brl(x.c.osValor)}" inputmode="numeric" oninput="osMascaraBRL(this)" title="Valor aprovado pela Combitrans"> <button class="os-btn sm" onclick="manAvancar('${x.ini}','assinatura')">✍️ O.S aprovada</button>`
         : x.st==="pend_nf" ? `<button class="os-btn sm green" onclick="manEmitirNF('${x.ini}')">🧾 Emitir NF</button>`
         : x.st==="nf_emitida" ? x.nfs.filter(r=>!r.dataPagamento).map(r=>nfePodeBaixar()
             ? `<span style="white-space:nowrap;">NF ${osEsc(r.nf)} <input type="date" id="man-pg-${r.id}" value="${hoje}" class="nfe-pg"> <button class="os-btn sm green" onclick="nfeBaixar('${r.id}','man-pg-${r.id}')">💵 Dar baixa</button></span>`
@@ -7959,8 +7981,10 @@ function manTabela(lista){
       return `<tr>
         <td><b>${nfeBR(x.ini)} a ${nfeBR(x.fim)}</b></td>
         <td><span class="bal-badge" style="--c:${s.cor};">${s.icone} ${s.label}</span>${prazoTxt ? `<div class="hint" style="margin:2px 0 0;">${prazoTxt}</div>` : ""}</td>
-        <td>${dt(x,"documento")}</td><td>${dt(x,"os")}</td>
-        <td>${dt(x,"assinatura")}${x.c.dataOS && !x.c.dataAssinatura ? `<div class="hint" style="margin:0;">limite ${nfeBR(nfeAddDias(x.c.dataOS, 7))}</div>` : ""}</td>
+        <td>${dt(x,"documento")}</td>
+        <td>${dt(x,"os")}${x.c.dataOS ? `<div class="man-os">nº <input class="bal-num" value="${osEsc(x.c.osNumero||"")}" placeholder="—" onchange="manOSCampo('${x.ini}','osNumero',this)">
+          <input class="bal-num man-val" value="${brl(x.c.osValor)}" placeholder="R$ —" inputmode="numeric" oninput="osMascaraBRL(this)" onchange="manOSCampo('${x.ini}','osValor',this)"></div>` : ""}</td>
+        <td>${dt(x,"assinatura")}${x.c.dataOS && !x.c.dataAssinatura ? `<div class="hint" style="margin:0;">limite ${nfeBR(nfeAddDias(x.c.dataOS, 7))}</div>` : ""}${x.c.dataAssinatura ? `<div class="man-os">aprovado <input class="bal-num man-val" value="${brl(x.c.osValorAprovado)}" placeholder="R$ —" inputmode="numeric" oninput="osMascaraBRL(this)" onchange="manOSCampo('${x.ini}','osValorAprovado',this)"></div>${x.c.osValor && x.c.osValorAprovado && Math.abs(x.c.osValor - x.c.osValorAprovado) > 0.005 ? `<div class="hint" style="margin:0; color:var(--red); font-weight:700;">diferença de ${brl(Math.abs(x.c.osValorAprovado - x.c.osValor))} ${x.c.osValorAprovado < x.c.osValor ? "a menos" : "a mais"}</div>` : ""}` : ""}</td>
         <td style="font-size:12.5px;">${nfTxt}</td><td style="font-size:12.5px;">${pgTxt}</td>
         <td style="white-space:nowrap;">${acao}</td>
         <td>${x.c.dataDocumento && !x.nfs.length ? `<button class="os-link" onclick="manVoltar('${x.ini}')" title="Voltar uma etapa">↩</button>` : ""}</td>
