@@ -8869,12 +8869,14 @@ initCharts.organograma = () => { orgDepoisDeDesenhar(); if(ORG_FICHA) orgDesenha
    2) Em Emissão de NF › Emissão de O.S o administrativo confere todos os campos (frota, placa, datas,
       serviços, quantidades e cobrança), ajusta se precisar e emite a O.S com número sequencial, com PDF
       para enviar à Combitrans. A O.S emitida alimenta o ciclo semanal da Combitrans (nº e valor da semana).
-   Tabela manutencao_os (status "pre" | "emitida"); preços na tabela os_servicos (nunca no código do site).
+   Pré O.S e O.S são LANÇAMENTOS SEPARADOS na tabela manutencao_os: a Pré O.S (status "pre" → "validada")
+   fica como a operação planejou; ao validar, o administrativo gera uma O.S nova (status "emitida", pre_id
+   aponta para a Pré O.S). Preços na tabela os_servicos (nunca no código do site).
    O perfil da oficina não vê valores. */
 let OSE = { lista:[], servicos:[], carretas:[], carregado:false, carregando:false, erro:null };
 let OSE_EDIT = null;        // cabeçalho da (pré) O.S aberta no editor
 let OSE_ITENS = [];         // serviços em edição
-let OSE_FILTRO = "pre";     // pre | emitida | todas
+let OSE_FILTRO = "pre";     // pre | validada | emitida
 const OSE_LOCAL = "avance_os_emissao_v1";
 const OSE_COBRAR = { mo:"Mão de obra", mat:"Material", ambos:"M.O + material" };
 const oseVeValores = () => MEU_PAPEL !== "oficina";
@@ -8884,7 +8886,9 @@ function oseValorItem(it){ const mo = it.cobrar==="mat" ? 0 : (it.mo||0), mat = 
 function oseValor(o){ return sumArr((o.itens||[]).map(oseValorItem)); }
 function oseCobrarPadrao(s){ return s.mo && s.mat ? "ambos" : s.mat && !s.mo ? "mat" : "mo"; }
 function oseServico(txt){ const m = String(txt||"").trim().match(/^(\d{1,4})/); return m ? OSE.servicos.find(s=>s.cod===parseInt(m[1],10)) || null : null; }
-function osePorFila(filaId){ return filaId ? OSE.lista.find(o=>o.filaId===filaId) || null : null; }
+// Pré O.S da carreta (lançamento da operação) e a O.S gerada a partir dela
+function osePorFila(filaId){ return filaId ? OSE.lista.find(o=>o.filaId===filaId && o.status!=="emitida") || OSE.lista.find(o=>o.filaId===filaId) || null : null; }
+function oseDaPre(preId){ return preId ? OSE.lista.find(o=>o.status==="emitida" && o.preId===preId) || null : null; }
 function oseCarretas(){ return CAR.carretas.length ? CAR.carretas : OSE.carretas; }
 function oseProxNumero(){ const n = OSE.lista.map(o=>Number(o.numero)||0); return (n.length ? Math.max(...n) : 0) + 1; }
 const oseBRL = (v) => "R$ " + Number(v||0).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 });
@@ -8899,7 +8903,7 @@ async function oseCarregar(){
     OSE.erro = null;
     const [l, s, c] = await Promise.all([ sbFetchAll("manutencao_os"), OSE.servicos.length ? Promise.resolve(null) : sbFetchAll("os_servicos"),
       CAR.carretas.length || OSE.carretas.length ? Promise.resolve(null) : sbFetchAll("os_carretas") ]);
-    OSE.lista = l.map(r=>({ id:r.id, numero:r.numero, status:r.status||"emitida", filaId:r.fila_id||null, entrada:r.entrada_data, entradaHora:r.entrada_hora||"",
+    OSE.lista = l.map(r=>({ id:r.id, numero:r.numero, status:r.status||"emitida", filaId:r.fila_id||null, preId:r.pre_id||null, entrada:r.entrada_data, entradaHora:r.entrada_hora||"",
       saida:r.saida_data||"", saidaHora:r.saida_hora||"", frota:r.frota||"", placa:r.placa||"", itens:r.itens||[], obs:r.obs||"",
       emitidaEm:r.emitida_em||"", emitidaPor:(r.emitida_por||"").split("@")[0], por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
     if(s) OSE.servicos = s.map(x=>({ cod:Number(x.cod), servico:x.servico, grupo:x.grupo||"", mo:x.mo!=null ? Number(x.mo) : null, mat:x.mat!=null ? Number(x.mat) : null })).sort((a,b)=>a.cod-b.cod);
@@ -8924,11 +8928,16 @@ function oseAbrir(dados, itens){ OSE_EDIT = dados; OSE_ITENS = (itens||[]).map(i
 window.osePreAbrir = (filaId) => {
   const c = CAR.fila.find(x=>x.id===filaId); if(!c) return;
   const o = osePorFila(filaId);
-  if(o && o.status==="emitida" && !osePodeEmitir()){ toast(`Esta carreta já tem a O.S ${oseNum(o.numero)} emitida.`); return; }
+  if(o && o.status!=="pre"){ const os = o.status==="emitida" ? o : oseDaPre(o.id); toast(`A Pré O.S desta carreta já foi validada${os ? ` — O.S ${oseNum(os.numero)}` : ""}.`); return; }
   oseAbrir(o ? { ...o } : { id:null, filaId, status:"pre", numero:null, frota:c.frota, placa:c.placa, entrada:c.entrada, saida:c.conclusao||"", obs:"" }, o ? o.itens : []);
 };
-window.oseConferir = (id) => { const o = OSE.lista.find(x=>x.id===id); if(o) oseAbrir({ ...o, numero: o.numero || oseProxNumero() }, o.itens); };
-window.oseNova = () => oseAbrir({ id:null, filaId:null, status:"pre", numero:oseProxNumero(), frota:"", placa:"", entrada:frotaHojeISO(), saida:"", obs:"" }, []);
+window.oseConferir = (id) => {
+  const o = OSE.lista.find(x=>x.id===id); if(!o) return;
+  if(o.status==="emitida") return oseAbrir({ ...o }, o.itens);
+  if(o.status==="validada"){ const os = oseDaPre(o.id); toast(`Esta Pré O.S já virou a O.S ${os ? oseNum(os.numero) : ""}.`); return; }
+  oseAbrir({ id:null, preId:o.id, filaId:o.filaId, status:"nova", numero:oseProxNumero(), frota:o.frota, placa:o.placa, entrada:o.entrada, saida:o.saida, obs:o.obs, preDe:o.por }, o.itens);
+};
+window.oseNova = () => oseAbrir({ id:null, preId:null, filaId:null, status:"nova", numero:oseProxNumero(), frota:"", placa:"", entrada:frotaHojeISO(), saida:"", obs:"" }, []);
 window.oseCancelar = () => { OSE_EDIT = null; OSE_ITENS = []; oseRedesenhar(); };
 window.oseCampo = (campo, v) => { if(!OSE_EDIT) return; OSE_EDIT[campo] = v;
   if(campo==="frota"){ const t = String(v||"").toUpperCase().trim(), car = oseCarretas().find(x=>x.frota.toUpperCase()===t || x.placa.toUpperCase()===t || carRotulo(x).toUpperCase()===t);
@@ -8966,8 +8975,9 @@ window.oseSalvar = async (emitir) => {
     if(OSE.lista.some(o=>o.id!==e.id && Number(o.numero)===e.numero)){ toast(`Já existe a O.S nº ${oseNum(e.numero)}.`); return; }
     if(!e.placa && !confirm("A O.S está sem placa. Emitir assim mesmo?")) return;
   }
-  const status = emitir ? "emitida" : (e.status || "pre"), agora = new Date().toISOString();
-  const reg = { status, fila_id:e.filaId||null, numero: status==="emitida" ? e.numero : (osePodeEmitir() ? e.numero || null : null),
+  if(e.status==="nova" && !emitir) return;   // O.S nova só existe depois de emitida
+  const status = emitir || e.status==="emitida" ? "emitida" : "pre", agora = new Date().toISOString();
+  const reg = { status, fila_id:e.filaId||null, ...(status==="emitida" ? { pre_id:e.preId||null } : {}), numero: status==="emitida" ? e.numero : null,
     entrada_data:e.entrada, saida_data:e.saida||null, frota:e.frota, placa:e.placa||null, itens:OSE_ITENS, obs:(e.obs||"").trim()||null,
     valor: Math.round(sumArr(OSE_ITENS.map(oseValorItem))*100)/100, atualizado_por:MEU_EMAIL, atualizado_em:agora,
     ...(emitir && e.status!=="emitida" ? { emitida_em:agora, emitida_por:MEU_EMAIL } : {}) };
@@ -8975,45 +8985,48 @@ window.oseSalvar = async (emitir) => {
   if(sb){
     const r = id ? await sb.from("manutencao_os").update(reg).eq("id", id).select("id").single()
                  : await sb.from("manutencao_os").insert({ ...reg, criado_por:MEU_EMAIL }).select("id").single();
-    if(r.error){ toast(/status|fila_id|valor|emitida|numero/i.test(r.error.message) ? "⚠ Falta rodar o SQL da Emissão de O.S no Supabase." : "⚠ Não salvou: " + r.error.message); return; }
+    if(r.error){ toast(/status|fila_id|pre_id|valor|emitida|numero/i.test(r.error.message) ? "⚠ Falta rodar o SQL da Emissão de O.S no Supabase." : "⚠ Não salvou: " + r.error.message); return; }
     id = r.data.id;
+    if(emitir && e.preId){   // a Pré O.S fica registrada como validada (lançamento separado da O.S)
+      const v = await sb.from("manutencao_os").update({ status:"validada", atualizado_por:MEU_EMAIL, atualizado_em:agora }).eq("id", e.preId);
+      if(v.error) toast("⚠ A O.S foi emitida, mas a Pré O.S não foi marcada como validada: " + v.error.message);
+    }
   } else if(!id) id = osNovoId();
-  const local = { id, numero:reg.numero, status, filaId:reg.fila_id, entrada:reg.entrada_data, saida:reg.saida_data||"", frota:reg.frota, placa:reg.placa||"", itens:OSE_ITENS.map(i=>({ ...i })), obs:reg.obs||"",
+  if(emitir && e.preId){ const pr = OSE.lista.find(o=>o.id===e.preId); if(pr) pr.status = "validada"; }
+  const local = { id, numero:reg.numero, status, filaId:reg.fila_id, preId: status==="emitida" ? e.preId||null : null, entrada:reg.entrada_data, saida:reg.saida_data||"", frota:reg.frota, placa:reg.placa||"", itens:OSE_ITENS.map(i=>({ ...i })), obs:reg.obs||"",
     emitidaEm: reg.emitida_em || e.emitidaEm || "", emitidaPor: reg.emitida_por ? reg.emitida_por.split("@")[0] : e.emitidaPor || "", por:(MEU_EMAIL||"").split("@")[0] };
   const k = OSE.lista.findIndex(o=>o.id===id); if(k>=0) OSE.lista[k] = local; else OSE.lista.push(local);
   oseSalvarLocal(); OSE_EDIT = null; OSE_ITENS = [];
-  toast(emitir ? `O.S ${oseNum(local.numero)} emitida ✓` : status==="emitida" ? "O.S atualizada ✓" : "Pré O.S salva ✓ — o administrativo vai conferir");
+  toast(emitir && e.status!=="emitida" ? `O.S ${oseNum(local.numero)} emitida ✓${e.preId ? " — Pré O.S validada" : ""}` : status==="emitida" ? "O.S atualizada ✓" : "Pré O.S salva ✓ — o administrativo vai conferir");
   if(status==="emitida") await oseSincronizarCiclo(local.saida || local.entrada);
   oseRedesenhar();
 };
 window.oseExcluir = async (id) => {
   const o = OSE.lista.find(x=>x.id===id); if(!o) return;
   if(o.status==="emitida" && !osePodeEmitir()){ toast("A O.S já foi emitida."); return; }
-  if(!confirm(o.status==="emitida" ? `Excluir a O.S ${oseNum(o.numero)} (${o.frota})?` : `Excluir a Pré O.S da frota ${o.frota}?`)) return;
-  if(sb){ const { error } = await sb.from("manutencao_os").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
-  OSE.lista = OSE.lista.filter(x=>x.id!==id); oseSalvarLocal();
+  if(o.status==="validada"){ const os = oseDaPre(o.id); toast(`Esta Pré O.S já virou a O.S ${os ? oseNum(os.numero) : ""}. Exclua a O.S primeiro.`); return; }
+  const pre = o.status==="emitida" ? OSE.lista.find(x=>x.id===o.preId) : null;
+  if(!confirm(o.status==="emitida" ? `Excluir a O.S ${oseNum(o.numero)} (frota ${o.frota})?${pre ? "\n\nA Pré O.S de origem volta para conferência." : ""}` : `Excluir a Pré O.S da frota ${o.frota}?`)) return;
+  if(sb){ const { error } = await sb.from("manutencao_os").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; }
+    if(pre){ const v = await sb.from("manutencao_os").update({ status:"pre", atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", pre.id); if(v.error) toast("⚠ " + v.error.message); } }
+  if(pre) pre.status = "pre";
+  OSE.lista = OSE.lista.filter(x=>x.id!==id); oseSalvarLocal(); toast(o.status==="emitida" ? `O.S ${oseNum(o.numero)} excluída` : "Pré O.S excluída");
   if(OSE_EDIT && OSE_EDIT.id===id){ OSE_EDIT = null; OSE_ITENS = []; }
-  if(o.status==="emitida") await oseSincronizarCiclo(o.saida || o.entrada);
+  if(o.status==="emitida") await oseSincronizarCiclo(o.saida || o.entrada, o.numero);
   oseRedesenhar();
 };
-window.oseDesfazerEmissao = async (id) => {
-  const o = OSE.lista.find(x=>x.id===id); if(!o || !confirm(`Voltar a O.S ${oseNum(o.numero)} para Pré O.S?`)) return;
-  if(sb){ const { error } = await sb.from("manutencao_os").update({ status:"pre", emitida_em:null, emitida_por:null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id);
-    if(error){ toast("⚠ Não salvou: " + error.message); return; } }
-  o.status = "pre"; o.emitidaEm = ""; o.emitidaPor = ""; oseSalvarLocal();
-  await oseSincronizarCiclo(o.saida || o.entrada); oseRedesenhar();
-};
+window.oseDesfazerEmissao = (id) => oseExcluir(id);
 // O ciclo semanal da Combitrans (Painel Gerencial) recebe os números e o valor das O.S emitidas da semana
-async function oseSincronizarCiclo(dataRef){
+async function oseSincronizarCiclo(dataRef, removido){
   if(!dataRef || typeof manGravar!=="function") return;
   try{
     if(!MAN.carregado) await manCarregar();
     const sem = nfeSegunda(dataRef), c = MAN.ciclos[sem] || {};
     const da = OSE.lista.filter(o=>o.status==="emitida" && nfeSegunda(o.saida || o.entrada)===sem).sort((a,b)=>(a.numero||0)-(b.numero||0));
-    if(!da.length && !c.osAuto) return;
+    if(!da.length && !(removido && String(c.osNumero||"").split(/,\s*/).includes(oseNum(removido)))) return;
     const primeira = da.map(o=>(o.emitidaEm||"").slice(0,10)).filter(Boolean).sort()[0] || frotaHojeISO();
     await manGravar(sem, da.length ? { osNumero:da.map(o=>oseNum(o.numero)).join(", "), osValor:Math.round(sumArr(da.map(oseValor))*100)/100,
-      dataOS:c.dataOS || primeira, dataDocumento:c.dataDocumento || primeira, osAuto:true } : { osNumero:"", osValor:null });
+      dataOS:c.dataOS || primeira, dataDocumento:c.dataDocumento || primeira } : { osNumero:"", osValor:null });
   }catch(e){ console.warn("ciclo Combitrans", e); }
 }
 
@@ -9024,12 +9037,12 @@ function oseEditorHTML(){
   const dif = OSE_ITENS.filter(it=>{ const s = OSE.servicos.find(x=>x.cod===it.cod); return s && (s.mo!==it.mo || s.mat!==it.mat); }).length;
   return `<div class="panel os-form ose-editor" id="ose-form">
     <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-      <h3 style="margin:0;">${emitida ? `🧾 O.S ${oseNum(e.numero)} — editar` : adm && e.id ? "🔎 Conferir Pré O.S e emitir" : e.id ? "📝 Editar Pré O.S" : "📝 Nova Pré O.S"}</h3>
+      <h3 style="margin:0;">${emitida ? `🧾 O.S ${oseNum(e.numero)} — editar` : e.status==="nova" ? (e.preId ? "🔎 Conferir Pré O.S e emitir a O.S" : "🧾 Nova O.S avulsa") : e.id ? "📝 Editar Pré O.S" : "📝 Nova Pré O.S"}</h3>
       <button class="os-btn" onclick="oseCancelar()">Fechar</button>
     </div>
-    ${adm && !emitida ? `<div class="os-alerta amber" style="margin-top:8px;">Confira <b>frota, placa, datas, serviços, quantidades e cobrança</b>. Ajuste o que precisar e clique em <b>Validar e emitir O.S</b>.</div>` : ""}
+    ${e.status==="nova" && e.preId ? `<div class="os-alerta amber" style="margin-top:8px;">Pré O.S lançada pela operação${e.preDe ? ` (<b>${osEsc(e.preDe)}</b>)` : ""}. Confira <b>frota, placa, datas, serviços, quantidades e cobrança</b> e ajuste o que precisar — os ajustes ficam só na O.S; a Pré O.S continua registrada como a operação lançou.</div>` : ""}
     <div class="nf-grid ose-cab">
-      ${adm ? `<label>Nº da O.S<input id="ose-numero" type="number" min="1" value="${e.numero||""}" onchange="oseCampo('numero', this.value)"></label>` : ""}
+      ${adm && (e.status==="nova" || emitida) ? `<label>Nº da O.S<input id="ose-numero" type="number" min="1" value="${e.numero||""}" onchange="oseCampo('numero', this.value)"></label>` : ""}
       <label>Frota<input id="ose-frota" list="ose-car" value="${osEsc(e.frota)}" style="text-transform:uppercase;" onchange="oseCampo('frota', this.value)"></label>
       <label>Placa<input id="ose-placa" value="${osEsc(e.placa)}" style="text-transform:uppercase;" onchange="oseCampo('placa', this.value)"></label>
       <label>Entrada<input id="ose-entrada" type="date" value="${e.entrada||""}" onchange="oseCampo('entrada', this.value)"></label>
@@ -9055,8 +9068,8 @@ function oseEditorHTML(){
     ${adm && dif ? `<div class="hint" style="margin-top:6px; color:var(--amber);">⚠ ${dif} serviço(s) com preço diferente da tabela atual. <button class="os-link" onclick="oseAtualizarPrecos()">usar preços da tabela</button></div>` : ""}
     <label>Observação<input id="ose-obs" value="${osEsc(e.obs||"")}" placeholder="opcional" onchange="oseCampo('obs', this.value)"></label>
     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
-      ${adm && !emitida ? `<button class="entry-submit" style="margin:0; background:var(--green);" onclick="oseSalvar(true)">✅ Validar e emitir O.S</button>` : ""}
-      <button class="entry-submit" style="margin:0; ${adm && !emitida ? "background:var(--ink-soft);" : ""}" onclick="oseSalvar(false)">${emitida ? "💾 Salvar alterações" : adm ? "💾 Salvar (continua Pré O.S)" : "💾 Salvar Pré O.S"}</button>
+      ${e.status==="nova" ? `<button class="entry-submit" style="margin:0; background:var(--green);" onclick="oseSalvar(true)">✅ ${e.preId ? "Validar e emitir O.S" : "Emitir O.S"}</button>`
+        : `<button class="entry-submit" style="margin:0;" onclick="oseSalvar(false)">${emitida ? "💾 Salvar alterações da O.S" : "💾 Salvar Pré O.S"}</button>`}
     </div>
   </div>`;
 }
@@ -9065,6 +9078,7 @@ function oseEditorHTML(){
 function osePreCelula(c){
   const o = osePorFila(c.id);
   if(!o) return `<button class="os-link ose-pre-btn" onclick="osePreAbrir('${c.id}')">📝 Pré O.S</button>`;
+  if(o.status==="validada"){ const os = oseDaPre(o.id); return `<span class="badge green" title="Pré O.S validada pelo administrativo">✅ validada${os ? ` · O.S ${oseNum(os.numero)}` : ""}</span>`; }
   if(o.status==="emitida") return `<span class="badge green" title="O.S emitida">🧾 O.S ${oseNum(o.numero)}</span>`;
   return `<button class="os-link" onclick="osePreAbrir('${c.id}')" title="Editar a Pré O.S"><span class="badge amber">📝 Pré O.S · ${o.itens.length} serv.</span></button>`;
 }
@@ -9145,45 +9159,67 @@ function osePagina(){
   if(OSE.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar as O.S</h4><p>${osEsc(OSE.erro)}</p><p>Se falar em tabela ou coluna inexistente ("manutencao_os", "status"), rode o SQL da Emissão de O.S no Supabase.</p></div></div>`;
   if(!OSE.carregado) return `<div class="panel"><div class="empty-state" style="padding:24px;"><p>Carregando...</p></div></div>`;
   const mes = frotaHojeISO().slice(0,7);
-  const pre = OSE.lista.filter(o=>o.status!=="emitida"), emit = OSE.lista.filter(o=>o.status==="emitida");
+  const pre = OSE.lista.filter(o=>o.status==="pre"), validadas = OSE.lista.filter(o=>o.status==="validada"), emit = OSE.lista.filter(o=>o.status==="emitida");
   const emitMes = emit.filter(o=>(o.emitidaEm||o.entrada||"").startsWith(mes));
-  const lista = OSE.lista.filter(o=>OSE_FILTRO==="todas" || (OSE_FILTRO==="pre" ? o.status!=="emitida" : o.status==="emitida"))
-    .sort((a,b)=> OSE_FILTRO==="pre" ? (a.entrada||"").localeCompare(b.entrada||"") : (b.numero||0)-(a.numero||0) || (b.entrada||"").localeCompare(a.entrada||""));
+  if(!["pre","validada"].includes(OSE_FILTRO)) OSE_FILTRO = "pre";
+  const listaPre = (OSE_FILTRO==="pre" ? pre : validadas).sort((a,b)=>(a.entrada||"").localeCompare(b.entrada||""));
+  const listaOS = [...emit].sort((a,b)=>(b.numero||0)-(a.numero||0) || (b.entrada||"").localeCompare(a.entrada||""));
   const resumoItens = (o) => (o.itens||[]).map(it=>`<span class="ose-chip" title="${osEsc(it.servico)}"><b>${it.cod}</b> ${String(it.qtd).replace(".", ",")}${it.un==="m" ? "m" : ""}</span>`).join("");
+  const destaque = (o) => OSE_EDIT && (OSE_EDIT.id===o.id || OSE_EDIT.preId===o.id) ? 'style="background:#FCF1DE;"' : "";
   return `
     <div class="os-resumo prog-resumo nfe-tot" style="margin:0 0 14px;">
       <div>Pré O.S aguardando conferência<b style="color:var(--${pre.length?"amber":"green"});">${pre.length}</b><small>${fmtBRL(sumArr(pre.map(oseValor)))} estimado</small></div>
+      <div>Pré O.S validadas<b style="color:var(--green);">${validadas.length}</b><small>viraram O.S</small></div>
       <div>O.S emitidas no mês<b>${emitMes.length}</b><small>${fmtBRL(sumArr(emitMes.map(oseValor)))} · ${nfeNomeMes(mes)}</small></div>
       <div>Última O.S<b>${emit.length ? oseNum(Math.max(...emit.map(o=>Number(o.numero)||0))) : "—"}</b><small>próxima: ${oseNum(oseProxNumero())}</small></div>
-      <div>Tabela de serviços<b>${OSE.servicos.length}</b><small>${OSE.servicos.length ? "serviços com preço" : "importe a planilha abaixo"}</small></div>
     </div>
     ${oseEditorHTML()}
-    <div class="panel" style="margin:16px 0;">
+
+    <div class="panel ose-bloco pre" style="margin:16px 0;">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">📝 Pré O.S — lançamentos da operação</h3>
+          <div class="hint">Geradas no plano do dia (Controle diário de carretas). O administrativo confere e valida → vira uma O.S (lançamento separado).</div></div>
         <div class="prog-chips" style="margin:0;">
-          <button class="sub-tab-btn ${OSE_FILTRO==="pre"?"active":""}" onclick="oseFiltro('pre')">📝 Pré O.S para conferir (${pre.length})</button>
-          <button class="sub-tab-btn ${OSE_FILTRO==="emitida"?"active":""}" onclick="oseFiltro('emitida')">🧾 O.S emitidas (${emit.length})</button>
-          <button class="sub-tab-btn ${OSE_FILTRO==="todas"?"active":""}" onclick="oseFiltro('todas')">Todas (${OSE.lista.length})</button>
+          <button class="sub-tab-btn ${OSE_FILTRO==="pre"?"active":""}" onclick="oseFiltro('pre')">Para conferir (${pre.length})</button>
+          <button class="sub-tab-btn ${OSE_FILTRO==="validada"?"active":""}" onclick="oseFiltro('validada')">Validadas (${validadas.length})</button>
         </div>
-        <button class="os-btn" onclick="oseNova()">+ O.S avulsa</button>
       </div>
-      <div class="hint">As Pré O.S chegam da operação pelo <b>Controle diário de carretas</b> (Manutenção de Carreta). Confira cada uma e emita a O.S.</div>
-      ${lista.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
-        <thead><tr><th>Status</th><th>Nº O.S</th><th>Entrada</th><th>Saída</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor</th><th>Lançado por</th><th></th></tr></thead>
-        <tbody>${lista.map(o=>`<tr ${OSE_EDIT && OSE_EDIT.id===o.id ? 'style="background:#FCF1DE;"' : ""}>
-          <td>${o.status==="emitida" ? `<span class="badge green">🧾 Emitida</span>` : `<span class="badge amber">📝 Pré O.S</span>`}</td>
-          <td><b>${o.status==="emitida" ? oseNum(o.numero) : "—"}</b></td>
+      ${listaPre.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
+        <thead><tr><th>Situação</th><th>Entrada</th><th>Saída</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor estimado</th><th>Lançado por</th><th></th></tr></thead>
+        <tbody>${listaPre.map(o=>{ const os = oseDaPre(o.id); return `<tr ${destaque(o)}>
+          <td>${o.status==="pre" ? `<span class="badge amber">📝 Para conferir</span>` : `<span class="badge green">✅ Validada${os ? ` · O.S ${oseNum(os.numero)}` : ""}</span>`}</td>
           <td>${o.entrada ? fmtDataBR(o.entrada) : "—"}</td><td>${o.saida ? fmtDataBR(o.saida) : "—"}</td>
           <td><b>${osEsc(o.frota)}</b>${o.placa ? ` · ${osEsc(o.placa)}` : ""}</td>
           <td class="ose-chips">${resumoItens(o) || "—"}</td>
-          <td class="num"><b>${fmtBRL2(oseValor(o))}</b></td>
-          <td style="font-size:12px;">${osEsc(o.por||"")}${o.emitidaPor ? `<div class="hint" style="margin:0;">emitida por ${osEsc(o.emitidaPor)}</div>` : ""}</td>
-          <td style="white-space:nowrap;">${o.status==="emitida"
-            ? `<button class="os-btn sm" onclick="osePDF('${o.id}')">📄 PDF</button> <button class="os-btn sm green" onclick="oseEnviar('${o.id}')">📲 Enviar</button> <button class="os-link" onclick="oseConferir('${o.id}')" title="Editar">✏️</button> <button class="os-link" onclick="oseDesfazerEmissao('${o.id}')" title="Voltar para Pré O.S">↩</button>`
-            : `<button class="os-btn sm green" onclick="oseConferir('${o.id}')">🔎 Conferir e emitir</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir">🗑️</button>`}</td>
-        </tr>`).join("")}</tbody>
-        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="6">Total (${lista.length})</td><td class="num">${fmtBRL2(sumArr(lista.map(oseValor)))}</td><td colspan="2"></td></tr></tfoot>
-      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${OSE_FILTRO==="pre" ? "Nenhuma Pré O.S aguardando conferência. ✓" : "Nenhuma O.S neste filtro."}</p></div>`}
+          <td class="num">${fmtBRL2(oseValor(o))}</td>
+          <td style="font-size:12px;">${osEsc(o.por||"")}</td>
+          <td style="white-space:nowrap;">${o.status==="pre"
+            ? `<button class="os-btn sm green" onclick="oseConferir('${o.id}')">🔎 Conferir e validar</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir Pré O.S">🗑️</button>`
+            : `<span class="hint" style="margin:0;">${os && os.emitidaPor ? `por ${osEsc(os.emitidaPor)}` : ""}</span>`}</td>
+        </tr>`; }).join("")}</tbody>
+      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${OSE_FILTRO==="pre" ? "Nenhuma Pré O.S aguardando conferência. ✓" : "Nenhuma Pré O.S validada ainda."}</p></div>`}
+    </div>
+
+    <div class="panel ose-bloco os" style="margin:16px 0;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">🧾 O.S emitidas — enviadas para a Combitrans (${emit.length})</h3>
+          <div class="hint">Lançamentos do administrativo. Excluir uma O.S que veio de Pré O.S devolve a Pré O.S para conferência.</div></div>
+        <button class="os-btn" onclick="oseNova()">+ O.S avulsa</button>
+      </div>
+      ${listaOS.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
+        <thead><tr><th>Nº O.S</th><th>Entrada</th><th>Saída</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor</th><th>Origem</th><th></th></tr></thead>
+        <tbody>${listaOS.map(o=>{ const pr = OSE.lista.find(x=>x.id===o.preId); return `<tr ${destaque(o)}>
+          <td><b>${oseNum(o.numero)}</b></td>
+          <td>${o.entrada ? fmtDataBR(o.entrada) : "—"}</td><td>${o.saida ? fmtDataBR(o.saida) : "—"}</td>
+          <td><b>${osEsc(o.frota)}</b>${o.placa ? ` · ${osEsc(o.placa)}` : ""}</td>
+          <td class="ose-chips">${resumoItens(o) || "—"}</td>
+          <td class="num"><b>${fmtBRL2(oseValor(o))}</b>${pr && Math.abs(oseValor(pr) - oseValor(o)) > 0.005 ? `<div class="hint" style="margin:0;">Pré O.S: ${fmtBRL2(oseValor(pr))}</div>` : ""}</td>
+          <td style="font-size:12px;">${pr ? `📝 Pré O.S de ${osEsc(pr.por||"operação")}` : "avulsa"}${o.emitidaPor ? `<div class="hint" style="margin:0;">emitida por ${osEsc(o.emitidaPor)}</div>` : ""}</td>
+          <td style="white-space:nowrap;"><button class="os-btn sm" onclick="osePDF('${o.id}')">📄 PDF</button> <button class="os-btn sm green" onclick="oseEnviar('${o.id}')">📲 Enviar</button>
+            <button class="os-link" onclick="oseConferir('${o.id}')" title="Editar O.S">✏️</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir O.S">🗑️</button></td>
+        </tr>`; }).join("")}</tbody>
+        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="5">Total (${listaOS.length})</td><td class="num">${fmtBRL2(sumArr(listaOS.map(oseValor)))}</td><td colspan="2"></td></tr></tfoot>
+      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nenhuma O.S emitida ainda.</p></div>`}
     </div>
     <details class="panel" style="margin-bottom:16px;" ${OSE.servicos.length ? "" : "open"}>
       <summary style="cursor:pointer; font-weight:700;">📥 Tabela de serviços e preços <span class="hint" style="margin:0;">· ${OSE.servicos.length} serviços</span></summary>
