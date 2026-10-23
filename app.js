@@ -7305,7 +7305,7 @@ const NFE_ATIVIDADES = [
   { chave:"lr_sw",            label:"Logística Reversa SW",          sentido:true,  cad:"semanal",   semPeriodo:true, doc:"RQ",     cor:"#2E6DB0" },
   { chave:"desatrelamento",   label:"Desatrelamento SW",             sentido:false, cad:"semanal",   semPeriodo:true, doc:"RQ",     cor:"#8E2EB0" },
   { chave:"puxadas",          label:"Puxada de carreta avaria NC",   sentido:false, cad:"semanal",   semPeriodo:true, doc:"E-mail", cor:"#E1971F" },
-  { chave:"devolucao_motos",  label:"Devolução de motos",            sentido:false, cad:"mensal",    doc:"E-mail", cor:"#147A55" },
+  { chave:"devolucao_motos",  label:"Devolução de motos",            sentido:false, cad:"mensal",    periodoLivre:true, doc:"E-mail", cor:"#147A55" },
   { chave:"contrato_sw_motos",label:"Contrato SW motos",             sentido:false, cad:null, oculto:true, doc:"", cor:"#8C0011" },   // não emite NF (fica só para lançamentos antigos)
   { chave:"entregas",         label:"Entregas",                      sentido:false, cad:null, oculto:true, doc:"", cor:"#4A86C8" },   // não emite NF (fica só para lançamentos antigos)
   { chave:"manutencao",       label:"Manutenção de Carreta",         sentido:false, cad:"semanal",   periodoLivre:true, doc:"", cor:"#D0021B" },
@@ -7755,7 +7755,8 @@ function nfePagina(){
       ${a.sentido ? `<div class="prog-chips"><span class="hint" style="margin:0;">Sentido:</span>
         <button type="button" class="sub-tab-btn ${NFE_SENTIDO==="sobe"?"active":""}" onclick="nfeEscolherSentido('sobe')">⬆️ Subindo</button>
         <button type="button" class="sub-tab-btn ${NFE_SENTIDO==="desce"?"active":""}" onclick="nfeEscolherSentido('desce')">⬇️ Descendo</button></div>` : ""}
-      ${a.periodoLivre ? (()=>{ const [, i, f] = (NFE_PERIODO||"").startsWith("D:") ? NFE_PERIODO.split(":") : ["","",""]; return `<div class="nf-grid" style="grid-template-columns:repeat(2,minmax(150px,220px));"><label>Período — de<input type="date" id="nfe-pde" value="${i}"></label><label>até<input type="date" id="nfe-pate" value="${f}"></label></div>`; })() : ""}
+      ${a.periodoLivre ? (()=>{ const pc = !(NFE_PERIODO||"").startsWith("D:") && NFE_PERIODO && a.cad ? nfePeriodoPorChave(a.cad, NFE_PERIODO) : null;   // NF antiga com período fechado (ex: mês)
+        const [, i, f] = (NFE_PERIODO||"").startsWith("D:") ? NFE_PERIODO.split(":") : pc ? ["", pc.ini, pc.fim] : ["","",""]; return `<div class="nf-grid" style="grid-template-columns:repeat(2,minmax(150px,220px));"><label>Período — de<input type="date" id="nfe-pde" value="${i}"></label><label>até<input type="date" id="nfe-pate" value="${f}"></label></div>`; })() : ""}
       ${a.cad && !a.semPeriodo && !a.periodoLivre ? `<label>Período (o que a NF fatura)<select id="nfe-periodo" onchange="NFE_PERIODO=this.value">
         <option value="">Selecione</option>${perOpcoes.map(p=>{ const st = nfeStatus(a.chave, p); return `<option value="${p.chave}" ${p.chave===NFE_PERIODO?"selected":""}>${({vermelho:"🔴",amarelo:"🟡",verde:"🟢",cinza:"⚪"})[st.cor]} ${osEsc(p.rotulo)} — prazo ${nfeBR(p.prazo)}</option>`; }).join("")}
       </select></label>` : ""}
