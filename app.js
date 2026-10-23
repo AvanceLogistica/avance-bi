@@ -8458,9 +8458,15 @@ const NFG_LT_FASES = [
   { k:"doc",  label:"Emissão de documento",  cor:"#E1971F" },
   { k:"nf",   label:"Emissão da NF",         cor:"#1C9A6C" },
 ];
-let NFG_LT_ABERTO = true;
-try{ NFG_LT_ABERTO = localStorage.getItem("avance_lt_aberto") !== "0"; }catch(e){}
-window.nfgLtToggle = (v) => { NFG_LT_ABERTO = v; try{ localStorage.setItem("avance_lt_aberto", v ? "1" : "0"); }catch(e){} };
+// Abre como janela por cima da tela (botão no topo do Painel Gerencial); fecha no ✕, clicando fora ou com Esc
+window.nfgLtAbrir = () => {
+  nfgLtFechar();
+  const d = document.createElement("div"); d.className = "nfg-lt-modal"; d.id = "nfg-lt-modal";
+  d.onclick = (e) => { if(e.target === d) nfgLtFechar(); };
+  d.innerHTML = nfgLeadTimeHTML(); document.body.appendChild(d); document.body.style.overflow = "hidden";
+};
+window.nfgLtFechar = () => { const d = document.getElementById("nfg-lt-modal"); if(d){ d.remove(); document.body.style.overflow = ""; } };
+document.addEventListener("keydown", (e)=>{ if(e.key === "Escape") nfgLtFechar(); });
 // Ciclo que contém hoje: semanal = segunda a domingo; mensal = mês corrente
 function nfgLtCiclo(o){
   const hoje = frotaHojeISO();
@@ -8480,16 +8486,16 @@ function nfgLeadTimeHTML(){
   const per = (b) => b.ini===b.fim ? nfeBR(b.ini) : `${nfeBR(b.ini)} a ${nfeBR(b.fim)}`;
   const ticks = []; for(let d = 0; d <= escala; d += 7) ticks.push(d);
   const semanais = linhas.filter(l=>l.o.exec==="semanal"), mensal = linhas.find(l=>l.o.exec==="mensal");
-  return `<details class="panel nfg-lt" ${NFG_LT_ABERTO ? "open" : ""} ontoggle="nfgLtToggle(this.open)">
-    <summary>
+  return `<div class="panel nfg-lt" role="dialog" aria-label="Calendário de lead time das operações">
+    <div class="nfg-lt-topo">
       <div><h3>🗓️ Calendário de lead time das operações</h3>
         <div class="hint" style="margin:2px 0 0;">Da execução do serviço até a emissão da NF — todas as operações na mesma escala de dias</div></div>
       <div class="nfg-lt-resumo">
         ${semanais.length ? `<span><b>${semanais[0].c.total} dias</b> operações semanais</span>` : ""}
         ${mensal ? `<span><b>${mensal.c.total} dias</b> ${mensal.o.label.toLowerCase()}</span>` : ""}
-        <span class="nfg-lt-seta"></span>
+        <button class="nfg-lt-fechar" onclick="nfgLtFechar()" title="Fechar (Esc)">✕</button>
       </div>
-    </summary>
+    </div>
     <div class="nfg-lt-legenda">${NFG_LT_FASES.map(f=>`<span><i style="background:${f.cor};"></i>${f.label}</span>`).join("")}<span><i class="hoje"></i>Hoje</span></div>
     <div class="nfg-lt-grid">
       <div class="nfg-lt-cab"></div>
@@ -8512,12 +8518,13 @@ function nfgLeadTimeHTML(){
         </div>`).join("")}
     </div>
     <div class="hint" style="margin:10px 0 0;">Passe o mouse (ou toque) numa fase para ver as datas. Lead time = dias corridos do início da execução até a emissão da NF.</div>
-  </details>`;
+  </div>`;
 }
 
 // Painel Gerencial: item próprio no menu (só Diretor)
 initCharts.gerencial = () => nfgGrafico();
-renderers.gerencial = () => `<div class="page-head"><h2>Painel Gerencial</h2><p>Todas as operações e o status de cada uma — da operação ao recebimento da NF · a baixa do recebimento é da Diretoria</p></div>` + nfgLeadTimeHTML() + nfgPagina();
+renderers.gerencial = () => `<div class="page-head nfg-head"><div><h2>Painel Gerencial</h2><p>Todas as operações e o status de cada uma — da operação ao recebimento da NF · a baixa do recebimento é da Diretoria</p></div>
+  <button class="nfg-lt-btn" onclick="nfgLtAbrir()"><span>🗓️</span><span><b>Calendário de lead time</b><small>prazos de cada operação</small></span></button></div>` + nfgPagina();
 renderers.emissaonf = () => {
   if(MEU_PAPEL === "manutencao") return `<div class="page-head"><h2>O.S de Manutenção</h2></div>
     <div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">🔧</div><h4>Esta tela foi desativada</h4><p>A O.S de Manutenção foi retirada do sistema. Fale com a diretoria.</p></div></div>`;
