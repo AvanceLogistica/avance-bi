@@ -7401,7 +7401,7 @@ async function nfeCarregar(){
     if(l.error){ NFE.erro = l.error.message; NFE.carregando = false; NFE.carregado = true; nfeRerender(); return; }
     NFE.erro = null;
     NFE.lista = l.data.map(r=>({ id:r.id, atividade:r.atividade, sentido:r.sentido||"", periodo:r.periodo||"", numero:r.numero||"", nf:r.nf||"", valor:Number(r.valor)||0,
-      dataEmissao:r.data_emissao, dataPagamento:r.data_pagamento||"", obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+      dataEmissao:r.data_emissao, dataPagamento:r.data_pagamento||"", balsa:r.balsa||"", obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
     NFE.painel = {};
     if(!p.error) p.data.forEach(r=>{ NFE.painel[`${r.atividade}|${r.periodo}`] = { status:r.status||"", obs:r.obs||"", por:(r.atualizado_por||"").split("@")[0], em:r.atualizado_em }; });
     else NFE.erroPainel = p.error.message;
@@ -7427,8 +7427,8 @@ async function nfeGravarPainel(atividade, periodo, campos){
   nfeSalvarLocal(); return true;
 }
 /* ---------- Formulário ---------- */
-function nfeLerForm(){ const g = (id)=>document.getElementById(id)?.value || ""; return { numero:g("nfe-numero"), nf:g("nfe-nf"), valor:g("nfe-valor"), data:g("nfe-data"), obs:g("nfe-obs") }; }
-function nfePreencher(d){ const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; }; s("nfe-numero", d.numero); s("nfe-nf", d.nf); s("nfe-valor", d.valor); s("nfe-data", d.data); s("nfe-obs", d.obs); }
+function nfeLerForm(){ const g = (id)=>document.getElementById(id)?.value || ""; return { numero:g("nfe-numero"), balsa:g("nfe-balsa"), nf:g("nfe-nf"), valor:g("nfe-valor"), data:g("nfe-data"), obs:g("nfe-obs") }; }
+function nfePreencher(d){ const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; }; s("nfe-numero", d.numero); s("nfe-balsa", d.balsa); s("nfe-nf", d.nf); s("nfe-valor", d.valor); s("nfe-data", d.data); s("nfe-obs", d.obs); }
 function nfeRedesenhar(){ const d = nfeLerForm(); const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); nfePreencher(d); window.scrollTo(0,y); requestAnimationFrame(nfeGrafico); }
 window.nfeEscolherAtiv = (ch) => { NFE_ATIV = ch; if(!nfeAtiv(ch).sentido) NFE_SENTIDO = ""; NFE_PERIODO = nfePeriodoSugerido(ch); nfeRedesenhar(); };
 window.nfeEscolherSentido = (s) => { NFE_SENTIDO = s; nfeRedesenhar(); };
@@ -7452,16 +7452,16 @@ window.nfeSalvar = async () => {
   if(!f.data){ toast("Informe a data de emissão."); return; }
   const nf = progLimparNF(f.nf).replace(/^\/|\/$/g,"");
   if(NFE.lista.some(r=>r.nf===nf && r.id!==NFE_EDIT) && !confirm(`A NF ${nf} já está registrada. Registrar de novo?`)) return;
-  const reg = { atividade:NFE_ATIV, sentido:a.sentido ? NFE_SENTIDO : "", periodo:a.cad && !a.semPeriodo ? NFE_PERIODO : "", numero:f.numero.trim(), nf, valor, dataEmissao:f.data, obs:f.obs.trim() };
-  const banco = { atividade:reg.atividade, sentido:reg.sentido||null, periodo:reg.periodo||null, numero:reg.numero||null, nf:reg.nf, valor:reg.valor, data_emissao:reg.dataEmissao, obs:reg.obs||null,
+  const reg = { atividade:NFE_ATIV, sentido:a.sentido ? NFE_SENTIDO : "", periodo:a.cad && !a.semPeriodo ? NFE_PERIODO : "", numero:f.numero.trim(), balsa:nfeEhLR(NFE_ATIV) && f.balsa!=="__nova" ? f.balsa : "", nf, valor, dataEmissao:f.data, obs:f.obs.trim() };
+  const banco = { atividade:reg.atividade, sentido:reg.sentido||null, periodo:reg.periodo||null, numero:reg.numero||null, ...(reg.balsa || NFE_EDIT ? { balsa:reg.balsa||null } : {}), nf:reg.nf, valor:reg.valor, data_emissao:reg.dataEmissao, obs:reg.obs||null,
     atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
   if(NFE_EDIT){
-    if(sb){ const { error } = await sb.from("nf_emitidas").update(banco).eq("id", NFE_EDIT); if(error){ toast("⚠ Não salvou: " + error.message); return; } }
+    if(sb){ const { error } = await sb.from("nf_emitidas").update(banco).eq("id", NFE_EDIT); if(error){ toast(/balsa/i.test(error.message) ? "⚠ Falta rodar o SQL do campo Balsa no Supabase." : "⚠ Não salvou: " + error.message); return; } }
     Object.assign(NFE.lista.find(r=>r.id===NFE_EDIT), reg);
     toast(`NF ${nf} atualizada ✓`);
   } else {
     const novo = { id:"tmp"+osNovoId(), ...reg, por:(MEU_EMAIL||"").split("@")[0] };
-    if(sb){ const { data, error } = await sb.from("nf_emitidas").insert({ ...banco, criado_por:MEU_EMAIL }).select().single(); if(error){ toast("⚠ Não salvou: " + error.message); return; } novo.id = data.id; }
+    if(sb){ const { data, error } = await sb.from("nf_emitidas").insert({ ...banco, criado_por:MEU_EMAIL }).select().single(); if(error){ toast(/balsa/i.test(error.message) ? "⚠ Falta rodar o SQL do campo Balsa no Supabase." : "⚠ Não salvou: " + error.message); return; } novo.id = data.id; }
     NFE.lista.unshift(novo);
     if(NFE_BALSA_ID){ await balVincularNF(NFE_BALSA_ID, novo.id); NFE_BALSA_ID = null; }
     toast(`NF ${nf} registrada ✓${reg.periodo ? " — painel atualizado 🟢" : ""}`);
@@ -7475,7 +7475,7 @@ window.nfeEditar = (id) => {
   const r = NFE.lista.find(x=>x.id===id); if(!r) return;
   NFE_EDIT = id; NFE_ATIV = r.atividade; NFE_SENTIDO = r.sentido || ""; NFE_PERIODO = r.periodo || "";
   nfeRedesenhar();
-  nfePreencher({ numero:r.numero, nf:r.nf, valor:"R$ "+r.valor.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}), data:r.dataEmissao, obs:r.obs });
+  nfePreencher({ numero:r.numero, balsa:nfeBalsaDe(r), nf:r.nf, valor:"R$ "+r.valor.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}), data:r.dataEmissao, obs:r.obs });
   document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
 };
 window.nfeCancelar = () => { NFE_EDIT = null; NFE_SENTIDO = ""; NFE_BALSA_ID = null; nfeRedesenhar(); nfePreencher({ numero:"", nf:"", valor:"", data:"", obs:"" }); };
@@ -7516,7 +7516,7 @@ function balDesdeEtapa(b){
   const ref = st==="aberta" ? b.dataAbertura : st==="pend_doc" ? b.dataFechamento : st==="pend_nf" ? b.dataDocumento : st==="nf_emitida" ? (nf ? nf.dataEmissao : "") : (nf ? nf.dataPagamento : "");
   return ref ? nfeDias(ref, frotaHojeISO()) : null;
 }
-function balNomes(){ return [...new Set([...nfBalsasConhecidas(), ...BAL.lista.map(b=>b.balsa)].filter(Boolean))].sort((a,b)=>a.localeCompare(b,"pt-BR")); }
+function balNomes(){ return [...new Set([...nfBalsasConhecidas(), ...BAL.lista.map(b=>b.balsa), ...NFE.lista.map(r=>r.balsa)].filter(Boolean))].sort((a,b)=>a.localeCompare(b,"pt-BR")); }
 const balRotulo = (b) => `${b.balsa}${b.numero ? " – " + b.numero : ""}`;
 
 async function balCarregar(){
@@ -7535,7 +7535,7 @@ function balSalvarLocal(){ if(!sb) try{ localStorage.setItem(BAL_LOCAL, JSON.str
 async function balAtualizar(b, campos){
   if(sb){ const { error } = await sb.from("balsas_viagens").update({ ...campos, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", b.id);
     if(error){ toast("⚠ Não salvou: " + error.message); return false; } }
-  const mapa = { data_fechamento:"dataFechamento", data_documento:"dataDocumento", nf_id:"nfId", numero:"numero", obs:"obs" };
+  const mapa = { data_abertura:"dataAbertura", data_fechamento:"dataFechamento", data_documento:"dataDocumento", nf_id:"nfId", numero:"numero", obs:"obs" };
   Object.entries(campos).forEach(([k,v])=>{ b[mapa[k]||k] = v || (k==="nf_id" ? null : ""); });
   balSalvarLocal(); return true;
 }
@@ -7567,6 +7567,33 @@ window.balVoltar = async (id) => {
   if(!confirm(`Voltar ${balRotulo(b)} uma etapa?${campos.nf_id===null ? " (a NF continua lançada, só deixa de estar ligada a esta balsa)" : ""}`)) return;
   await balAtualizar(b, campos); nfeRerender();
 };
+window.balData = async (id, campo, v) => {
+  const b = BAL.lista.find(x=>x.id===id); if(!b) return;
+  if(campo==="data_abertura" && !v && !b.nfId){ toast("A abertura é obrigatória enquanto a balsa não tem NF."); nfeRerender(); return; }
+  const ab = campo==="data_abertura" ? v : b.dataAbertura, fe = campo==="data_fechamento" ? v : b.dataFechamento;
+  if(ab && fe && fe < ab){ toast("O fechamento está antes da abertura."); nfeRerender(); return; }
+  if(await balAtualizar(b, { [campo]: v || null })) toast("Data salva ✓");
+  nfeRerender();
+};
+// Cria no controle uma balsa para cada NF de Logística Reversa já emitida que ainda não está ligada a nenhuma
+// (balsa e nº vêm da NF; abertura e fechamento ficam em branco para preencher na tabela)
+window.balTrazerNFs = async () => {
+  const soltas = NFE.lista.filter(r=>nfeEhLR(r.atividade) && !BAL.lista.some(b=>b.nfId===r.id));
+  if(!soltas.length){ toast("Todas as NFs de Logística Reversa já estão no controle."); return; }
+  if(!confirm(`Trazer ${soltas.length} NF(s) de Logística Reversa já emitidas para o controle de balsas?\n\nCada uma vira uma balsa com status "NF emitida" (ou "Recebida", se já paga). Depois preencha a abertura e o fechamento na tabela.`)) return;
+  const novas = soltas.map(r=>({ atividade:r.atividade, balsa:nfeBalsaDe(r) || "(sem balsa)", numero:r.numero||null, data_abertura:null, nf_id:r.id, obs:"trazida da NF já emitida", criado_por:MEU_EMAIL, atualizado_por:MEU_EMAIL }));
+  if(sb){
+    for(let i=0;i<novas.length;i+=50){
+      const { error } = await sb.from("balsas_viagens").insert(novas.slice(i,i+50));
+      if(error){ toast(/null value|not-null|data_abertura/i.test(error.message) ? "⚠ Falta rodar o SQL novo do controle de balsas no Supabase." : "⚠ Não salvou: " + error.message); return; }
+    }
+    await balCarregar();
+  } else {
+    novas.forEach(n=>BAL.lista.push({ id:"tmp"+osNovoId(), atividade:n.atividade, balsa:n.balsa, numero:n.numero||"", dataAbertura:"", dataFechamento:"", dataDocumento:"", nfId:n.nf_id, obs:n.obs }));
+    balSalvarLocal(); nfeRerender();
+  }
+  toast(`✓ ${novas.length} NF(s) trazidas para o controle de balsas`);
+};
 window.balNumero = async (id, v) => { const b = BAL.lista.find(x=>x.id===id); if(b && await balAtualizar(b, { numero:v.trim() })) toast("Nº da balsa salvo ✓"); nfeRerender(); };
 window.balExcluir = async (id) => {
   const b = BAL.lista.find(x=>x.id===id); if(!b || !confirm(`Excluir a balsa ${balRotulo(b)} do controle?`)) return;
@@ -7577,7 +7604,7 @@ window.balExcluir = async (id) => {
 window.balEmitirNF = (id) => {
   const b = BAL.lista.find(x=>x.id===id); if(!b) return;
   NFE_EDIT = null; NFE_ATIV = b.atividade; NFE_SENTIDO = ""; NFE_PERIODO = ""; NFE_BALSA_ID = id;
-  nfeRedesenhar(); nfePreencher({ obs:balRotulo(b), numero:b.numero||"" });
+  nfeRedesenhar(); nfePreencher({ balsa:b.balsa, numero:b.numero||"" });
   document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
   setTimeout(()=>document.getElementById("nfe-nf")?.focus(), 400);
 };
@@ -7604,7 +7631,10 @@ function balHTML(){
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
         <div><h3 style="margin:0;">🚢 Controle de balsas — Logística Reversa</h3>
           <div class="hint">Abertura → fechamento → documento do cliente → NF → recebimento. Clique num status para filtrar a lista.</div></div>
-        <button class="sub-tab-btn ${BAL_FILTRO==="todas"?"active":""}" onclick="balFiltro('todas')">Ver todas (${BAL.lista.length})</button>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          ${(()=>{ const n = NFE.lista.filter(r=>nfeEhLR(r.atividade) && !BAL.lista.some(b=>b.nfId===r.id)).length; return n ? `<button class="os-btn sm green" onclick="balTrazerNFs()">🔄 Trazer ${n} NF(s) já emitidas</button>` : ""; })()}
+          <button class="sub-tab-btn ${BAL_FILTRO==="todas"?"active":""}" onclick="balFiltro('todas')">Ver todas (${BAL.lista.length})</button>
+        </div>
       </div>
       <div class="bal-sts">${Object.entries(BAL_STATUS).map(([k,s])=>`<button class="bal-st ${BAL_FILTRO===k?"sel":""}" style="--c:${s.cor};" onclick="balFiltro('${k}')">
         <span class="lbl">${s.icone} ${s.label}</span><b>${cont[k]}</b>${k==="nf_emitida" && valorReceber ? `<small>${fmtBRL(valorReceber)} a receber</small>` : ""}</button>`).join("")}</div>
@@ -7630,7 +7660,8 @@ function balHTML(){
             <td><b>${osEsc(b.balsa)}</b></td>
             <td><input value="${osEsc(b.numero)}" placeholder="—" class="bal-num" inputmode="numeric" onchange="balNumero('${b.id}', this.value)"></td>
             <td style="font-size:12px;">${b.atividade==="lr_sw" ? "LR SW" : "LR Carreteira"}</td>
-            <td>${fmtDataBR(b.dataAbertura)}</td><td>${b.dataFechamento ? fmtDataBR(b.dataFechamento) : "—"}</td><td>${b.dataDocumento ? fmtDataBR(b.dataDocumento) : "—"}</td>
+            <td><input type="date" class="nfe-pg bal-dt" value="${b.dataAbertura||""}" onchange="balData('${b.id}','data_abertura',this.value)"></td>
+            <td>${st==="aberta" ? "—" : `<input type="date" class="nfe-pg bal-dt" value="${b.dataFechamento||""}" onchange="balData('${b.id}','data_fechamento',this.value)">`}</td><td>${b.dataDocumento ? fmtDataBR(b.dataDocumento) : "—"}</td>
             <td><span class="bal-badge" style="--c:${s.cor};">${s.icone} ${s.label}</span>${dias!=null && st!=="recebida" ? `<div class="hint" style="margin:2px 0 0;">há ${dias} dia(s) nesta etapa</div>` : ""}</td>
             <td style="white-space:nowrap;">${acao}</td>
             <td style="white-space:nowrap;">${st!=="aberta" ? `<button class="os-link" onclick="balVoltar('${b.id}')" title="Voltar uma etapa">↩</button>` : ""} <button class="os-link" onclick="balExcluir('${b.id}')" title="Excluir">🗑️</button></td>
@@ -7655,6 +7686,29 @@ window.nfeEstornar = async (id) => {
   if(sb){ const { error } = await sb.from("nf_emitidas").update({ data_pagamento:null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id); if(error){ toast("⚠ Não salvou: " + error.message); return; } }
   r.dataPagamento = ""; nfeSalvarLocal(); nfeRerender();
 };
+
+// Logística Reversa (SW e Carreteira): a NF tem o campo Balsa e o período vem da balsa ligada a ela
+function nfeEhLR(ch){ return ch==="lr_sw" || ch==="lr_carreteira"; }
+// Balsa da NF: o campo próprio; senão a balsa ligada no controle; senão o nome que estava na observação
+function nfeBalsaDe(r){
+  if(r.balsa) return r.balsa;
+  const b = (typeof BAL!=="undefined") && BAL.lista.find(x=>x.nfId===r.id); if(b) return b.balsa;
+  if(!nfeEhLR(r.atividade) || !r.obs) return "";
+  const o = nfSemAcento(r.obs);
+  const conhecida = balNomes().find(n=>{ const s = nfSemAcento(n); return o===s || o.startsWith(s+" ") || o.startsWith(s+"-"); });
+  if(conhecida) return conhecida;
+  // nas logísticas reversas a observação costuma ser o próprio nome da balsa (ex: "ISABELLE")
+  const txt = r.obs.trim().toUpperCase(); return txt.length <= 25 && /^[A-ZÀ-Ú][A-ZÀ-Ú0-9 .\-]*$/.test(txt) ? txt : "";
+}
+// Período da NF: nas logísticas reversas, abertura a fechamento da balsa ligada
+function nfePeriodoNF(r){
+  if(nfeEhLR(r.atividade)){
+    const b = BAL.lista.find(x=>x.nfId===r.id);
+    if(b && (b.dataAbertura || b.dataFechamento)) return `${b.dataAbertura ? nfeBR(b.dataAbertura) : "?"} a ${b.dataFechamento ? nfeBR(b.dataFechamento) : "?"}`;
+    return "—";
+  }
+  return nfeRotuloPeriodo(r);
+}
 
 function nfeFiltradas(){
   const busca = nfSemAcento(NFE_FILTRO.busca);
@@ -7699,7 +7753,8 @@ function nfePagina(){
         <option value="">Selecione</option>${perOpcoes.map(p=>{ const st = nfeStatus(a.chave, p); return `<option value="${p.chave}" ${p.chave===NFE_PERIODO?"selected":""}>${({vermelho:"🔴",amarelo:"🟡",verde:"🟢",cinza:"⚪"})[st.cor]} ${osEsc(p.rotulo)} — prazo ${nfeBR(p.prazo)}</option>`; }).join("")}
       </select></label>` : ""}
       <div class="nf-grid">
-        <label>Número<input id="nfe-numero" inputmode="numeric" placeholder="contrato / O.S / viagem" oninput="nfLimparDigitos(this,'/\\-')"></label>
+        <label>${nfeEhLR(NFE_ATIV) ? "Nº da balsa" : "Número"}<input id="nfe-numero" inputmode="numeric" placeholder="${nfeEhLR(NFE_ATIV) ? "ex: 9252" : "contrato / O.S / viagem"}" oninput="nfLimparDigitos(this,'/\\-')"></label>
+        ${nfeEhLR(NFE_ATIV) ? `<label>Balsa<select id="nfe-balsa" onchange="if(this.value==='__nova'){ const n=(prompt('Nome da balsa:')||'').trim().toUpperCase(); if(n){ const o=document.createElement('option'); o.text=n; o.value=n; this.add(o, this.options.length-1); this.value=n; } else this.value=''; }"><option value="">Selecione</option>${balNomes().map(n=>`<option>${osEsc(n)}</option>`).join("")}<option value="__nova">+ outra balsa…</option></select></label>` : ""}
         <label>NF<input id="nfe-nf" inputmode="numeric" placeholder="ex: 1234 ou 1234/1235" oninput="progNF(this)"></label>
         <label>Valor<input id="nfe-valor" inputmode="numeric" placeholder="R$ 0,00" oninput="osMascaraBRL(this)"></label>
         <label>Data de emissão<input type="date" id="nfe-data" value="${frotaHojeISO()}"></label>
@@ -7750,18 +7805,18 @@ function nfePagina(){
           <div>Pendente mais antiga<b style="color:var(--${maisAntiga && nfeDias(maisAntiga.dataEmissao, hoje) > 30 ? "red" : "ink"});">${maisAntiga ? nfeDias(maisAntiga.dataEmissao, hoje) + " dias" : "—"}</b><small>${maisAntiga ? `NF ${osEsc(maisAntiga.nf)} · ${fmtDataBR(maisAntiga.dataEmissao)}` : "nenhuma em aberto"}</small></div>
         </div>`; })()}
       ${lista.length ? `<div style="overflow-x:auto;"><table class="nf-tab">
-        <thead><tr><th>Atividade</th><th>Período</th><th>Número</th><th>NF</th><th class="num">Valor</th><th>Data de emissão</th><th>Observação</th><th>Pagamento</th><th></th></tr></thead>
+        <thead><tr><th>Atividade</th><th>Período</th><th>Número</th><th>Balsa</th><th>NF</th><th class="num">Valor</th><th>Data de emissão</th><th>Observação</th><th>Pagamento</th><th></th></tr></thead>
         <tbody>${lista.map(r=>`<tr ${NFE_EDIT===r.id?'style="background:#FCF1DE;"':""}>
           <td><span class="nfe-dot" style="--c:${nfeAtiv(r.atividade).cor};"></span>${osEsc(nfeRotulo(r))}</td>
-          <td style="font-size:12px;">${osEsc(nfeRotuloPeriodo(r))}</td>
-          <td>${osEsc(r.numero)||"—"}</td><td><b>${osEsc(r.nf)}</b></td><td class="num"><b>${fmtBRL2(r.valor)}</b></td>
+          <td style="font-size:12px;">${osEsc(nfePeriodoNF(r))}</td>
+          <td>${osEsc(r.numero)||"—"}</td><td>${nfeBalsaDe(r) ? `🚢 ${osEsc(nfeBalsaDe(r))}` : "—"}</td><td><b>${osEsc(r.nf)}</b></td><td class="num"><b>${fmtBRL2(r.valor)}</b></td>
           <td>${fmtDataBR(r.dataEmissao)}</td><td>${osEsc(r.obs)||"—"}</td>
           <td style="white-space:nowrap;">${r.dataPagamento
             ? `<span class="badge green">✓ pago ${fmtDataBR(r.dataPagamento)}</span> <span class="hint" style="margin:0;">${nfeDias(r.dataEmissao, r.dataPagamento)} dias</span> <button class="os-link" onclick="nfeEstornar('${r.id}')" title="Desfazer baixa">desfazer</button>`
             : `<span class="hint" style="margin:0 6px 0 0;">em aberto há <b>${nfeDias(r.dataEmissao, frotaHojeISO())}</b> dias</span><input type="date" id="nfe-pg-${r.id}" value="${frotaHojeISO()}" class="nfe-pg"> <button class="os-btn sm green" onclick="nfeBaixar('${r.id}')">💵 Dar baixa</button>`}</td>
           <td style="white-space:nowrap;"><button class="os-link" onclick="nfeEditar('${r.id}')" title="Editar">✏️</button> <button class="os-link" onclick="nfeExcluir('${r.id}')" title="Excluir">🗑️</button></td>
         </tr>`).join("")}</tbody>
-        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="4">Total</td><td class="num">${fmtBRL2(sumArr(lista.map(r=>r.valor)))}</td><td colspan="4"></td></tr></tfoot>
+        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="5">Total</td><td class="num">${fmtBRL2(sumArr(lista.map(r=>r.valor)))}</td><td colspan="4"></td></tr></tfoot>
       </table></div>` : `<div class="empty-state" style="padding:18px;"><p>${NFE.carregando ? "Carregando..." : "Nenhuma NF com esses filtros."}</p></div>`}
     </div>`;
 }
