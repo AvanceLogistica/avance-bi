@@ -8194,6 +8194,11 @@ const NFG_ETAPAS = [
   { k:"recebido", label:"Recebido no mês",        cor:"#1C9A6C" },
 ];
 window.nfgSel = (ativ, etapa) => {
+  // NFs pendentes (aguardando recebimento) abrem a lista de recebimentos já filtrada, com PDF e WhatsApp
+  if(etapa==="receber" || etapa==="todas_pendentes"){
+    NFG_SEL = null; NFG_COB_ATIV = etapa==="todas_pendentes" || NFG_COB_ATIV===ativ ? "todas" : ativ;   // clicar de novo volta para todas
+    nfeRerender(); document.getElementById("nfg-det")?.scrollIntoView({ behavior:"smooth", block:"start" }); return;
+  }
   NFG_SEL = ativ===null || (NFG_SEL && NFG_SEL.ativ===ativ && NFG_SEL.etapa===etapa) ? null : { ativ, etapa };
   nfeRerender(); document.getElementById("nfg-det")?.scrollIntoView({ behavior:"smooth", block:"start" });
 };
@@ -8262,7 +8267,7 @@ function nfgPagina(){
 
   const cel = (L, e) => {
     const x = L.it[e.k]; if(!x) return `<td class="nfg-na" title="Não se aplica a esta operação">—</td>`;
-    const sel = NFG_SEL && NFG_SEL.ativ===L.a.chave && NFG_SEL.etapa===e.k;
+    const sel = e.k==="receber" ? !NFG_SEL && NFG_COB_ATIV===L.a.chave : NFG_SEL && NFG_SEL.ativ===L.a.chave && NFG_SEL.etapa===e.k;
     const clique = `onclick="nfgSel('${L.a.chave}','${e.k}')"`;
     if(x.texto!=null) return `<td><button class="nfg-cel ${sel?"sel":""}" style="--c:${e.cor};" ${clique}><span class="nfg-run">▶ em execução</span><small>${osEsc(x.texto)}</small></button></td>`;
     return `<td><button class="nfg-cel ${x.qtd?"":"zero"} ${x.alerta?"alerta":""} ${sel?"sel":""}" style="--c:${e.cor};" ${clique}>
@@ -8273,7 +8278,7 @@ function nfgPagina(){
 
   return `
     <div class="os-resumo prog-resumo nfe-tot" style="margin:0 0 14px;">
-      <div>A receber<b style="color:var(--amber);">${fmtBRL(totPend)}</b><small>${pend.length} NF(s) aguardando baixa</small></div>
+      <div class="nfg-kpi-link" onclick="nfgSel(null,'todas_pendentes')" title="Ver as NFs pendentes">A receber<b style="color:var(--amber);">${fmtBRL(totPend)}</b><small>${pend.length} NF(s) aguardando baixa · <u>ver</u></small></div>
       <div>Vencido<b style="color:var(--${vencidas.length?"red":"green"});">${fmtBRL(sumArr(vencidas.map(r=>r.valor)))}</b><small>${vencidas.length} NF(s) além do prazo · Manutenção 15 dias, demais 30</small></div>
       <div>Recebido no mês<b style="color:var(--green);">${fmtBRL(sumArr(pagasMes.map(r=>r.valor)))}</b><small>${pagasMes.length} NF(s) · ${nfeNomeMes(mes)}</small></div>
       <div>Pendências de emissão<b style="color:var(--${nAtrasadas?"red":nPendNF+nPendDoc?"amber":"green"});">${nPendNF + nPendDoc}</b><small>${nPendDoc} aguardando documento · ${nPendNF} aguardando NF${nAtrasadas ? ` · <span style="color:var(--red); font-weight:800;">${nAtrasadas} atrasada(s)</span>` : ""}</small></div>
