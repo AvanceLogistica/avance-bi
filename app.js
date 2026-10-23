@@ -6369,8 +6369,8 @@ window.frotaTextoWhatsApp = () => {
       n++;
       const st = r.status!=="operando" && !(a.chave==="oficina" && r.status==="manutencao") ? ` — ${frotaStatus(r.status).label.toUpperCase()}` : "";
       const nome = r.motorista || (a.chave==="oficina" ? "MANUTENÇÃO" : a.chave==="reserva" ? "DISPONÍVEL" : "");
-      const rx = frotaRestricao(v.id);
-      txt += `${String(n).padStart(2,"0")} ${v.placa} ${nome}${st}${r.obs ? ` (${r.obs})` : ""}${rx ? ` ⚠️ RESTRIÇÃO: ${rx.descricao.toUpperCase()}` : ""}\n`;
+      // restrições ficam só no sistema — não vão para a mensagem do WhatsApp
+      txt += `${String(n).padStart(2,"0")} ${v.placa} ${nome}${st}${r.obs ? ` (${r.obs})` : ""}\n`;
     });
   });
   return txt.trim();
