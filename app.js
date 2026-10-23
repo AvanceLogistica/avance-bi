@@ -7417,7 +7417,7 @@ function nfeRerender(){
   const foco = document.activeElement;
   if(foco && foco.closest && (foco.closest("#nfe-form") || foco.closest(".nfe-card") || foco.classList.contains("nfe-pg")) && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
   const y = window.scrollY; document.getElementById("content").innerHTML = renderers[pg](); window.scrollTo(0,y);
-  requestAnimationFrame(nfeGrafico);
+  requestAnimationFrame(pg === "gerencial" ? nfgGrafico : nfeGrafico);
 }
 async function nfeGravarPainel(atividade, periodo, campos){
   const k = `${atividade}|${periodo}`, atual = NFE.painel[k] || {};
@@ -8029,6 +8029,55 @@ function manHTML(){
    "Pendente de NF" = períodos encerrados sem NF (vermelho quando o prazo já venceu).
    Recebimento: NFs sem baixa — a baixa do recebimento é feita pelo Diretor (aqui ou na lista das NF Emitidas). */
 let NFG_SEL = null;   // { ativ, etapa } da célula clicada; null = lista de recebimentos para dar baixa
+let NFG_MES = null;   // mês de emissão do bloco "Emitido por atividade" ("todos" = todos os meses)
+window.nfgMes = (m) => { NFG_MES = m; if(NFG_SEL && NFG_SEL.etapa==="emitidas") NFG_SEL = null; nfeRerender(); };
+function nfgDoMes(){ return NFE.lista.filter(r=>NFG_MES==="todos" || (r.dataEmissao||"").startsWith(NFG_MES)); }
+
+// Emitido por atividade no mês de emissão escolhido: totais + um cartão por atividade (clique = lista das NFs)
+function nfgEmitidoHTML(){
+  const hojeMes = frotaHojeISO().slice(0,7);
+  if(!NFG_MES) NFG_MES = hojeMes;
+  const meses = [...new Set(NFE.lista.map(r=>(r.dataEmissao||"").slice(0,7)).filter(Boolean))].sort().reverse();
+  if(!meses.includes(hojeMes)) meses.unshift(hojeMes);
+  const nomeMes = (m) => m==="todos" ? "Todos os meses" : nfeNomeMes(m);
+  const opt = (v,l) => `<option value="${v}" ${v===NFG_MES?"selected":""}>${osEsc(l)}</option>`;
+  const doMes = nfgDoMes(), total = sumArr(doMes.map(r=>r.valor)), pagas = doMes.filter(r=>r.dataPagamento), vPago = sumArr(pagas.map(r=>r.valor)), vAberto = total - vPago;
+  const sel = NFG_SEL && NFG_SEL.etapa==="emitidas" ? NFG_SEL.ativ : null;
+  return `<div class="panel" style="margin-bottom:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+      <div><h3 style="margin:0;">🧾 Emitido por atividade — ${nomeMes(NFG_MES)}</h3>
+        <div class="hint">Período pela data de emissão. Clique numa atividade para ver as NFs dela embaixo.</div></div>
+      <div class="filtro-bar" style="margin:0;"><label>Mês de emissão<select onchange="nfgMes(this.value)">${opt("todos","Todos os meses")}${meses.map(m=>opt(m, nomeMes(m))).join("")}</select></label></div>
+    </div>
+    <div class="os-resumo prog-resumo nfe-tot" style="margin:10px 0;">
+      <div>Emitido no período<b>${fmtBRL2(total)}</b><small>${doMes.length} NF(s)</small></div>
+      <div>Pago<b style="color:var(--green);">${fmtBRL2(vPago)}</b><small>${pagas.length} NF(s) já pagas</small></div>
+      <div>A receber<b style="color:var(--${vAberto>0.005?"amber":"green"});">${fmtBRL2(vAberto)}</b><small>${doMes.length-pagas.length} NF(s) em aberto</small></div>
+      <div>% recebido<b>${total ? (vPago/total*100).toFixed(1).replace(".",",") : "0"}%</b><small>do valor emitido no período</small></div>
+    </div>
+    <div class="frota-ativs">${NFE_VISIVEIS().map(x=>{ const ls = doMes.filter(r=>r.atividade===x.chave), v = sumArr(ls.map(r=>r.valor));
+      const sobe = ls.filter(r=>r.sentido==="sobe").length, desce = ls.filter(r=>r.sentido==="desce").length;
+      return `<button class="frota-ativ ${sel===x.chave?"sel":""}" style="--c:${x.cor};" onclick="nfgSel('${x.chave}','emitidas')">
+        <span class="frota-ativ-lbl">${x.label}</span><span class="frota-ativ-qtd" style="font-size:22px;">${fmtBRL(v)}</span>
+        <span class="frota-ativ-sub">${ls.length} NF(s)${x.sentido && ls.length ? ` · ⬆️ ${sobe} · ⬇️ ${desce}` : ""}${total ? ` · ${(v/total*100).toFixed(0)}%` : ""}</span>${ls.length ? `<span class="frota-ativ-sub">💵 pago ${fmtBRL(sumArr(ls.filter(r=>r.dataPagamento).map(r=>r.valor)))}${ls.some(r=>!r.dataPagamento) ? ` · a receber ${fmtBRL(sumArr(ls.filter(r=>!r.dataPagamento).map(r=>r.valor)))}` : " ✓"}</span>` : ""}</button>`; }).join("")}</div>
+    <div class="chart-wrap" style="height:${NFG_MES==="todos" ? 280 : 0}px; ${NFG_MES==="todos" ? "" : "display:none;"} margin-top:14px;"><canvas id="ch-nfg"></canvas></div>
+  </div>`;
+}
+// Com "Todos os meses": colunas empilhadas por mês e atividade
+function nfgGrafico(){
+  const el = document.getElementById("ch-nfg"); if(!el || NFG_MES!=="todos") return;
+  const meses = [...new Set(NFE.lista.map(r=>(r.dataEmissao||"").slice(0,7)).filter(Boolean))].sort();
+  mkChart("ch-nfg", {
+    type:"bar",
+    data:{ labels:meses.map(nfeNomeMes), datasets:NFE_VISIVEIS().map(x=>({
+      label:x.label, data:meses.map(m=>sumArr(NFE.lista.filter(r=>r.atividade===x.chave && (r.dataEmissao||"").startsWith(m)).map(r=>r.valor))),
+      backgroundColor:x.cor, stack:"a", borderColor:"#fff", borderWidth:{ top:2 }, borderRadius:4, maxBarThickness:52 })) },
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"rectRounded" } }, datalabels:{ display:false },
+        tooltip:{ mode:"index", filter:(it)=>it.raw>0, callbacks:{ label:(c)=>` ${c.dataset.label}: ${fmtBRL(c.raw)}` } } },
+      scales:{ x:{ stacked:true, grid:{ display:false } }, y:{ stacked:true, grid:{ color:COLORS.grid }, ticks:{ callback:v=>fmtMil(v) } } } }
+  });
+}
 const NFG_ETAPAS = [
   { k:"operacao", label:"Em operação",            cor:"#2E6DB0" },
   { k:"doc",      label:"Pendente de documento",  cor:"#E1971F" },
@@ -8133,6 +8182,8 @@ function nfgPagina(){
       </table></div>
     </div>
 
+    ${nfgEmitidoHTML()}
+
     ${manHTML()}
 
     <div class="panel" style="margin-bottom:16px;">
@@ -8159,6 +8210,10 @@ function nfgDetalhe(linhas){
       <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="3">Total (${ls.length})</td><td class="num">${fmtBRL2(sumArr(ls.map(r=>r.valor)))}</td><td colspan="2"></td></tr></tfoot>
     </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nada nesta etapa.</p></div>`;
 
+  if(NFG_SEL && NFG_SEL.etapa==="emitidas"){
+    const a = nfeAtiv(NFG_SEL.ativ), ls = nfgDoMes().filter(r=>r.atividade===a.chave).sort((p,q)=>(p.dataEmissao||"").localeCompare(q.dataEmissao||""));
+    return `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;"><h3 style="margin:0;"><span class="nfe-dot" style="--c:${a.cor};"></span>${a.label} — NFs emitidas · ${NFG_MES==="todos" ? "todos os meses" : nfeNomeMes(NFG_MES)}</h3>${voltar}</div>` + tabNF(ls, false);
+  }
   if(!x){
     const pend = NFE.lista.filter(r=>!r.dataPagamento).sort((a,b)=>(a.dataEmissao||"").localeCompare(b.dataEmissao||""));
     return `<h3 style="margin:0;">💵 Recebimentos aguardando baixa (${pend.length})</h3>
@@ -8186,6 +8241,7 @@ function nfgDetalhe(linhas){
 }
 
 // Painel Gerencial: item próprio no menu (só Diretor)
+initCharts.gerencial = () => nfgGrafico();
 renderers.gerencial = () => `<div class="page-head"><h2>Painel Gerencial</h2><p>Todas as operações e o status de cada uma — da operação ao recebimento da NF · a baixa do recebimento é da Diretoria</p></div>` + nfgPagina();
 renderers.emissaonf = () => {
   if(MEU_PAPEL === "manutencao") return `<div class="page-head"><h2>O.S de Manutenção</h2></div>
