@@ -7290,7 +7290,7 @@ function nfPaginaNotas(){
 /* Abas da tela Emissão de NF: "nf" (Contratos) e "nfe" (NF Emitidas).
    As abas O.S de Manutenção e O.S Financeira foram retiradas (as O.S já lançadas continuam guardadas na
    tabela manutencao_os do banco). */
-let NF_ABA = "nf";
+let NF_ABA = null;   // null = aba padrão (Diretor abre no Painel gerencial)
 window.setNfAba = (a) => { NF_ABA = a; navigate("emissaonf"); };
 /* -------------------- NF EMITIDAS (aba da Emissão de NF) --------------------
    Registro das notas fiscais emitidas por atividade + PAINEL DE EMISSÃO: cada serviço tem um ritmo de
@@ -7410,7 +7410,7 @@ async function nfeCarregar(){
 }
 function nfeSalvarLocal(){ if(!sb) try{ localStorage.setItem(NFE_LOCAL_KEY, JSON.stringify(NFE.lista)); localStorage.setItem(NFE_PAINEL_LOCAL, JSON.stringify(NFE.painel)); }catch(e){} }
 function nfeRerender(){
-  if(document.querySelector('nav.menu button.active')?.dataset.page !== "emissaonf" || NF_ABA !== "nfe") return;
+  if(document.querySelector('nav.menu button.active')?.dataset.page !== "emissaonf" || !["nfe","painel"].includes(NF_ABA)) return;
   const foco = document.activeElement;
   if(foco && foco.closest && (foco.closest("#nfe-form") || foco.closest(".nfe-card") || foco.classList.contains("nfe-pg")) && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
   const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); window.scrollTo(0,y);
@@ -7672,16 +7672,19 @@ function balHTML(){
 
 // Dias entre duas datas ISO (lead time de pagamento e idade das pendentes)
 function nfeDias(de, ate){ return Math.round((nfeDate(ate) - nfeDate(de)) / 864e5); }
+const nfePodeBaixar = () => MEU_PAPEL === "diretor";   // a baixa do recebimento é da Diretoria
 window.nfeBaixar = async (id) => {
+  if(!nfePodeBaixar()){ toast("A baixa do recebimento é feita pela Diretoria."); return; }
   const r = NFE.lista.find(x=>x.id===id); if(!r) return;
   const data = document.getElementById(`nfe-pg-${id}`)?.value || frotaHojeISO();
   if(data < r.dataEmissao && !confirm("A data de pagamento é anterior à emissão. Confirmar assim mesmo?")) return;
   if(sb){ const { error } = await sb.from("nf_emitidas").update({ data_pagamento:data, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id);
-    if(error){ toast(/data_pagamento/i.test(error.message) ? "⚠ Falta rodar o SQL da baixa de pagamento no Supabase." : "⚠ Não salvou: " + error.message); return; } }
+    if(error){ toast(/data_pagamento/i.test(error.message) ? "⚠ Falta rodar o SQL da baixa de pagamento no Supabase." : /diretoria/i.test(error.message) ? "⚠ A baixa do recebimento é feita pela Diretoria." : "⚠ Não salvou: " + error.message); return; } }
   r.dataPagamento = data; nfeSalvarLocal();
   toast(`NF ${r.nf} baixada como paga em ${fmtDataBR(data)} · lead time ${nfeDias(r.dataEmissao, data)} dias ✓`); nfeRerender();
 };
 window.nfeEstornar = async (id) => {
+  if(!nfePodeBaixar()){ toast("Somente a Diretoria pode desfazer a baixa."); return; }
   const r = NFE.lista.find(x=>x.id===id); if(!r || !confirm(`Desfazer a baixa da NF ${r.nf}? Ela volta para as pendentes.`)) return;
   if(sb){ const { error } = await sb.from("nf_emitidas").update({ data_pagamento:null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id); if(error){ toast("⚠ Não salvou: " + error.message); return; } }
   r.dataPagamento = ""; nfeSalvarLocal(); nfeRerender();
@@ -7812,8 +7815,8 @@ function nfePagina(){
           <td>${osEsc(r.numero)||"—"}</td><td>${nfeBalsaDe(r) ? `🚢 ${osEsc(nfeBalsaDe(r))}` : "—"}</td><td><b>${osEsc(r.nf)}</b></td><td class="num"><b>${fmtBRL2(r.valor)}</b></td>
           <td>${fmtDataBR(r.dataEmissao)}</td><td>${osEsc(r.obs)||"—"}</td>
           <td style="white-space:nowrap;">${r.dataPagamento
-            ? `<span class="badge green">✓ pago ${fmtDataBR(r.dataPagamento)}</span> <span class="hint" style="margin:0;">${nfeDias(r.dataEmissao, r.dataPagamento)} dias</span> <button class="os-link" onclick="nfeEstornar('${r.id}')" title="Desfazer baixa">desfazer</button>`
-            : `<span class="hint" style="margin:0 6px 0 0;">em aberto há <b>${nfeDias(r.dataEmissao, frotaHojeISO())}</b> dias</span><input type="date" id="nfe-pg-${r.id}" value="${frotaHojeISO()}" class="nfe-pg"> <button class="os-btn sm green" onclick="nfeBaixar('${r.id}')">💵 Dar baixa</button>`}</td>
+            ? `<span class="badge green">✓ pago ${fmtDataBR(r.dataPagamento)}</span> <span class="hint" style="margin:0;">${nfeDias(r.dataEmissao, r.dataPagamento)} dias</span>${nfePodeBaixar() ? ` <button class="os-link" onclick="nfeEstornar('${r.id}')" title="Desfazer baixa">desfazer</button>` : ""}`
+            : nfeBaixaHTML(r)}</td>
           <td style="white-space:nowrap;"><button class="os-link" onclick="nfeEditar('${r.id}')" title="Editar">✏️</button> <button class="os-link" onclick="nfeExcluir('${r.id}')" title="Excluir">🗑️</button></td>
         </tr>`).join("")}</tbody>
         <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="5">Total</td><td class="num">${fmtBRL2(sumArr(lista.map(r=>r.valor)))}</td><td colspan="4"></td></tr></tfoot>
@@ -7837,15 +7840,169 @@ function nfeGrafico(){
   });
 }
 
+/* -------------------- PAINEL GERENCIAL (aba da Emissão de NF · só Diretor) --------------------
+   Uma linha por operação (as atividades das NF Emitidas) e uma coluna por etapa:
+     Em operação → Pendente de documento → Pendente de NF → Aguardando recebimento → Recebido no mês.
+   Logística Reversa: as etapas vêm do controle de balsas. Serviços com ritmo (semanal/quinzenal/mensal):
+   "Pendente de NF" = períodos encerrados sem NF (vermelho quando o prazo já venceu).
+   Recebimento: NFs sem baixa — a baixa do recebimento é feita pelo Diretor (aqui ou na lista das NF Emitidas). */
+let NFG_SEL = null;   // { ativ, etapa } da célula clicada; null = lista de recebimentos para dar baixa
+const NFG_ETAPAS = [
+  { k:"operacao", label:"Em operação",            cor:"#2E6DB0" },
+  { k:"doc",      label:"Pendente de documento",  cor:"#E1971F" },
+  { k:"nf",       label:"Pendente de NF",         cor:"#D0021B" },
+  { k:"receber",  label:"Aguardando recebimento", cor:"#8E2EB0" },
+  { k:"recebido", label:"Recebido no mês",        cor:"#1C9A6C" },
+];
+window.nfgSel = (ativ, etapa) => {
+  NFG_SEL = ativ===null || (NFG_SEL && NFG_SEL.ativ===ativ && NFG_SEL.etapa===etapa) ? null : { ativ, etapa };
+  nfeRerender(); document.getElementById("nfg-det")?.scrollIntoView({ behavior:"smooth", block:"start" });
+};
+window.nfgIrBalsas = () => { BAL_FILTRO = "pendentes"; setNfAba("nfe"); };
+
+// Campo de baixa do recebimento (só o Diretor dá baixa; os outros perfis veem "aguardando")
+function nfeBaixaHTML(r){
+  const dias = nfeDias(r.dataEmissao, frotaHojeISO());
+  const idade = `<span class="hint" style="margin:0 6px 0 0;">em aberto há <b style="color:var(--${dias>30?"red":"ink"});">${dias}</b> dias</span>`;
+  return nfePodeBaixar()
+    ? `${idade}<input type="date" id="nfe-pg-${r.id}" value="${frotaHojeISO()}" class="nfe-pg"> <button class="os-btn sm green" onclick="nfeBaixar('${r.id}')">💵 Dar baixa</button>`
+    : `${idade}<span class="bal-badge" style="--c:#8E2EB0;">aguardando baixa da Diretoria</span>`;
+}
+
+function nfgLinha(a){
+  const hoje = frotaHojeISO(), mes = hoje.slice(0,7);
+  const nfs = NFE.lista.filter(r=>r.atividade===a.chave);
+  const receber = nfs.filter(r=>!r.dataPagamento), recebido = nfs.filter(r=>r.dataPagamento && r.dataPagamento.startsWith(mes));
+  const it = {
+    receber:  { qtd:receber.length, valor:sumArr(receber.map(r=>r.valor)), nfs:receber, alerta:receber.some(r=>nfeDias(r.dataEmissao, hoje) > 30) },
+    recebido: { qtd:recebido.length, valor:sumArr(recebido.map(r=>r.valor)), nfs:recebido },
+  };
+  if(nfeEhLR(a.chave)){
+    const bs = BAL.lista.filter(b=>b.atividade===a.chave);
+    const g = (st) => bs.filter(b=>balStatus(b)===st);
+    const velha = (l) => l.some(b=>(balDesdeEtapa(b)||0) > 7);
+    it.operacao = { qtd:g("aberta").length, balsas:g("aberta") };
+    it.doc = { qtd:g("pend_doc").length, balsas:g("pend_doc"), alerta:velha(g("pend_doc")) };
+    it.nf  = { qtd:g("pend_nf").length, balsas:g("pend_nf"), alerta:g("pend_nf").length > 0 };
+  } else if(a.cad){
+    const per = nfePeriodos(a.cad).map(p=>({ p, st:nfeStatus(a.chave, p) }));
+    const atual = per.find(x=>x.p.ini <= hoje && x.p.fim >= hoje);
+    const pend = per.filter(x=>x.st.cor==="vermelho" || x.st.cor==="amarelo" || (x.st.cor==="cinza" && x.p.fim < hoje));
+    it.operacao = { texto: atual ? atual.p.rotulo : "—", periodos: atual ? [atual] : [] };
+    it.nf = { qtd:pend.length, periodos:pend, alerta:pend.some(x=>x.st.cor==="vermelho") };
+  }
+  return { a, it };
+}
+
+function nfgPagina(){
+  if(!NFE.carregado && !NFE.carregando){ NFE.carregando = true; setTimeout(()=>nfeCarregar(), 0); }
+  if(!BAL.carregado && !BAL.carregando){ BAL.carregando = true; setTimeout(()=>balCarregar(), 0); }
+  if(NFE.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar as NF emitidas</h4><p>${osEsc(NFE.erro)}</p></div></div>`;
+  if(!NFE.carregado) return `<div class="panel"><div class="empty-state" style="padding:24px;"><p>Carregando...</p></div></div>`;
+  const hoje = frotaHojeISO(), mes = hoje.slice(0,7);
+  const ativs = NFE_ATIVIDADES.filter(a=>!a.oculto || NFE.lista.some(r=>r.atividade===a.chave && !r.dataPagamento));
+  const linhas = ativs.map(nfgLinha);
+  const pend = NFE.lista.filter(r=>!r.dataPagamento), pagasMes = NFE.lista.filter(r=>r.dataPagamento && r.dataPagamento.startsWith(mes));
+  const vencidas = pend.filter(r=>nfeDias(r.dataEmissao, hoje) > 30);
+  const lt = NFE.lista.filter(r=>r.dataPagamento && nfeDias(r.dataPagamento, hoje) <= 90).map(r=>nfeDias(r.dataEmissao, r.dataPagamento));
+  const nPendNF = sumArr(linhas.map(L=>L.it.nf ? L.it.nf.qtd : 0)), nPendDoc = sumArr(linhas.map(L=>L.it.doc ? L.it.doc.qtd : 0));
+  const nAtrasadas = sumArr(linhas.map(L=>L.it.nf ? (L.it.nf.periodos ? L.it.nf.periodos.filter(x=>x.st.cor==="vermelho").length : L.it.nf.qtd) : 0));
+  const faixas = [["Até 15 dias",0,15],["16 a 30 dias",16,30],["31 a 60 dias",31,60],["Mais de 60 dias",61,99999]].map(([l,de,ate])=>{
+    const ls = pend.filter(r=>{ const d = nfeDias(r.dataEmissao, hoje); return d>=de && d<=ate; }); return { l, qtd:ls.length, valor:sumArr(ls.map(r=>r.valor)), cor: de>60 ? "#8C0011" : de>30 ? "#D0021B" : de>15 ? "#E1971F" : "#1C9A6C" }; });
+  const totPend = sumArr(pend.map(r=>r.valor));
+
+  const cel = (L, e) => {
+    const x = L.it[e.k]; if(!x) return `<td class="nfg-na" title="Não se aplica a esta operação">—</td>`;
+    const sel = NFG_SEL && NFG_SEL.ativ===L.a.chave && NFG_SEL.etapa===e.k;
+    const clique = `onclick="nfgSel('${L.a.chave}','${e.k}')"`;
+    if(x.texto!=null) return `<td><button class="nfg-cel ${sel?"sel":""}" style="--c:${e.cor};" ${clique}><span class="nfg-run">▶ em execução</span><small>${osEsc(x.texto)}</small></button></td>`;
+    return `<td><button class="nfg-cel ${x.qtd?"":"zero"} ${x.alerta?"alerta":""} ${sel?"sel":""}" style="--c:${e.cor};" ${clique}>
+      <b>${x.qtd}</b>${x.valor!=null && x.qtd ? `<small>${fmtBRL(x.valor)}</small>` : x.qtd && x.balsas ? `<small>balsa(s)</small>` : x.qtd && x.periodos ? `<small>período(s)</small>` : ""}</button></td>`;
+  };
+  const tot = (k) => { const ls = linhas.map(L=>L.it[k]).filter(Boolean); const q = sumArr(ls.map(x=>x.qtd||0)), v = sumArr(ls.map(x=>x.valor||0));
+    return k==="operacao" ? `<td>${sumArr(ls.map(x=>x.qtd||0)) || ""}</td>` : `<td><b>${q}</b>${v ? `<div class="hint" style="margin:0;">${fmtBRL(v)}</div>` : ""}</td>`; };
+
+  return `
+    <div class="os-resumo prog-resumo nfe-tot" style="margin:0 0 14px;">
+      <div>A receber<b style="color:var(--amber);">${fmtBRL(totPend)}</b><small>${pend.length} NF(s) aguardando baixa</small></div>
+      <div>Vencido (+30 dias)<b style="color:var(--${vencidas.length?"red":"green"});">${fmtBRL(sumArr(vencidas.map(r=>r.valor)))}</b><small>${vencidas.length} NF(s) emitidas há mais de 30 dias</small></div>
+      <div>Recebido no mês<b style="color:var(--green);">${fmtBRL(sumArr(pagasMes.map(r=>r.valor)))}</b><small>${pagasMes.length} NF(s) · ${nfeNomeMes(mes)}</small></div>
+      <div>Pendências de emissão<b style="color:var(--${nAtrasadas?"red":nPendNF+nPendDoc?"amber":"green"});">${nPendNF + nPendDoc}</b><small>${nPendDoc} aguardando documento · ${nPendNF} aguardando NF${nAtrasadas ? ` · <span style="color:var(--red); font-weight:800;">${nAtrasadas} atrasada(s)</span>` : ""}</small></div>
+      <div>Lead time médio<b>${lt.length ? Math.round(sumArr(lt)/lt.length) + " dias" : "—"}</b><small>emissão → recebimento · últimos 90 dias</small></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3 style="margin:0;">📋 Status por operação</h3>
+      <div class="hint">Cada linha é uma operação; cada coluna, uma etapa até o dinheiro entrar. Clique num número para ver o detalhe embaixo. Destaque = precisa de atenção (NF atrasada, documento parado há mais de 7 dias ou NF em aberto há mais de 30 dias).</div>
+      <div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab nfg-tab">
+        <thead><tr><th>Operação</th>${NFG_ETAPAS.map(e=>`<th><span class="nfe-dot" style="--c:${e.cor};"></span>${e.label}</th>`).join("")}</tr></thead>
+        <tbody>${linhas.map(L=>`<tr><td><span class="nfe-dot" style="--c:${L.a.cor};"></span><b>${L.a.label}</b><div class="hint" style="margin:0;">${nfeEhLR(L.a.chave) ? "por balsa" : L.a.cad ? ({semanal:"semanal",quinzenal:"quinzenal",mensal:"mensal"})[L.a.cad] : "avulsa"}</div></td>${NFG_ETAPAS.map(e=>cel(L, e)).join("")}</tr>`).join("")}</tbody>
+        <tfoot><tr style="font-weight:800; background:var(--paper);"><td>Total</td>${NFG_ETAPAS.map(e=>tot(e.k)).join("")}</tr></tfoot>
+      </table></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3 style="margin:0;">⏳ Idade do contas a receber</h3>
+      <div class="hint">NFs sem baixa, pela quantidade de dias desde a emissão.</div>
+      <div class="bal-sts">${faixas.map(f=>`<div class="bal-st" style="--c:${f.cor}; cursor:default;"><span class="lbl">${f.l}</span><b>${fmtBRL(f.valor)}</b><small>${f.qtd} NF(s)${totPend ? ` · ${(f.valor/totPend*100).toFixed(0)}%` : ""}</small></div>`).join("")}</div>
+    </div>
+
+    <div class="panel" id="nfg-det">${nfgDetalhe(linhas)}</div>`;
+}
+
+function nfgDetalhe(linhas){
+  const hoje = frotaHojeISO();
+  const L = NFG_SEL ? linhas.find(x=>x.a.chave===NFG_SEL.ativ) : null;
+  const e = NFG_SEL ? NFG_ETAPAS.find(x=>x.k===NFG_SEL.etapa) : null;
+  const x = L && e ? L.it[e.k] : null;
+  const voltar = `<button class="os-btn sm" onclick="nfgSel(null)">← Ver recebimentos para dar baixa</button>`;
+  const tabNF = (ls, pagas) => ls.length ? `<div style="overflow-x:auto;"><table class="nf-tab">
+      <thead><tr><th>Operação</th><th>Período / Balsa</th><th>NF</th><th class="num">Valor</th><th>Emissão</th><th>${pagas ? "Recebimento" : "Baixa do recebimento"}</th></tr></thead>
+      <tbody>${ls.map(r=>`<tr><td><span class="nfe-dot" style="--c:${nfeAtiv(r.atividade).cor};"></span>${osEsc(nfeRotulo(r))}</td>
+        <td style="font-size:12px;">${nfeBalsaDe(r) ? `🚢 ${osEsc(nfeBalsaDe(r))}${r.numero ? " – " + osEsc(r.numero) : ""}<br>` : ""}${osEsc(nfePeriodoNF(r))}</td>
+        <td><b>${osEsc(r.nf)}</b></td><td class="num"><b>${fmtBRL2(r.valor)}</b></td><td>${fmtDataBR(r.dataEmissao)}</td>
+        <td style="white-space:nowrap;">${r.dataPagamento ? `<span class="badge green">✓ recebido ${fmtDataBR(r.dataPagamento)}</span> <span class="hint" style="margin:0;">${nfeDias(r.dataEmissao, r.dataPagamento)} dias</span>${nfePodeBaixar() ? ` <button class="os-link" onclick="nfeEstornar('${r.id}')">desfazer</button>` : ""}` : nfeBaixaHTML(r)}</td></tr>`).join("")}</tbody>
+      <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="3">Total (${ls.length})</td><td class="num">${fmtBRL2(sumArr(ls.map(r=>r.valor)))}</td><td colspan="2"></td></tr></tfoot>
+    </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nada nesta etapa.</p></div>`;
+
+  if(!x){
+    const pend = NFE.lista.filter(r=>!r.dataPagamento).sort((a,b)=>(a.dataEmissao||"").localeCompare(b.dataEmissao||""));
+    return `<h3 style="margin:0;">💵 Recebimentos aguardando baixa (${pend.length})</h3>
+      <div class="hint">Todas as operações, da NF mais antiga para a mais nova. Quando o valor cair na conta, escolha a data e clique em "Dar baixa".</div>${tabNF(pend, false)}`;
+  }
+  const tit = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;"><h3 style="margin:0;"><span class="nfe-dot" style="--c:${e.cor};"></span>${L.a.label} — ${e.label}</h3>${voltar}</div>`;
+  if(x.nfs) return tit + tabNF([...x.nfs].sort((a,b)=>(a.dataEmissao||"").localeCompare(b.dataEmissao||"")), e.k==="recebido");
+  if(x.balsas) return tit + (x.balsas.length ? `<div style="overflow-x:auto; margin-top:8px;"><table class="nf-tab">
+      <thead><tr><th>Balsa</th><th>Nº</th><th>Abertura</th><th>Fechamento</th><th>Documento</th><th>Status</th></tr></thead>
+      <tbody>${x.balsas.map(b=>{ const s = BAL_STATUS[balStatus(b)], d = balDesdeEtapa(b); return `<tr><td><b>${osEsc(b.balsa)}</b></td><td>${osEsc(b.numero)||"—"}</td>
+        <td>${b.dataAbertura ? fmtDataBR(b.dataAbertura) : "—"}</td><td>${b.dataFechamento ? fmtDataBR(b.dataFechamento) : "—"}</td><td>${b.dataDocumento ? fmtDataBR(b.dataDocumento) : "—"}</td>
+        <td><span class="bal-badge" style="--c:${s.cor};">${s.icone} ${s.label}</span>${d!=null ? `<div class="hint" style="margin:2px 0 0; ${d>7?"color:var(--red); font-weight:700;":""}">há ${d} dia(s) nesta etapa</div>` : ""}</td></tr>`; }).join("")}</tbody>
+    </table></div><div style="margin-top:10px;"><button class="os-btn sm" onclick="nfgIrBalsas()">🚢 Abrir o controle de balsas</button></div>` : `<div class="empty-state" style="padding:16px;"><p>Nenhuma balsa nesta etapa.</p></div>`);
+  if(x.periodos){
+    const corTxt = { vermelho:"var(--red)", amarelo:"#8a5a0c", verde:"var(--green)", cinza:"var(--ink-soft)" };
+    return tit + (x.periodos.length ? `<div style="overflow-x:auto; margin-top:8px;"><table class="nf-tab">
+      <thead><tr><th>Período</th><th>Prazo da NF</th><th>Situação</th><th>NF(s)</th><th>Observação</th></tr></thead>
+      <tbody>${x.periodos.map(({p, st})=>`<tr><td><b>${osEsc(p.rotulo)}</b></td><td>${fmtDataBR(p.prazo)}</td>
+        <td style="font-weight:800; color:${corTxt[st.cor]};">${osEsc(st.texto)}</td>
+        <td>${st.nfs.length ? st.nfs.map(r=>`NF ${osEsc(r.nf)} · ${fmtBRL2(r.valor)}`).join("<br>") : "—"}</td><td>${osEsc(st.man.obs||"")||"—"}</td></tr>`).join("")}</tbody>
+    </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nenhum período pendente de NF. ✓</p></div>`);
+  }
+  return tit;
+}
+
 renderers.emissaonf = () => {
   if(MEU_PAPEL === "manutencao") return `<div class="page-head"><h2>O.S de Manutenção</h2></div>
     <div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">🔧</div><h4>Esta tela foi desativada</h4><p>A O.S de Manutenção foi retirada do sistema. Fale com a diretoria.</p></div></div>`;
-  if(!["nf","nfe"].includes(NF_ABA)) NF_ABA = "nf";
+  const souDir = MEU_PAPEL === "diretor";
+  if(!NF_ABA) NF_ABA = souDir ? "painel" : "nf";
+  if(!["nf","nfe","painel"].includes(NF_ABA) || (NF_ABA==="painel" && !souDir)) NF_ABA = "nf";
   const abas = `
     <div class="tabs" style="margin-bottom:14px;">
+      ${souDir ? `<button class="tab-btn ${NF_ABA==="painel"?"active":""}" onclick="setNfAba('painel')">📊 Painel gerencial</button>` : ""}
       <button class="tab-btn ${NF_ABA==="nf"?"active":""}" onclick="setNfAba('nf')">🧾 Contratos</button>
       <button class="tab-btn ${NF_ABA==="nfe"?"active":""}" onclick="setNfAba('nfe')">📑 NF Emitidas</button>
     </div>`;
+  if(NF_ABA === "painel") return `<div class="page-head"><h2>Painel gerencial</h2><p>Todas as operações e o status de cada uma — da operação ao recebimento da NF · a baixa do recebimento é da Diretoria</p></div>` + abas + nfgPagina();
   const cab = NF_ABA === "nfe"
     ? `<div class="page-head"><h2>NF Emitidas</h2><p>Notas fiscais emitidas por atividade — número, NF, valor, data de emissão e observação</p></div>`
     : `<div class="page-head"><h2>Emissão de NF</h2><p>Lançamento das notas por contrato — serviço ou balsa, deadline, entrega da minuta e vencimento · mesmos dados da tela Faturamento</p></div>`;

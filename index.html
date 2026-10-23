@@ -440,6 +440,11 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .bal-badge{ display:inline-block; font-size:11px; font-weight:800; padding:3px 8px; border-radius:20px; background:color-mix(in srgb, var(--c) 14%, white); color:var(--c); white-space:nowrap; }
 .bal-num{ width:80px; font-family:inherit; font-size:12.5px; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:#fff; }
 .bal-tab td{ vertical-align:middle; }
+.nfg-tab th, .nfg-tab td{ text-align:center; vertical-align:middle; } .nfg-tab th:first-child, .nfg-tab td:first-child{ text-align:left; min-width:190px; }
+.nfg-cel{ font-family:inherit; background:transparent; border:1px solid transparent; border-radius:9px; padding:5px 10px; min-width:84px; cursor:pointer; display:inline-flex; flex-direction:column; align-items:center; gap:1px; }
+.nfg-cel:hover{ background:var(--paper); } .nfg-cel b{ font-size:20px; line-height:1.1; color:var(--c); } .nfg-cel small{ font-size:11px; color:var(--ink-soft); white-space:nowrap; }
+.nfg-cel.zero b{ color:#C9CBD4; } .nfg-cel.alerta{ background:color-mix(in srgb, var(--c) 10%, white); border-color:color-mix(in srgb, var(--c) 45%, white); }
+.nfg-cel.sel{ box-shadow:0 0 0 2px var(--c); background:var(--paper); } .nfg-run{ font-size:11px; font-weight:800; color:var(--c); } .nfg-na{ color:#C9CBD4; }
 /* NF Emitidas — painel de emissão */
 .nfe-legenda{ display:flex; gap:12px; font-size:12.5px; font-weight:700; flex-wrap:wrap; }
 .nfe-cards{ display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:12px; margin-top:12px; }
