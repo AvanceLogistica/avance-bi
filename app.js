@@ -7503,6 +7503,10 @@ const BAL_STATUS = {
 const BAL_ATIVS = [{ chave:"lr_sw", label:"Logística Reversa SW" }, { chave:"lr_carreteira", label:"Logística Reversa Carreteira" }];
 let BAL = { lista:[], carregado:false, carregando:false, erro:null };
 let BAL_FILTRO = "pendentes";      // pendentes | <status> | todas
+// Listas de balsas e de semanas da manutenção: recolhidas por padrão (abre ao clicar ou ao escolher um status)
+let BAL_ABERTO = false, MAN_ABERTO = false;
+try{ BAL_ABERTO = localStorage.getItem("avance_bal_aberto")==="1"; MAN_ABERTO = localStorage.getItem("avance_man_aberto")==="1"; }catch(e){}
+window.nfeAbrirLista = (qual, aberto) => { if(qual==="bal") BAL_ABERTO = aberto; else MAN_ABERTO = aberto; try{ localStorage.setItem(`avance_${qual}_aberto`, aberto ? "1" : "0"); }catch(e){} };
 let BAL_ATIV = "lr_sw";
 let NFE_BALSA_ID = null;           // balsa que a NF em lançamento vai quitar
 
@@ -7544,7 +7548,7 @@ async function balAtualizar(b, campos){
 }
 
 window.balSetAtiv = (a) => { BAL_ATIV = a; nfeRerender(); };
-window.balFiltro = (f) => { BAL_FILTRO = BAL_FILTRO===f ? "pendentes" : f; nfeRerender(); };
+window.balFiltro = (f) => { BAL_FILTRO = BAL_FILTRO===f ? "pendentes" : f; nfeAbrirLista("bal", true); nfeRerender(); };
 window.balAbrir = async () => {
   let balsa = document.getElementById("bal-nome")?.value || "";
   if(balsa === "__nova"){ balsa = (prompt("Nome da balsa:")||"").trim().toUpperCase(); }
@@ -7652,7 +7656,9 @@ function balHTML(){
         </div>
       </div>
 
-      ${lista.length ? `<div style="overflow-x:auto; margin-top:12px;"><table class="nf-tab bal-tab">
+      <details class="nfe-sum" ${BAL_ABERTO ? "open" : ""} ontoggle="nfeAbrirLista('bal', this.open)">
+        <summary>Lista de balsas — <b>${lista.length}</b> ${BAL_FILTRO==="todas" ? "no total" : BAL_FILTRO==="pendentes" ? "pendente(s)" : "em " + BAL_STATUS[BAL_FILTRO].label}<span class="nfe-sum-dica"></span></summary>
+      ${lista.length ? `<div style="overflow-x:auto; margin-top:8px;"><table class="nf-tab bal-tab">
         <thead><tr><th>Balsa</th><th>Nº</th><th>Atividade</th><th>Abertura</th><th>Fechamento</th><th>Documento</th><th>Status</th><th>Próxima etapa</th><th></th></tr></thead>
         <tbody>${lista.map(({b, st})=>{ const s = BAL_STATUS[st], nf = balNF(b), dias = balDesdeEtapa(b);
           const acao = st==="aberta" ? `<input type="date" id="bal-dt-${b.id}" value="${hoje}" class="nfe-pg"> <button class="os-btn sm" onclick="balAvancar('${b.id}','fechar')">🔒 Fechar balsa</button>`
@@ -7670,6 +7676,7 @@ function balHTML(){
             <td style="white-space:nowrap;">${st!=="aberta" ? `<button class="os-link" onclick="balVoltar('${b.id}')" title="Voltar uma etapa">↩</button>` : ""} <button class="os-link" onclick="balExcluir('${b.id}')" title="Excluir">🗑️</button></td>
           </tr>`; }).join("")}</tbody>
       </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${BAL.carregando ? "Carregando..." : "Nenhuma balsa neste filtro."}</p></div>`}
+      </details>
     </div>`;
 }
 
@@ -7952,7 +7959,7 @@ window.manEmitirNF = (ini) => {
   setTimeout(()=>{ nfePreencher({ valor: val ? "R$ " + val.toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }) : "", obs: c.osNumero ? `O.S Combitrans nº ${c.osNumero}` : "" });
     document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" }); }, 60);
 };
-window.manFiltro = (f) => { MAN_FILTRO = MAN_FILTRO===f ? "pendentes" : f; nfeRerender(); };
+window.manFiltro = (f) => { MAN_FILTRO = MAN_FILTRO===f ? "pendentes" : f; nfeAbrirLista("man", true); nfeRerender(); };
 
 // Tabela das semanas (usada no bloco do ciclo e no detalhe do Painel Gerencial)
 function manTabela(lista){
@@ -8008,7 +8015,10 @@ function manHTML(){
       <button class="sub-tab-btn ${MAN_FILTRO==="todas"?"active":""}" onclick="manFiltro('todas')">Ver todas (${todos.length})</button></div>
     <div class="bal-sts">${Object.entries(MAN_ETAPAS).filter(([k])=>k!=="sem_op" || cont[k]).map(([k,s])=>`<button class="bal-st ${MAN_FILTRO===k?"sel":""}" style="--c:${s.cor};" onclick="manFiltro('${k}')">
       <span class="lbl">${s.icone} ${s.label}</span><b>${cont[k]}</b>${atr[k] ? `<small style="color:var(--red); font-weight:800;">${atr[k]} atrasada(s)</small>` : k==="nf_emitida" && aReceber ? `<small>${fmtBRL(aReceber)} a receber</small>` : ""}</button>`).join("")}</div>
-    ${manTabela(lista)}
+    <details class="nfe-sum" ${MAN_ABERTO ? "open" : ""} ontoggle="nfeAbrirLista('man', this.open)">
+      <summary>Semanas — <b>${lista.length}</b> ${MAN_FILTRO==="todas" ? "no total" : MAN_FILTRO==="pendentes" ? "pendente(s)" : "em " + MAN_ETAPAS[MAN_FILTRO].label}<span class="nfe-sum-dica"></span></summary>
+      ${manTabela(lista)}
+    </details>
   </div>`;
 }
 

@@ -440,6 +440,9 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .bal-badge{ display:inline-block; font-size:11px; font-weight:800; padding:3px 8px; border-radius:20px; background:color-mix(in srgb, var(--c) 14%, white); color:var(--c); white-space:nowrap; }
 .bal-num{ width:80px; font-family:inherit; font-size:12.5px; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:#fff; }
 .bal-tab td{ vertical-align:middle; }
+.nfe-sum{ margin-top:12px; } .nfe-sum > summary{ cursor:pointer; list-style:none; display:flex; align-items:center; gap:6px; font-size:13px; font-weight:700; padding:10px 14px; background:var(--paper); border:1px solid var(--line); border-radius:10px; }
+.nfe-sum > summary::-webkit-details-marker{ display:none; } .nfe-sum > summary::before{ content:"▸"; font-size:14px; color:var(--ink-soft); } .nfe-sum[open] > summary::before{ content:"▾"; }
+.nfe-sum > summary:hover{ border-color:var(--ink-soft); } .nfe-sum-dica{ margin-left:auto; font-size:11px; font-weight:600; color:var(--ink-soft); } .nfe-sum-dica::after{ content:"clique para abrir"; } .nfe-sum[open] .nfe-sum-dica::after{ content:"clique para recolher"; }
 .man-val{ width:120px; } .man-os{ display:flex; align-items:center; gap:4px; margin-top:4px; font-size:11px; color:var(--ink-soft); white-space:nowrap; }
 .nfg-tab th, .nfg-tab td{ text-align:center; vertical-align:middle; } .nfg-tab th:first-child, .nfg-tab td:first-child{ text-align:left; min-width:190px; }
 .nfg-cel{ font-family:inherit; background:transparent; border:1px solid transparent; border-radius:9px; padding:5px 10px; min-width:84px; cursor:pointer; display:inline-flex; flex-direction:column; align-items:center; gap:1px; }
@@ -760,7 +763,7 @@ body.pending #pendingScreen{display:flex;}
   <main class="content" id="content"></main>
 </div>
 
-<script src="data.js?v=20261023f"></script>
-<script src="app.js?v=20261023f"></script>
+<script src="data.js?v=20261023g"></script>
+<script src="app.js?v=20261023g"></script>
 </body>
 </html>
