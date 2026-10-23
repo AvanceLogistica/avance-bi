@@ -439,8 +439,8 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","acessos"];
-const PAGINAS_SO_DIRETOR = ["faturamento","emissaonf","contaspagar","belem","ordens","organograma","acessos"];
+const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","acessos","gerencial"];
+const PAGINAS_SO_DIRETOR = ["gerencial","faturamento","emissaonf","contaspagar","belem","ordens","organograma","acessos"];
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
@@ -450,6 +450,7 @@ const titles = {
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
   organograma: ["Organograma","Colaboradores por local, função e liderança"],
+  gerencial: ["Painel Gerencial","Todas as operações e o status de cada uma — da operação ao recebimento da NF"],
   emissaonf: ["Emissão de NF","Lançamento das notas por contrato, serviço ou balsa, minuta e vencimento"],
   faturamento: ["Faturamento","Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem"],
   acessos: ["Gestão de Acessos","Libere ou altere o perfil de cada pessoa cadastrada no sistema"],
@@ -7290,7 +7291,7 @@ function nfPaginaNotas(){
 /* Abas da tela Emissão de NF: "nf" (Contratos) e "nfe" (NF Emitidas).
    As abas O.S de Manutenção e O.S Financeira foram retiradas (as O.S já lançadas continuam guardadas na
    tabela manutencao_os do banco). */
-let NF_ABA = null;   // null = aba padrão (Diretor abre no Painel gerencial)
+let NF_ABA = "nf";
 window.setNfAba = (a) => { NF_ABA = a; navigate("emissaonf"); };
 /* -------------------- NF EMITIDAS (aba da Emissão de NF) --------------------
    Registro das notas fiscais emitidas por atividade + PAINEL DE EMISSÃO: cada serviço tem um ritmo de
@@ -7410,7 +7411,8 @@ async function nfeCarregar(){
 }
 function nfeSalvarLocal(){ if(!sb) try{ localStorage.setItem(NFE_LOCAL_KEY, JSON.stringify(NFE.lista)); localStorage.setItem(NFE_PAINEL_LOCAL, JSON.stringify(NFE.painel)); }catch(e){} }
 function nfeRerender(){
-  if(document.querySelector('nav.menu button.active')?.dataset.page !== "emissaonf" || !["nfe","painel"].includes(NF_ABA)) return;
+  const pg = document.querySelector('nav.menu button.active')?.dataset.page;
+  if(pg !== "gerencial" && (pg !== "emissaonf" || NF_ABA !== "nfe")) return;
   const foco = document.activeElement;
   if(foco && foco.closest && (foco.closest("#nfe-form") || foco.closest(".nfe-card") || foco.classList.contains("nfe-pg")) && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
   const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); window.scrollTo(0,y);
@@ -7990,19 +7992,17 @@ function nfgDetalhe(linhas){
   return tit;
 }
 
+// Painel Gerencial: item próprio no menu (só Diretor)
+renderers.gerencial = () => `<div class="page-head"><h2>Painel Gerencial</h2><p>Todas as operações e o status de cada uma — da operação ao recebimento da NF · a baixa do recebimento é da Diretoria</p></div>` + nfgPagina();
 renderers.emissaonf = () => {
   if(MEU_PAPEL === "manutencao") return `<div class="page-head"><h2>O.S de Manutenção</h2></div>
     <div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">🔧</div><h4>Esta tela foi desativada</h4><p>A O.S de Manutenção foi retirada do sistema. Fale com a diretoria.</p></div></div>`;
-  const souDir = MEU_PAPEL === "diretor";
-  if(!NF_ABA) NF_ABA = souDir ? "painel" : "nf";
-  if(!["nf","nfe","painel"].includes(NF_ABA) || (NF_ABA==="painel" && !souDir)) NF_ABA = "nf";
+  if(!["nf","nfe"].includes(NF_ABA)) NF_ABA = "nf";
   const abas = `
     <div class="tabs" style="margin-bottom:14px;">
-      ${souDir ? `<button class="tab-btn ${NF_ABA==="painel"?"active":""}" onclick="setNfAba('painel')">📊 Painel gerencial</button>` : ""}
       <button class="tab-btn ${NF_ABA==="nf"?"active":""}" onclick="setNfAba('nf')">🧾 Contratos</button>
       <button class="tab-btn ${NF_ABA==="nfe"?"active":""}" onclick="setNfAba('nfe')">📑 NF Emitidas</button>
     </div>`;
-  if(NF_ABA === "painel") return `<div class="page-head"><h2>Painel gerencial</h2><p>Todas as operações e o status de cada uma — da operação ao recebimento da NF · a baixa do recebimento é da Diretoria</p></div>` + abas + nfgPagina();
   const cab = NF_ABA === "nfe"
     ? `<div class="page-head"><h2>NF Emitidas</h2><p>Notas fiscais emitidas por atividade — número, NF, valor, data de emissão e observação</p></div>`
     : `<div class="page-head"><h2>Emissão de NF</h2><p>Lançamento das notas por contrato — serviço ou balsa, deadline, entrega da minuta e vencimento · mesmos dados da tela Faturamento</p></div>`;
