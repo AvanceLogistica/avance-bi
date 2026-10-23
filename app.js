@@ -7308,7 +7308,7 @@ const NFE_ATIVIDADES = [
   { chave:"devolucao_motos",  label:"Devolução de motos",            sentido:false, cad:"mensal",    doc:"E-mail", cor:"#147A55" },
   { chave:"contrato_sw_motos",label:"Contrato SW motos",             sentido:false, cad:null, oculto:true, doc:"", cor:"#8C0011" },   // não emite NF (fica só para lançamentos antigos)
   { chave:"entregas",         label:"Entregas",                      sentido:false, cad:null, oculto:true, doc:"", cor:"#4A86C8" },   // não emite NF (fica só para lançamentos antigos)
-  { chave:"manutencao",       label:"Manutenção de Carreta",         sentido:false, cad:"quinzenal", periodoLivre:true, doc:"", cor:"#D0021B" },
+  { chave:"manutencao",       label:"Manutenção de Carreta",         sentido:false, cad:"semanal",   periodoLivre:true, doc:"", cor:"#D0021B" },
   { chave:"lr_carreteira",    label:"Logística Reversa Carreteira",  sentido:true,  cad:null,        doc:"",       cor:"#1C9A6C" },
   { chave:"outros",           label:"Outros serviços (LSL / outros)",sentido:false, cad:null,        doc:"",       cor:"#5B5F6B" },
 ];
@@ -7388,6 +7388,7 @@ const NFE_VISIVEIS = () => NFE_ATIVIDADES.filter(a=>!a.oculto || NFE.lista.some(
 // Período sugerido no formulário: o pendente mais antigo, ou o último período encerrado
 function nfePeriodoSugerido(ch){
   const a = nfeAtiv(ch); if(!a.cad || a.semPeriodo) return "";
+  if(ch==="manutencao" && typeof manCiclos==="function"){ const x = manCiclos().filter(c=>c.st==="pend_nf").pop(); if(x) return `D:${x.ini}:${x.fim}`; }
   const r = nfeResumoAtividade(a); if(!r.foco) return "";
   return a.periodoLivre ? `D:${r.foco.p.ini}:${r.foco.p.fim}` : r.foco.p.chave;
 }
@@ -7675,10 +7676,10 @@ function balHTML(){
 // Dias entre duas datas ISO (lead time de pagamento e idade das pendentes)
 function nfeDias(de, ate){ return Math.round((nfeDate(ate) - nfeDate(de)) / 864e5); }
 const nfePodeBaixar = () => MEU_PAPEL === "diretor";   // a baixa do recebimento é da Diretoria
-window.nfeBaixar = async (id) => {
+window.nfeBaixar = async (id, inputId) => {
   if(!nfePodeBaixar()){ toast("A baixa do recebimento é feita pela Diretoria."); return; }
   const r = NFE.lista.find(x=>x.id===id); if(!r) return;
-  const data = document.getElementById(`nfe-pg-${id}`)?.value || frotaHojeISO();
+  const data = document.getElementById(inputId || `nfe-pg-${id}`)?.value || frotaHojeISO();
   if(data < r.dataEmissao && !confirm("A data de pagamento é anterior à emissão. Confirmar assim mesmo?")) return;
   if(sb){ const { error } = await sb.from("nf_emitidas").update({ data_pagamento:data, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id);
     if(error){ toast(/data_pagamento/i.test(error.message) ? "⚠ Falta rodar o SQL da baixa de pagamento no Supabase." : /diretoria/i.test(error.message) ? "⚠ A baixa do recebimento é feita pela Diretoria." : "⚠ Não salvou: " + error.message); return; } }
@@ -7742,6 +7743,7 @@ function nfePagina(){
   if(a.cad && NFE_PERIODO && !perOpcoes.some(p=>p.chave===NFE_PERIODO)){ const extra = nfePeriodoPorChave(a.cad, NFE_PERIODO); if(extra) perOpcoes.push(extra); }
   return `
     ${balHTML()}
+    ${manHTML()}
 
     <div class="panel os-form" id="nfe-form" style="margin-bottom:16px; ${NFE_EDIT ? "border:2px solid var(--amber);" : ""}">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
@@ -7842,6 +7844,149 @@ function nfeGrafico(){
   });
 }
 
+/* -------------------- MANUTENÇÃO DE CARRETA — CICLO SEMANAL (contrato Combitrans) --------------------
+   Cada semana de manutenção segue as etapas do contrato:
+     Semana 1       execução das manutenções
+     Semana 2       documento das frotas mantidas → administrativo da Avance → checagem → O.S para a Combitrans
+     O.S + 7 dias   a Combitrans analisa e devolve a O.S assinada
+     Semana 4       a Avance emite a NF (período = a semana) → a Combitrans paga em até 15 dias da emissão
+   As datas de cada etapa ficam na tabela manut_ciclos (uma linha por semana, chave = segunda-feira).
+   A NF é a das NF Emitidas (Manutenção de Carreta) cujo período cobre a semana. */
+const MAN_LOCAL = "avance_manut_ciclos_v1";
+const MAN_PRAZO_PGTO = 15;   // dias da emissão da NF até o pagamento da Combitrans
+const MAN_ETAPAS = {
+  execucao:   { label:"Semana 1 · em execução",               cor:"#2E6DB0", icone:"🔧" },
+  pend_doc:   { label:"Pendente de documento (adm.)",         cor:"#E1971F", icone:"📄" },
+  pend_os:    { label:"Pendente de O.S p/ Combitrans",        cor:"#C77700", icone:"🧾" },
+  assinatura: { label:"Combitrans analisando / assinatura",   cor:"#B8860B", icone:"✍️" },
+  pend_nf:    { label:"Pendente de NF",                       cor:"#D0021B", icone:"🔴" },
+  nf_emitida: { label:"NF emitida — aguardando pagamento",    cor:"#8E2EB0", icone:"🟣" },
+  recebida:   { label:"Recebida",                             cor:"#1C9A6C", icone:"🟢" },
+  sem_op:     { label:"Sem manutenção na semana",             cor:"#9A9CA6", icone:"⚪" },
+};
+const MAN_CAMPO = { documento:"dataDocumento", os:"dataOS", assinatura:"dataAssinatura" };
+let MAN = { ciclos:{}, carregado:false, carregando:false, erro:null };
+let MAN_FILTRO = "pendentes";   // pendentes | <etapa> | todas
+
+// Segundas-feiras do início do controle até a semana atual (mais recente primeiro)
+function manSemanas(){
+  const hoje = frotaHojeISO(), l = []; let s = nfeSegunda(NFE_INICIO_CONTROLE);
+  while(s <= hoje && l.length < 120){ l.push(s); s = nfeAddDias(s, 7); }
+  return l.reverse();
+}
+function manNFs(ini){ const p = { chave:`S:${ini}`, ini, fim:nfeAddDias(ini, 6) }, a = nfeAtiv("manutencao"); return NFE.lista.filter(r=>r.atividade==="manutencao" && nfeCobre(r, p, a)); }
+function manCiclo(ini){
+  const c = MAN.ciclos[ini] || {}, hoje = frotaHojeISO(), fim = nfeAddDias(ini, 6), nfs = manNFs(ini);
+  let st, prazo = null;
+  if(nfs.length){ st = nfs.every(r=>r.dataPagamento) ? "recebida" : "nf_emitida"; prazo = nfs.filter(r=>!r.dataPagamento).map(r=>nfeAddDias(r.dataEmissao, MAN_PRAZO_PGTO)).sort()[0] || null; }
+  else if(c.semOperacao) st = "sem_op";
+  else if(hoje <= fim){ st = "execucao"; prazo = fim; }
+  else if(!c.dataDocumento){ st = "pend_doc"; prazo = nfeAddDias(ini, 13); }   // dentro da semana 2
+  else if(!c.dataOS){ st = "pend_os"; prazo = nfeAddDias(ini, 13); }          // na mesma semana 2
+  else if(!c.dataAssinatura){ st = "assinatura"; prazo = nfeAddDias(c.dataOS, 7); }
+  else { st = "pend_nf"; prazo = nfeAddDias(ini, 27); }                      // até o fim da semana 4
+  const atrasado = !!prazo && hoje > prazo && !["recebida","sem_op","execucao"].includes(st);
+  return { ini, fim, c, nfs, st, prazo, atrasado, diasAtraso: atrasado ? nfeDias(prazo, hoje) : 0 };
+}
+function manCiclos(){ return manSemanas().map(manCiclo); }
+
+async function manCarregar(){
+  MAN.carregando = true;
+  if(!sb){ try{ MAN.ciclos = JSON.parse(localStorage.getItem(MAN_LOCAL)||"{}"); }catch(e){ MAN.ciclos = {}; } }
+  else {
+    const { data, error } = await sb.from("manut_ciclos").select("*");
+    if(error) MAN.erro = error.message;
+    else { MAN.erro = null; MAN.ciclos = {};
+      data.forEach(r=>{ MAN.ciclos[r.semana] = { dataDocumento:r.data_documento||"", dataOS:r.data_os||"", dataAssinatura:r.data_assinatura||"", semOperacao:!!r.sem_operacao, obs:r.obs||"", por:(r.atualizado_por||"").split("@")[0] }; }); }
+  }
+  MAN.carregando = false; MAN.carregado = true; nfeRerender();
+}
+function manGarantirCarga(){ if(!MAN.carregado && !MAN.carregando){ MAN.carregando = true; setTimeout(()=>manCarregar(), 0); } }
+async function manGravar(ini, campos){
+  const novo = { ...(MAN.ciclos[ini] || {}), ...campos };
+  if(sb){
+    const { error } = await sb.from("manut_ciclos").upsert({ semana:ini, data_documento:novo.dataDocumento||null, data_os:novo.dataOS||null, data_assinatura:novo.dataAssinatura||null,
+      sem_operacao:!!novo.semOperacao, obs:novo.obs||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }, { onConflict:"semana" });
+    if(error){ toast(/manut_ciclos/i.test(error.message) ? "⚠ Falta rodar o SQL do ciclo da Manutenção de Carreta no Supabase." : "⚠ Não salvou: " + error.message); return false; }
+  }
+  MAN.ciclos[ini] = novo; if(!sb) try{ localStorage.setItem(MAN_LOCAL, JSON.stringify(MAN.ciclos)); }catch(e){}
+  return true;
+}
+window.manAvancar = async (ini, etapa) => {
+  const v = document.getElementById(`man-dt-${ini}`)?.value || frotaHojeISO();
+  const c = MAN.ciclos[ini] || {};
+  if(etapa==="os" && c.dataDocumento && v < c.dataDocumento){ toast("A O.S está antes do envio do documento."); return; }
+  if(etapa==="assinatura" && c.dataOS && v < c.dataOS){ toast("A assinatura está antes da emissão da O.S."); return; }
+  if(await manGravar(ini, { [MAN_CAMPO[etapa]]:v })) toast(({ documento:"Documento enviado ao administrativo ✓", os:"O.S emitida para a Combitrans ✓", assinatura:"O.S assinada pela Combitrans ✓" })[etapa]);
+  nfeRerender();
+};
+window.manData = async (ini, etapa, v) => { if(await manGravar(ini, { [MAN_CAMPO[etapa]]:v||"" })) toast("Data salva ✓"); nfeRerender(); };
+window.manSemOp = async (ini, v) => { if(v && !confirm(`Marcar a semana ${nfeBR(ini)} a ${nfeBR(nfeAddDias(ini,6))} como SEM manutenção?`)) return; if(await manGravar(ini, { semOperacao:v })) nfeRerender(); };
+window.manVoltar = async (ini) => {
+  const c = MAN.ciclos[ini] || {}, campo = c.dataAssinatura ? "dataAssinatura" : c.dataOS ? "dataOS" : c.dataDocumento ? "dataDocumento" : null;
+  if(!campo || !confirm("Voltar uma etapa (apaga a última data lançada)?")) return;
+  if(await manGravar(ini, { [campo]:"" })) nfeRerender();
+};
+window.manEmitirNF = (ini) => {
+  NF_ABA = "nfe"; NFE_EDIT = null; NFE_BALSA_ID = null; NFE_ATIV = "manutencao"; NFE_SENTIDO = ""; NFE_PERIODO = `D:${ini}:${nfeAddDias(ini, 6)}`;
+  navigate("emissaonf"); setTimeout(()=>document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60);
+};
+window.manFiltro = (f) => { MAN_FILTRO = MAN_FILTRO===f ? "pendentes" : f; nfeRerender(); };
+
+// Tabela das semanas (usada no bloco do ciclo e no detalhe do Painel Gerencial)
+function manTabela(lista){
+  if(!lista.length) return `<div class="empty-state" style="padding:16px;"><p>${MAN.carregando ? "Carregando..." : "Nenhuma semana nesta etapa."}</p></div>`;
+  const hoje = frotaHojeISO();
+  const dt = (x, etapa) => { const v = x.c[MAN_CAMPO[etapa]]; return v ? `<input type="date" class="nfe-pg bal-dt" value="${v}" onchange="manData('${x.ini}','${etapa}',this.value)">` : "—"; };
+  return `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab bal-tab">
+    <thead><tr><th>Semana</th><th>Etapa</th><th>Doc. ao adm.</th><th>O.S Combitrans</th><th>Assinatura</th><th>NF</th><th>Pagamento</th><th>Próxima ação</th><th></th></tr></thead>
+    <tbody>${lista.map(x=>{ const s = MAN_ETAPAS[x.st];
+      const prazoTxt = x.st==="execucao" ? `termina ${nfeBR(x.fim)}` : x.prazo && !["recebida","sem_op"].includes(x.st)
+        ? (x.atrasado ? `<b style="color:var(--red);">atrasado ${x.diasAtraso} dia(s)</b> · prazo era ${nfeBR(x.prazo)}` : `prazo ${nfeBR(x.prazo)}`) : "";
+      const dataIn = `<input type="date" id="man-dt-${x.ini}" value="${hoje}" class="nfe-pg">`;
+      const acao = x.st==="execucao" ? `<button class="os-link" onclick="manSemOp('${x.ini}', true)">marcar sem manutenção</button>`
+        : x.st==="pend_doc" ? `${dataIn} <button class="os-btn sm" onclick="manAvancar('${x.ini}','documento')">📄 Documento enviado</button> <button class="os-link" onclick="manSemOp('${x.ini}', true)" title="Semana sem manutenção">sem manutenção</button>`
+        : x.st==="pend_os" ? `${dataIn} <button class="os-btn sm" onclick="manAvancar('${x.ini}','os')">🧾 O.S emitida</button>`
+        : x.st==="assinatura" ? `${dataIn} <button class="os-btn sm" onclick="manAvancar('${x.ini}','assinatura')">✍️ O.S assinada</button>`
+        : x.st==="pend_nf" ? `<button class="os-btn sm green" onclick="manEmitirNF('${x.ini}')">🧾 Emitir NF</button>`
+        : x.st==="nf_emitida" ? x.nfs.filter(r=>!r.dataPagamento).map(r=>nfePodeBaixar()
+            ? `<span style="white-space:nowrap;">NF ${osEsc(r.nf)} <input type="date" id="man-pg-${r.id}" value="${hoje}" class="nfe-pg"> <button class="os-btn sm green" onclick="nfeBaixar('${r.id}','man-pg-${r.id}')">💵 Dar baixa</button></span>`
+            : `<span class="bal-badge" style="--c:#8E2EB0;">aguardando baixa da Diretoria</span>`).join("<br>")
+        : x.st==="sem_op" ? `<button class="os-link" onclick="manSemOp('${x.ini}', false)">desfazer</button>` : "✓";
+      const nfTxt = x.nfs.length ? x.nfs.map(r=>`NF <b>${osEsc(r.nf)}</b> · ${fmtBRL2(r.valor)}<div class="hint" style="margin:0;">emitida ${fmtDataBR(r.dataEmissao)}</div>`).join("") : "—";
+      const pgTxt = x.nfs.length ? x.nfs.map(r=>{ const v = nfeAddDias(r.dataEmissao, MAN_PRAZO_PGTO);
+        return r.dataPagamento ? `<span class="badge green">✓ ${fmtDataBR(r.dataPagamento)}</span>` : `<span style="${hoje > v ? "color:var(--red); font-weight:800;" : ""}">vence ${fmtDataBR(v)}</span>`; }).join("<br>") : "—";
+      return `<tr>
+        <td><b>${nfeBR(x.ini)} a ${nfeBR(x.fim)}</b></td>
+        <td><span class="bal-badge" style="--c:${s.cor};">${s.icone} ${s.label}</span>${prazoTxt ? `<div class="hint" style="margin:2px 0 0;">${prazoTxt}</div>` : ""}</td>
+        <td>${dt(x,"documento")}</td><td>${dt(x,"os")}</td>
+        <td>${dt(x,"assinatura")}${x.c.dataOS && !x.c.dataAssinatura ? `<div class="hint" style="margin:0;">limite ${nfeBR(nfeAddDias(x.c.dataOS, 7))}</div>` : ""}</td>
+        <td style="font-size:12.5px;">${nfTxt}</td><td style="font-size:12.5px;">${pgTxt}</td>
+        <td style="white-space:nowrap;">${acao}</td>
+        <td>${x.c.dataDocumento && !x.nfs.length ? `<button class="os-link" onclick="manVoltar('${x.ini}')" title="Voltar uma etapa">↩</button>` : ""}</td>
+      </tr>`; }).join("")}</tbody>
+  </table></div>`;
+}
+
+function manHTML(){
+  manGarantirCarga();
+  const cab = `<h3 style="margin:0;">🔧 Manutenção de Carreta — ciclo semanal (Combitrans)</h3>
+    <div class="hint">Semana 1 execução → semana 2 documento ao administrativo e O.S para a Combitrans → Combitrans tem 7 dias para assinar → semana 4 NF da Avance → Combitrans paga em até 15 dias da emissão.</div>`;
+  if(MAN.erro) return `<div class="panel" style="margin-bottom:16px;">${cab}<div class="os-alerta amber" style="margin-top:8px;">⚠️ Não foi possível carregar o ciclo da manutenção: ${osEsc(MAN.erro)}. Se falar em tabela inexistente ("manut_ciclos"), rode o SQL do ciclo da Manutenção de Carreta no Supabase.</div></div>`;
+  const todos = manCiclos();
+  const cont = {}; Object.keys(MAN_ETAPAS).forEach(k=>cont[k] = todos.filter(x=>x.st===k).length);
+  const atr = {}; Object.keys(MAN_ETAPAS).forEach(k=>atr[k] = todos.filter(x=>x.st===k && x.atrasado).length);
+  const lista = todos.filter(x=>MAN_FILTRO==="todas" || (MAN_FILTRO==="pendentes" ? !["recebida","sem_op"].includes(x.st) : x.st===MAN_FILTRO));
+  const aReceber = sumArr(todos.filter(x=>x.st==="nf_emitida").flatMap(x=>x.nfs.filter(r=>!r.dataPagamento).map(r=>r.valor)));
+  return `<div class="panel" style="margin-bottom:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;"><div>${cab}</div>
+      <button class="sub-tab-btn ${MAN_FILTRO==="todas"?"active":""}" onclick="manFiltro('todas')">Ver todas (${todos.length})</button></div>
+    <div class="bal-sts">${Object.entries(MAN_ETAPAS).filter(([k])=>k!=="sem_op" || cont[k]).map(([k,s])=>`<button class="bal-st ${MAN_FILTRO===k?"sel":""}" style="--c:${s.cor};" onclick="manFiltro('${k}')">
+      <span class="lbl">${s.icone} ${s.label}</span><b>${cont[k]}</b>${atr[k] ? `<small style="color:var(--red); font-weight:800;">${atr[k]} atrasada(s)</small>` : k==="nf_emitida" && aReceber ? `<small>${fmtBRL(aReceber)} a receber</small>` : ""}</button>`).join("")}</div>
+    ${manTabela(lista)}
+  </div>`;
+}
+
 /* -------------------- PAINEL GERENCIAL (aba da Emissão de NF · só Diretor) --------------------
    Uma linha por operação (as atividades das NF Emitidas) e uma coluna por etapa:
      Em operação → Pendente de documento → Pendente de NF → Aguardando recebimento → Recebido no mês.
@@ -7864,22 +8009,30 @@ window.nfgIrBalsas = () => { BAL_FILTRO = "pendentes"; setNfAba("nfe"); };
 
 // Campo de baixa do recebimento (só o Diretor dá baixa; os outros perfis veem "aguardando")
 function nfeBaixaHTML(r){
-  const dias = nfeDias(r.dataEmissao, frotaHojeISO());
-  const idade = `<span class="hint" style="margin:0 6px 0 0;">em aberto há <b style="color:var(--${dias>30?"red":"ink"});">${dias}</b> dias</span>`;
+  const dias = nfeDias(r.dataEmissao, frotaHojeISO()), venc = r.atividade==="manutencao" ? nfeAddDias(r.dataEmissao, MAN_PRAZO_PGTO) : null;
+  const idade = `<span class="hint" style="margin:0 6px 0 0;">em aberto há <b style="color:var(--${nfeVencida(r)?"red":"ink"});">${dias}</b> dias${venc ? ` · vence ${nfeBR(venc)}` : ""}</span>`;
   return nfePodeBaixar()
     ? `${idade}<input type="date" id="nfe-pg-${r.id}" value="${frotaHojeISO()}" class="nfe-pg"> <button class="os-btn sm green" onclick="nfeBaixar('${r.id}')">💵 Dar baixa</button>`
     : `${idade}<span class="bal-badge" style="--c:#8E2EB0;">aguardando baixa da Diretoria</span>`;
 }
 
+// NF em aberto além do prazo: Manutenção (Combitrans) 15 dias da emissão; demais 30 dias
+function nfeVencida(r){ return !r.dataPagamento && nfeDias(r.dataEmissao, frotaHojeISO()) > (r.atividade==="manutencao" ? MAN_PRAZO_PGTO : 30); }
 function nfgLinha(a){
   const hoje = frotaHojeISO(), mes = hoje.slice(0,7);
   const nfs = NFE.lista.filter(r=>r.atividade===a.chave);
   const receber = nfs.filter(r=>!r.dataPagamento), recebido = nfs.filter(r=>r.dataPagamento && r.dataPagamento.startsWith(mes));
   const it = {
-    receber:  { qtd:receber.length, valor:sumArr(receber.map(r=>r.valor)), nfs:receber, alerta:receber.some(r=>nfeDias(r.dataEmissao, hoje) > 30) },
+    receber:  { qtd:receber.length, valor:sumArr(receber.map(r=>r.valor)), nfs:receber, alerta:receber.some(nfeVencida) },
     recebido: { qtd:recebido.length, valor:sumArr(recebido.map(r=>r.valor)), nfs:recebido },
   };
-  if(nfeEhLR(a.chave)){
+  if(a.chave==="manutencao"){   // ciclo semanal da Combitrans
+    const cs = manCiclos(), g = (...sts) => cs.filter(x=>sts.includes(x.st)), atual = g("execucao")[0];
+    const d = g("pend_doc","pend_os","assinatura"), n = g("pend_nf");
+    it.operacao = { texto: atual ? `Semana ${nfeBR(atual.ini)} a ${nfeBR(atual.fim)}` : "—", ciclos: atual ? [atual] : [] };
+    it.doc = { qtd:d.length, ciclos:d, alerta:d.some(x=>x.atrasado) };
+    it.nf = { qtd:n.length, ciclos:n, alerta:n.some(x=>x.atrasado) };
+  } else if(nfeEhLR(a.chave)){
     const bs = BAL.lista.filter(b=>b.atividade===a.chave);
     const g = (st) => bs.filter(b=>balStatus(b)===st);
     const velha = (l) => l.some(b=>(balDesdeEtapa(b)||0) > 7);
@@ -7899,16 +8052,17 @@ function nfgLinha(a){
 function nfgPagina(){
   if(!NFE.carregado && !NFE.carregando){ NFE.carregando = true; setTimeout(()=>nfeCarregar(), 0); }
   if(!BAL.carregado && !BAL.carregando){ BAL.carregando = true; setTimeout(()=>balCarregar(), 0); }
+  manGarantirCarga();
   if(NFE.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar as NF emitidas</h4><p>${osEsc(NFE.erro)}</p></div></div>`;
   if(!NFE.carregado) return `<div class="panel"><div class="empty-state" style="padding:24px;"><p>Carregando...</p></div></div>`;
   const hoje = frotaHojeISO(), mes = hoje.slice(0,7);
   const ativs = NFE_ATIVIDADES.filter(a=>!a.oculto || NFE.lista.some(r=>r.atividade===a.chave && !r.dataPagamento));
   const linhas = ativs.map(nfgLinha);
   const pend = NFE.lista.filter(r=>!r.dataPagamento), pagasMes = NFE.lista.filter(r=>r.dataPagamento && r.dataPagamento.startsWith(mes));
-  const vencidas = pend.filter(r=>nfeDias(r.dataEmissao, hoje) > 30);
+  const vencidas = pend.filter(nfeVencida);
   const lt = NFE.lista.filter(r=>r.dataPagamento && nfeDias(r.dataPagamento, hoje) <= 90).map(r=>nfeDias(r.dataEmissao, r.dataPagamento));
   const nPendNF = sumArr(linhas.map(L=>L.it.nf ? L.it.nf.qtd : 0)), nPendDoc = sumArr(linhas.map(L=>L.it.doc ? L.it.doc.qtd : 0));
-  const nAtrasadas = sumArr(linhas.map(L=>L.it.nf ? (L.it.nf.periodos ? L.it.nf.periodos.filter(x=>x.st.cor==="vermelho").length : L.it.nf.qtd) : 0));
+  const nAtrasadas = sumArr(linhas.map(L=>L.it.nf ? (L.it.nf.periodos ? L.it.nf.periodos.filter(x=>x.st.cor==="vermelho").length : L.it.nf.ciclos ? L.it.nf.ciclos.filter(x=>x.atrasado).length : L.it.nf.qtd) : 0));
   const faixas = [["Até 15 dias",0,15],["16 a 30 dias",16,30],["31 a 60 dias",31,60],["Mais de 60 dias",61,99999]].map(([l,de,ate])=>{
     const ls = pend.filter(r=>{ const d = nfeDias(r.dataEmissao, hoje); return d>=de && d<=ate; }); return { l, qtd:ls.length, valor:sumArr(ls.map(r=>r.valor)), cor: de>60 ? "#8C0011" : de>30 ? "#D0021B" : de>15 ? "#E1971F" : "#1C9A6C" }; });
   const totPend = sumArr(pend.map(r=>r.valor));
@@ -7919,7 +8073,7 @@ function nfgPagina(){
     const clique = `onclick="nfgSel('${L.a.chave}','${e.k}')"`;
     if(x.texto!=null) return `<td><button class="nfg-cel ${sel?"sel":""}" style="--c:${e.cor};" ${clique}><span class="nfg-run">▶ em execução</span><small>${osEsc(x.texto)}</small></button></td>`;
     return `<td><button class="nfg-cel ${x.qtd?"":"zero"} ${x.alerta?"alerta":""} ${sel?"sel":""}" style="--c:${e.cor};" ${clique}>
-      <b>${x.qtd}</b>${x.valor!=null && x.qtd ? `<small>${fmtBRL(x.valor)}</small>` : x.qtd && x.balsas ? `<small>balsa(s)</small>` : x.qtd && x.periodos ? `<small>período(s)</small>` : ""}</button></td>`;
+      <b>${x.qtd}</b>${x.valor!=null && x.qtd ? `<small>${fmtBRL(x.valor)}</small>` : x.qtd && x.balsas ? `<small>balsa(s)</small>` : x.qtd && x.periodos ? `<small>período(s)</small>` : x.qtd && x.ciclos ? `<small>semana(s)</small>` : ""}</button></td>`;
   };
   const tot = (k) => { const ls = linhas.map(L=>L.it[k]).filter(Boolean); const q = sumArr(ls.map(x=>x.qtd||0)), v = sumArr(ls.map(x=>x.valor||0));
     return k==="operacao" ? `<td>${sumArr(ls.map(x=>x.qtd||0)) || ""}</td>` : `<td><b>${q}</b>${v ? `<div class="hint" style="margin:0;">${fmtBRL(v)}</div>` : ""}</td>`; };
@@ -7927,7 +8081,7 @@ function nfgPagina(){
   return `
     <div class="os-resumo prog-resumo nfe-tot" style="margin:0 0 14px;">
       <div>A receber<b style="color:var(--amber);">${fmtBRL(totPend)}</b><small>${pend.length} NF(s) aguardando baixa</small></div>
-      <div>Vencido (+30 dias)<b style="color:var(--${vencidas.length?"red":"green"});">${fmtBRL(sumArr(vencidas.map(r=>r.valor)))}</b><small>${vencidas.length} NF(s) emitidas há mais de 30 dias</small></div>
+      <div>Vencido<b style="color:var(--${vencidas.length?"red":"green"});">${fmtBRL(sumArr(vencidas.map(r=>r.valor)))}</b><small>${vencidas.length} NF(s) além do prazo · Manutenção 15 dias, demais 30</small></div>
       <div>Recebido no mês<b style="color:var(--green);">${fmtBRL(sumArr(pagasMes.map(r=>r.valor)))}</b><small>${pagasMes.length} NF(s) · ${nfeNomeMes(mes)}</small></div>
       <div>Pendências de emissão<b style="color:var(--${nAtrasadas?"red":nPendNF+nPendDoc?"amber":"green"});">${nPendNF + nPendDoc}</b><small>${nPendDoc} aguardando documento · ${nPendNF} aguardando NF${nAtrasadas ? ` · <span style="color:var(--red); font-weight:800;">${nAtrasadas} atrasada(s)</span>` : ""}</small></div>
       <div>Lead time médio<b>${lt.length ? Math.round(sumArr(lt)/lt.length) + " dias" : "—"}</b><small>emissão → recebimento · últimos 90 dias</small></div>
@@ -7942,6 +8096,8 @@ function nfgPagina(){
         <tfoot><tr style="font-weight:800; background:var(--paper);"><td>Total</td>${NFG_ETAPAS.map(e=>tot(e.k)).join("")}</tr></tfoot>
       </table></div>
     </div>
+
+    ${manHTML()}
 
     <div class="panel" style="margin-bottom:16px;">
       <h3 style="margin:0;">⏳ Idade do contas a receber</h3>
@@ -7973,6 +8129,7 @@ function nfgDetalhe(linhas){
       <div class="hint">Todas as operações, da NF mais antiga para a mais nova. Quando o valor cair na conta, escolha a data e clique em "Dar baixa".</div>${tabNF(pend, false)}`;
   }
   const tit = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;"><h3 style="margin:0;"><span class="nfe-dot" style="--c:${e.cor};"></span>${L.a.label} — ${e.label}</h3>${voltar}</div>`;
+  if(x.ciclos) return tit + manTabela(x.ciclos);
   if(x.nfs) return tit + tabNF([...x.nfs].sort((a,b)=>(a.dataEmissao||"").localeCompare(b.dataEmissao||"")), e.k==="recebido");
   if(x.balsas) return tit + (x.balsas.length ? `<div style="overflow-x:auto; margin-top:8px;"><table class="nf-tab">
       <thead><tr><th>Balsa</th><th>Nº</th><th>Abertura</th><th>Fechamento</th><th>Documento</th><th>Status</th></tr></thead>
