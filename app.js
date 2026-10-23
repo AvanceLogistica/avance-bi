@@ -6100,9 +6100,10 @@ async function frotaBuscarDb(silencioso){
   if(!FROTA_DB) return;
   const desde = new Date(FROTA_DATA + "T12:00:00"); desde.setDate(desde.getDate() - 45);
   const desdeISO = desde.toISOString().slice(0,10);
-  const [veic, st] = await Promise.all([
+  const [veic, st, rest] = await Promise.all([
     sb.from("frota_veiculos").select("*").order("ordem"),
     sb.from("frota_status").select("*").gte("data", desdeISO).lte("data", FROTA_DATA),
+    sb.from("frota_restricoes").select("id,veiculo_id,descricao,tem_foto,aberta_em,aberta_por").is("resolvida_em", null),
   ]);
   const erro = veic.error || st.error;
   if(erro){
@@ -6116,8 +6117,10 @@ async function frotaBuscarDb(silencioso){
       confirmado:true, em:frotaHora(r.atualizado_em), por:(r.atualizado_por||"").split("@")[0] };
   });
   const novo = { veiculos: veic.data.map(v=>({ id:v.id, ordem:v.ordem, placa:v.placa, motorista:v.motorista||"", atividadePadrao:v.atividade_padrao||"reserva", obsPadrao:v.obs||"" })),
-                 dias, carregando:false, atualizadoEm:frotaHora(), dataCarregada:FROTA_DATA };
-  const assinatura = JSON.stringify([novo.veiculos, novo.dias]);
+                 dias, carregando:false, atualizadoEm:frotaHora(), dataCarregada:FROTA_DATA,
+                 restricoes: rest.error ? [] : rest.data.map(r=>({ id:r.id, veiculoId:r.veiculo_id, descricao:r.descricao||"", temFoto:!!r.tem_foto, abertaEm:r.aberta_em, abertaPor:(r.aberta_por||"").split("@")[0] })),
+                 erroRest: rest.error ? rest.error.message : null };
+  const assinatura = JSON.stringify([novo.veiculos, novo.dias, novo.restricoes]);
   const mudou = assinatura !== FROTA_ASSINATURA;
   FROTA_ASSINATURA = assinatura;
   FROTA = novo;
@@ -6225,6 +6228,102 @@ async function frotaGravarStatus(regs){
   return true;
 }
 
+/* ---------- Restrições: caminhão operando com restrição (pendência até ser resolvida) ----------
+   Uma restrição aberta por caminhão: descrição + UMA foto (reduzida no navegador, até 1024px). Fica como
+   pendência no painel até alguém marcar "Resolvida". Tabela frota_restricoes (a foto só é baixada ao abrir). */
+let FROTA_REST_EDIT = null, FROTA_REST_DESC = "", FROTA_REST_FOTO = null;
+function frotaRestricoes(){ return frotaCarregar().restricoes || []; }
+function frotaRestricao(vid){ return frotaRestricoes().find(x=>x.veiculoId===vid) || null; }
+function frotaDesdeTxt(x){ const d = nfeDias(x.abertaEm, frotaHojeISO()); return `desde ${frotaDataBR(x.abertaEm)} · ${d<=0 ? "hoje" : `há ${d} dia(s)`}${x.abertaPor ? ` · ${osEsc(x.abertaPor)}` : ""}`; }
+window.frotaRestAbrirForm = (vid) => { const x = frotaRestricao(vid); FROTA_REST_EDIT = vid; FROTA_REST_DESC = x ? x.descricao : ""; FROTA_REST_FOTO = null; frotaRerender(); setTimeout(()=>document.getElementById("frest-desc")?.focus(), 30); };
+window.frotaRestCancelar = () => { FROTA_REST_EDIT = null; FROTA_REST_FOTO = null; frotaRerender(); };
+window.frotaRestFoto = (input) => {
+  const f = input.files && input.files[0]; if(!f) return;
+  const url = URL.createObjectURL(f), img = new Image();
+  img.onload = () => {
+    const k = Math.min(1, 1024 / Math.max(img.width, img.height)), c = document.createElement("canvas");
+    c.width = Math.round(img.width*k); c.height = Math.round(img.height*k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    FROTA_REST_FOTO = c.toDataURL("image/jpeg", 0.72); URL.revokeObjectURL(url);
+    const pv = document.getElementById("frest-prev"); if(pv){ pv.src = FROTA_REST_FOTO; pv.style.display = "block"; }
+  };
+  img.onerror = () => { toast("Não foi possível ler a imagem."); URL.revokeObjectURL(url); };
+  img.src = url;
+};
+window.frotaRestSalvar = async (vid) => {
+  const desc = (document.getElementById("frest-desc")?.value ?? FROTA_REST_DESC).trim();
+  if(!desc){ toast("Descreva qual é a restrição."); return; }
+  const F = frotaCarregar(); F.restricoes = F.restricoes || [];
+  const atual = frotaRestricao(vid), por = (MEU_EMAIL||"").split("@")[0], hoje = frotaHojeISO();
+  if(FROTA_DB){
+    const campos = { descricao:desc, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString(), ...(FROTA_REST_FOTO ? { foto:FROTA_REST_FOTO, tem_foto:true } : {}) };
+    const { data, error } = await (atual ? sb.from("frota_restricoes").update(campos).eq("id", atual.id).select("id").single()
+      : sb.from("frota_restricoes").insert({ ...campos, veiculo_id:vid, aberta_em:hoje, aberta_por:MEU_EMAIL }).select("id").single());
+    if(error){ toast(/frota_restricoes/i.test(error.message) ? "⚠ Falta rodar o SQL das restrições da frota no Supabase." : "⚠ Não salvou: " + error.message); return; }
+    if(atual){ atual.descricao = desc; if(FROTA_REST_FOTO) atual.temFoto = true; }
+    else F.restricoes.push({ id:data.id, veiculoId:vid, descricao:desc, temFoto:!!FROTA_REST_FOTO, abertaEm:hoje, abertaPor:por });
+  } else {
+    if(atual){ atual.descricao = desc; if(FROTA_REST_FOTO){ atual.foto = FROTA_REST_FOTO; atual.temFoto = true; } }
+    else F.restricoes.push({ id:osNovoId(), veiculoId:vid, descricao:desc, temFoto:!!FROTA_REST_FOTO, foto:FROTA_REST_FOTO, abertaEm:hoje, abertaPor:por });
+    frotaSalvar();
+  }
+  FROTA_REST_EDIT = null; FROTA_REST_FOTO = null; toast("Restrição registrada ✓"); frotaRerender();
+};
+window.frotaRestResolver = async (id) => {
+  const F = frotaCarregar(), x = frotaRestricoes().find(r=>r.id===id); if(!x) return;
+  const v = F.veiculos.find(y=>y.id===x.veiculoId);
+  if(!confirm(`A restrição do ${v ? v.placa : "caminhão"} foi resolvida?\n\n"${x.descricao}"`)) return;
+  if(FROTA_DB){
+    const { error } = await sb.from("frota_restricoes").update({ resolvida_em:frotaHojeISO(), resolvida_por:MEU_EMAIL, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id);
+    if(error){ toast("⚠ Não salvou: " + error.message); return; }
+  }
+  F.restricoes = F.restricoes.filter(r=>r.id!==id); frotaSalvar(); toast("Restrição resolvida ✓"); frotaRerender();
+};
+window.frotaRestVerFoto = async (id) => {
+  const x = frotaRestricoes().find(r=>r.id===id); if(!x) return;
+  let src = x.foto;
+  if(!src && FROTA_DB){ const { data, error } = await sb.from("frota_restricoes").select("foto").eq("id", id).single(); if(error){ toast("⚠ " + error.message); return; } src = data.foto; }
+  if(!src){ toast("Sem foto."); return; }
+  const v = frotaCarregar().veiculos.find(y=>y.id===x.veiculoId);
+  const d = document.createElement("div"); d.className = "frota-foto-modal"; d.onclick = () => d.remove();
+  d.innerHTML = `<div><img src="${src}" alt="Foto da restrição"><p><b>${osEsc(v ? v.placa : "")}</b> — ${osEsc(x.descricao)}<br><small>${frotaDesdeTxt(x)} · toque para fechar</small></p></div>`;
+  document.body.appendChild(d);
+};
+// Bloco da restrição no cartão do líder
+function frotaRestCardHTML(v){
+  const x = frotaRestricao(v.id), editando = FROTA_REST_EDIT===v.id;
+  const form = editando ? `<div class="frota-rest-form os-form">
+      <label>Qual é a restrição?<textarea id="frest-desc" rows="2" placeholder="ex: ar-condicionado com defeito, pneu com desgaste, lanterna queimada..." oninput="FROTA_REST_DESC=this.value">${osEsc(FROTA_REST_DESC)}</textarea></label>
+      <label>📷 Foto (uma) <small>${x && x.temFoto ? "— escolher outra substitui a atual" : "(opcional)"}</small><input type="file" accept="image/*" onchange="frotaRestFoto(this)"></label>
+      <img id="frest-prev" class="frota-rest-prev" src="${FROTA_REST_FOTO||""}" alt="" style="${FROTA_REST_FOTO ? "" : "display:none;"}">
+      <div class="frota-rest-acoes" style="margin-top:8px;"><button class="os-btn sm" onclick="frotaRestSalvar('${v.id}')">💾 Salvar restrição</button><button class="os-link" onclick="frotaRestCancelar()">cancelar</button></div>
+    </div>` : "";
+  if(x) return `<div class="frota-rest"><div>⚠️ <b>Com restrição:</b> ${osEsc(x.descricao)}</div><div class="hint" style="margin:2px 0 6px;">${frotaDesdeTxt(x)}</div>
+    ${editando ? form : `<div class="frota-rest-acoes">${x.temFoto ? `<button class="os-link" onclick="frotaRestVerFoto('${x.id}')">📷 ver foto</button>` : ""}<button class="os-link" onclick="frotaRestAbrirForm('${v.id}')">✏️ editar</button><button class="os-btn sm green" onclick="frotaRestResolver('${x.id}')">✅ Resolvida</button></div>`}</div>`;
+  return editando ? `<div class="frota-rest novo">${form}</div>` : `<button class="frota-rest-add" onclick="frotaRestAbrirForm('${v.id}')">⚠️ Operando com restrição? Informar</button>`;
+}
+// Pendências (painel do diretor): caminhões com restrição em aberto, da mais antiga para a mais nova
+function frotaPendenciasHTML(itens){
+  const F = frotaCarregar();
+  const cab = `<h3>⚠️ Pendências — caminhões com restrição</h3>`;
+  if(F.erroRest) return `<div class="panel" style="margin-bottom:16px;">${cab}<div class="os-alerta amber">⚠️ Não foi possível carregar as restrições: ${osEsc(F.erroRest)}. Se falar em tabela inexistente ("frota_restricoes"), rode o SQL das restrições da frota no Supabase.</div></div>`;
+  const ls = itens.map(i=>({ ...i, x:frotaRestricao(i.v.id) })).filter(i=>i.x).sort((a,b)=>(a.x.abertaEm||"").localeCompare(b.x.abertaEm||""));
+  return `<div class="panel" style="margin-bottom:16px;">${cab}
+    <div class="hint">Caminhões operando com alguma restrição. Saem da lista quando alguém marca "Resolvida".</div>
+    ${ls.length ? `<div style="overflow-x:auto;"><table>
+      <thead><tr><th>#</th><th>Placa</th><th>Onde está</th><th>Motorista</th><th>Status</th><th>Restrição</th><th>Foto</th><th>Aberta</th><th></th></tr></thead>
+      <tbody>${ls.map(({v,r,x})=>{ const d = nfeDias(x.abertaEm, frotaHojeISO()), a = frotaAtiv(r.atividade); return `<tr>
+        <td>${String(v.ordem).padStart(2,"0")}</td><td><b>${osEsc(v.placa)}</b></td>
+        <td><span class="nfe-dot" style="--c:${a.cor};"></span>${a.label}</td><td>${osEsc(r.motorista)||"—"}</td>
+        <td><span class="badge ${frotaStatus(r.status).badge}">${frotaStatus(r.status).label}</span></td>
+        <td><b>${osEsc(x.descricao)}</b></td>
+        <td>${x.temFoto ? `<button class="os-link" onclick="frotaRestVerFoto('${x.id}')">📷 ver</button>` : "—"}</td>
+        <td style="white-space:nowrap;">${frotaDataBR(x.abertaEm)}<div class="hint" style="margin:0; ${d>7 ? "color:var(--red); font-weight:700;" : ""}">${d<=0 ? "hoje" : `há ${d} dia(s)`}${x.abertaPor ? ` · ${osEsc(x.abertaPor)}` : ""}</div></td>
+        <td><button class="os-btn sm green" onclick="frotaRestResolver('${x.id}')">✅ Resolvida</button></td>
+      </tr>`; }).join("")}</tbody></table></div>` : `<div class="empty-state" style="padding:14px;"><p>Nenhum caminhão com restrição. ✓</p></div>`}
+  </div>`;
+}
+
 window.frotaSetAba = (a) => { FROTA_ABA = a; frotaRerender(); };
 window.frotaSetData = (d) => { if(d){ FROTA_DATA = d; if(FROTA_DB){ FROTA.carregando = true; frotaRerender(); frotaBuscarDb(); } else frotaRerender(); } };
 window.frotaAtualizarAgora = () => { frotaBuscarDb(); toast("Atualizando..."); };
@@ -6244,7 +6343,7 @@ window.frotaAtualizar = async (id, campo, valor) => {
   await frotaGravarStatus([{ id, r }]);
 };
 window.frotaConfirmarTodos = async () => {
-  const lista = frotaDoDia(FROTA_DATA).filter(({r})=>!r.confirmado && (FROTA_FILTRO_LIDER==="todas" || r.atividade===FROTA_FILTRO_LIDER));
+  const lista = frotaDoDia(FROTA_DATA).filter(({v,r})=>!r.confirmado && (FROTA_FILTRO_LIDER==="todas" || r.atividade===FROTA_FILTRO_LIDER || (FROTA_FILTRO_LIDER==="restricao" && frotaRestricao(v.id))));
   if(!lista.length){ toast("Todos já estão confirmados."); return; }
   if(!confirm(`Confirmar ${lista.length} caminhão(ões) sem alteração?`)) return;
   const F = frotaCarregar(); F.dias[FROTA_DATA] = F.dias[FROTA_DATA] || {};
@@ -6270,7 +6369,8 @@ window.frotaTextoWhatsApp = () => {
       n++;
       const st = r.status!=="operando" && !(a.chave==="oficina" && r.status==="manutencao") ? ` — ${frotaStatus(r.status).label.toUpperCase()}` : "";
       const nome = r.motorista || (a.chave==="oficina" ? "MANUTENÇÃO" : a.chave==="reserva" ? "DISPONÍVEL" : "");
-      txt += `${String(n).padStart(2,"0")} ${v.placa} ${nome}${st}${r.obs ? ` (${r.obs})` : ""}\n`;
+      const rx = frotaRestricao(v.id);
+      txt += `${String(n).padStart(2,"0")} ${v.placa} ${nome}${st}${r.obs ? ` (${r.obs})` : ""}${rx ? ` ⚠️ RESTRIÇÃO: ${rx.descricao.toUpperCase()}` : ""}\n`;
     });
   });
   return txt.trim();
@@ -6468,10 +6568,12 @@ function frotaPainel(itens){
   const total = itens.length, confirmados = itens.filter(i=>i.r.confirmado).length;
   const porStatus = FROTA_STATUS.map(s=>({ ...s, qtd:itens.filter(i=>i.r.status===s.chave).length }));
   const sel = FROTA_ATIV_SEL ? itens.filter(i=>i.r.atividade===FROTA_ATIV_SEL) : [];
+  const nRest = itens.filter(i=>frotaRestricao(i.v.id)).length;
   return `
     <div class="kpi-grid">
       <div class="kpi"><div class="lbl">Caminhões na frota</div><div class="val">${total}</div></div>
       ${porStatus.map(s=>`<div class="kpi"><div class="lbl">${s.label}</div><div class="val" style="color:var(--${s.badge==="green"?"green":s.badge==="amber"?"amber":s.badge==="red"?"red":"ink-soft"});">${s.qtd}</div><div class="delta flat">${total?(s.qtd/total*100).toFixed(0):0}% da frota</div></div>`).join("")}
+      <div class="kpi"><div class="lbl">⚠️ Com restrição</div><div class="val" style="color:var(--${nRest?"amber":"green"});">${nRest}</div><div class="delta flat">${nRest ? "pendência(s) em aberto" : "nenhuma pendência"}</div></div>
       <div class="kpi"><div class="lbl">Confirmados pelos líderes</div><div class="val" style="color:var(--${confirmados===total?"green":"amber"});">${confirmados}/${total}</div><div class="delta flat">${confirmados===total?"todos atualizados":`${total-confirmados} pendente(s)`}</div></div>
     </div>
     <div class="panel" style="margin-bottom:16px;">
@@ -6481,10 +6583,12 @@ function frotaPainel(itens){
         ${FROTA_ATIVIDADES.map(a=>{
           const doGrupo = itens.filter(i=>i.r.atividade===a.chave);
           const alerta = doGrupo.filter(i=>["parado","semmot"].includes(i.r.status)).length;
+          const comRest = doGrupo.filter(i=>frotaRestricao(i.v.id)).length;
           return `<button class="frota-ativ ${FROTA_ATIV_SEL===a.chave?"sel":""}" style="--c:${a.cor};" onclick="frotaSelAtiv('${a.chave}')">
             <span class="frota-ativ-lbl">${a.label}</span>
             <span class="frota-ativ-qtd">${doGrupo.length}</span>
             <span class="frota-ativ-sub">${doGrupo.length ? `${(doGrupo.length/total*100).toFixed(0)}% da frota` : "nenhum"}${alerta ? ` · <b style="color:var(--red);">${alerta} parado(s)</b>` : ""}</span>
+            ${comRest ? `<span class="frota-ativ-sub"><b style="color:#B86E00;">⚠️ ${comRest} com restrição</b></span>` : ""}
           </button>`;
         }).join("")}
       </div>
@@ -6492,15 +6596,17 @@ function frotaPainel(itens){
       <div class="os-sub">
         <h4 style="font-size:14px; margin-bottom:8px;">${frotaAtiv(FROTA_ATIV_SEL).label} — ${sel.length} caminhão(ões)</h4>
         ${sel.length ? `<table>
-          <thead><tr><th>#</th><th>Placa</th><th>Motorista</th><th>Status</th><th>Observação</th><th>Atualizado</th></tr></thead>
+          <thead><tr><th>#</th><th>Placa</th><th>Motorista</th><th>Status</th><th>Restrição</th><th>Observação</th><th>Atualizado</th></tr></thead>
           <tbody>${sel.map(({v,r})=>`<tr>
             <td>${String(v.ordem).padStart(2,"0")}</td><td><b>${osEsc(v.placa)}</b></td><td>${osEsc(r.motorista)||"—"}</td>
             <td><span class="badge ${frotaStatus(r.status).badge}">${frotaStatus(r.status).label}</span></td>
+            <td>${(()=>{ const x = frotaRestricao(v.id); return x ? `<b style="color:#B86E00;">⚠️ ${osEsc(x.descricao)}</b>${x.temFoto ? ` <button class="os-link" onclick="frotaRestVerFoto('${x.id}')">📷</button>` : ""}` : "—"; })()}</td>
             <td>${osEsc(r.obs)||"—"}</td>
             <td>${r.confirmado ? `✓ ${r.em||""}${r.por ? ` · ${osEsc(r.por)}` : ""}` : `<span class="badge gray">não confirmado</span>`}</td>
           </tr>`).join("")}</tbody></table>` : `<div class="hint">Nenhum caminhão nessa atividade hoje.</div>`}
       </div>` : ""}
     </div>
+    ${frotaPendenciasHTML(itens)}
     <div class="panel" style="margin-bottom:16px;">
       <h3>Atividades por dia</h3>
       <div class="hint">Caminhões em cada atividade, dia a dia (últimos dias com lançamento). Clique numa coluna para abrir aquele dia.</div>
@@ -6521,7 +6627,7 @@ function frotaPainel(itens){
 
 function frotaLider(itens){
   const busca = FROTA_BUSCA.trim().toUpperCase();
-  const filtrados = itens.filter(({v,r})=>(FROTA_FILTRO_LIDER==="todas" || r.atividade===FROTA_FILTRO_LIDER)
+  const filtrados = itens.filter(({v,r})=>(FROTA_FILTRO_LIDER==="todas" || r.atividade===FROTA_FILTRO_LIDER || (FROTA_FILTRO_LIDER==="restricao" && frotaRestricao(v.id)))
     && (!busca || v.placa.includes(busca) || (r.motorista||"").toUpperCase().includes(busca)));
   const pend = filtrados.filter(i=>!i.r.confirmado).length;
   const motoristas = [...new Set(frotaCarregar().veiculos.map(v=>v.motorista).filter(Boolean))].sort();
@@ -6530,6 +6636,7 @@ function frotaLider(itens){
       <div class="frota-filtros">
         <button class="sub-tab-btn ${FROTA_FILTRO_LIDER==="todas"?"active":""}" onclick="frotaFiltroLider('todas')">Todas (${itens.length})</button>
         ${FROTA_ATIVIDADES.map(a=>`<button class="sub-tab-btn ${FROTA_FILTRO_LIDER===a.chave?"active":""}" onclick="frotaFiltroLider('${a.chave}')">${a.label} (${itens.filter(i=>i.r.atividade===a.chave).length})</button>`).join("")}
+        ${(()=>{ const n = itens.filter(i=>frotaRestricao(i.v.id)).length; return n ? `<button class="sub-tab-btn ${FROTA_FILTRO_LIDER==="restricao"?"active":""}" onclick="frotaFiltroLider('restricao')">⚠️ Com restrição (${n})</button>` : ""; })()}
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;" class="os-form">
         <input id="frota-busca" placeholder="🔎 Buscar placa ou motorista" value="${osEsc(FROTA_BUSCA)}" oninput="frotaBuscar(this.value)" style="flex:1; min-width:200px;">
@@ -6555,6 +6662,7 @@ function frotaLider(itens){
           <div class="frota-status">
             ${FROTA_STATUS.map(s=>`<button class="frota-st ${r.status===s.chave?"sel "+s.badge:""}" onclick="frotaAtualizar('${v.id}','status','${s.chave}')">${s.label}</button>`).join("")}
           </div>
+          ${frotaRestCardHTML(v)}
           <div class="os-form"><input placeholder="Observação (opcional)" value="${osEsc(r.obs)}" onchange="frotaAtualizar('${v.id}','obs',this.value)"></div>
         </div>`;
       }).join("") || `<div class="empty-state"><p>Nenhum caminhão encontrado.</p></div>`}
