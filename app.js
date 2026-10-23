@@ -8054,8 +8054,9 @@ function nfgLinha(a){
     const cs = manCiclos(), g = (...sts) => cs.filter(x=>sts.includes(x.st)), atual = g("execucao")[0];
     const d = g("pend_doc","pend_os","assinatura"), n = g("pend_nf");
     it.operacao = { texto: atual ? `Semana ${nfeBR(atual.ini)} a ${nfeBR(atual.fim)}` : "—", ciclos: atual ? [atual] : [] };
-    it.doc = { qtd:d.length, ciclos:d, alerta:d.some(x=>x.atrasado) };
-    it.nf = { qtd:n.length, ciclos:n, alerta:n.some(x=>x.atrasado) };
+    const vOS = (l) => sumArr(l.map(x=>x.c.osValorAprovado || x.c.osValor || 0));   // valor da O.S (aprovado, senão o total)
+    it.doc = { qtd:d.length, ciclos:d, alerta:d.some(x=>x.atrasado), valorOS:vOS(d) };
+    it.nf = { qtd:n.length, ciclos:n, alerta:n.some(x=>x.atrasado), valorOS:vOS(n) };
   } else if(nfeEhLR(a.chave)){
     const bs = BAL.lista.filter(b=>b.atividade===a.chave);
     const g = (st) => bs.filter(b=>balStatus(b)===st);
@@ -8097,9 +8098,9 @@ function nfgPagina(){
     const clique = `onclick="nfgSel('${L.a.chave}','${e.k}')"`;
     if(x.texto!=null) return `<td><button class="nfg-cel ${sel?"sel":""}" style="--c:${e.cor};" ${clique}><span class="nfg-run">▶ em execução</span><small>${osEsc(x.texto)}</small></button></td>`;
     return `<td><button class="nfg-cel ${x.qtd?"":"zero"} ${x.alerta?"alerta":""} ${sel?"sel":""}" style="--c:${e.cor};" ${clique}>
-      <b>${x.qtd}</b>${x.valor!=null && x.qtd ? `<small>${fmtBRL(x.valor)}</small>` : x.qtd && x.balsas ? `<small>balsa(s)</small>` : x.qtd && x.periodos ? `<small>período(s)</small>` : x.qtd && x.ciclos ? `<small>semana(s)</small>` : ""}</button></td>`;
+      <b>${x.qtd}</b>${x.valor!=null && x.qtd ? `<small>${fmtBRL(x.valor)}</small>` : x.qtd && x.balsas ? `<small>balsa(s)</small>` : x.qtd && x.periodos ? `<small>período(s)</small>` : x.qtd && x.ciclos ? `<small>semana(s)</small>${x.valorOS ? `<small>${fmtBRL(x.valorOS)}</small>` : ""}` : ""}</button></td>`;
   };
-  const tot = (k) => { const ls = linhas.map(L=>L.it[k]).filter(Boolean); const q = sumArr(ls.map(x=>x.qtd||0)), v = sumArr(ls.map(x=>x.valor||0));
+  const tot = (k) => { const ls = linhas.map(L=>L.it[k]).filter(Boolean); const q = sumArr(ls.map(x=>x.qtd||0)), v = sumArr(ls.map(x=>(x.valor||0) + (x.valorOS||0)));
     return k==="operacao" ? `<td>${sumArr(ls.map(x=>x.qtd||0)) || ""}</td>` : `<td><b>${q}</b>${v ? `<div class="hint" style="margin:0;">${fmtBRL(v)}</div>` : ""}</td>`; };
 
   return `
