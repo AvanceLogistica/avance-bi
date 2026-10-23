@@ -8303,6 +8303,91 @@ function nfgPagina(){
     <div class="panel" id="nfg-det">${nfgDetalhe(linhas)}</div>`;
 }
 
+/* ---------- Cobrança: PDF das NFs em aberto (para o Diretor enviar ao cliente) ----------
+   Gera o PDF no navegador (jsPDF, arquivos locais carregados só quando precisa). "Enviar no WhatsApp"
+   usa o compartilhamento do aparelho/Windows (escolhe o WhatsApp e o PDF vai anexado); onde o
+   navegador não permite anexar, baixa o PDF e abre o WhatsApp com o resumo para anexar o arquivo. */
+let NFG_COB_ATIV = "todas";
+window.nfgCobAtiv = (v) => { NFG_COB_ATIV = v; nfeRerender(); };
+function nfgCobLista(){ return NFE.lista.filter(r=>!r.dataPagamento && (NFG_COB_ATIV==="todas" || r.atividade===NFG_COB_ATIV)).sort((a,b)=>(a.dataEmissao||"").localeCompare(b.dataEmissao||"") || (a.nf||"").localeCompare(b.nf||"")); }
+let NFG_PDF_LIB = null;
+function nfgCarregarPDF(){
+  if(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API.autoTable) return Promise.resolve();
+  if(NFG_PDF_LIB) return NFG_PDF_LIB;
+  const carregar = (src) => new Promise((ok, erro)=>{ const el = document.createElement("script"); el.src = src; el.onload = ok; el.onerror = () => erro(new Error("não carregou " + src)); document.head.appendChild(el); });
+  NFG_PDF_LIB = carregar("jspdf.umd.min.js").then(()=>carregar("jspdf.plugin.autotable.min.js")).catch(e=>{ NFG_PDF_LIB = null; throw e; });
+  return NFG_PDF_LIB;
+}
+const nfgBRL = (v) => "R$ " + Number(v||0).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 });
+function nfgCobNomeArquivo(){ const h = frotaHojeISO(); return `Avance_NFs_em_aberto_${NFG_COB_ATIV==="todas" ? "" : nfSemAcento(nfeAtiv(NFG_COB_ATIV).label).replace(/[^A-Z0-9]+/g,"_") + "_"}${h.slice(8,10)}-${h.slice(5,7)}-${h.slice(0,4)}.pdf`; }
+function nfgCobTexto(ls){
+  const hoje = frotaHojeISO(), total = sumArr(ls.map(r=>r.valor)), velha = ls[0];
+  return `*Avance Transporte Logístico*\nRelação de NFs em aberto — posição em ${fmtDataBR(hoje)}\n`
+    + `Operação: ${NFG_COB_ATIV==="todas" ? "todas" : nfeAtiv(NFG_COB_ATIV).label}\n`
+    + `Total em aberto: *${nfgBRL(total)}* (${ls.length} NF${ls.length===1?"":"s"})\n`
+    + (velha ? `NF mais antiga: ${velha.nf} de ${fmtDataBR(velha.dataEmissao)} (${nfeDias(velha.dataEmissao, hoje)} dias)\n` : "")
+    + `Segue o PDF com o detalhamento.`;
+}
+async function nfgCobPDF(ls){
+  await nfgCarregarPDF();
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" });
+  const hoje = frotaHojeISO(), W = doc.internal.pageSize.getWidth(), total = sumArr(ls.map(r=>r.valor));
+  const operacao = NFG_COB_ATIV==="todas" ? "Todas as operações" : nfeAtiv(NFG_COB_ATIV).label;
+  doc.setFillColor(208, 2, 27); doc.rect(0, 0, W, 4, "F");
+  doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(20, 20, 26); doc.text("AVANCE TRANSPORTE LOGÍSTICO", 14, 16);
+  doc.setFontSize(12); doc.setTextColor(208, 2, 27); doc.text("Relação de notas fiscais em aberto", 14, 23);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(90, 90, 100);
+  doc.text(`Posição em ${fmtDataBR(hoje)}  ·  Operação: ${operacao}`, 14, 29);
+  // resumo
+  const velha = ls[0], caixas = [["Total em aberto", nfgBRL(total)], ["Notas fiscais", String(ls.length)], ["NF mais antiga", velha ? `${nfeDias(velha.dataEmissao, hoje)} dias` : "-"]];
+  const bw = (W - 28 - 8) / 3;
+  caixas.forEach(([l, v], i)=>{ const x = 14 + i*(bw+4); doc.setFillColor(245, 245, 247); doc.roundedRect(x, 34, bw, 17, 2, 2, "F");
+    doc.setFontSize(8); doc.setTextColor(110, 110, 120); doc.text(l.toUpperCase(), x+4, 40);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(12.5); doc.setTextColor(20, 20, 26); doc.text(v, x+4, 47.5); doc.setFont("helvetica", "normal"); });
+  let y = 58;
+  // por operação (só quando são várias)
+  const ops = NFE_ATIVIDADES.map(a=>({ a, l:ls.filter(r=>r.atividade===a.chave) })).filter(o=>o.l.length);
+  if(ops.length > 1){
+    doc.autoTable({ startY:y, head:[["Operação", "NFs", "Valor em aberto"]], body:ops.map(o=>[o.a.label, String(o.l.length), nfgBRL(sumArr(o.l.map(r=>r.valor)))]),
+      foot:[["Total", String(ls.length), nfgBRL(total)]], theme:"grid", margin:{ left:14, right:14 },
+      styles:{ fontSize:9, cellPadding:2 }, headStyles:{ fillColor:[20,20,26] }, footStyles:{ fillColor:[245,245,247], textColor:[20,20,26], fontStyle:"bold" },
+      columnStyles:{ 1:{ halign:"center", cellWidth:20 }, 2:{ halign:"right", cellWidth:45 } },
+      didParseCell:(d)=>{ if(d.column.index===2) d.cell.styles.halign = "right"; if(d.column.index===1) d.cell.styles.halign = "center"; } });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10.5); doc.setTextColor(20, 20, 26); doc.text("Detalhamento das notas fiscais", 14, y); y += 3;
+  doc.autoTable({ startY:y,
+    head:[["NF", "Emissão", "Operação", "Balsa / Período", "Dias em aberto", "Valor"]],
+    body:ls.map(r=>{ const b = nfeBalsaDe(r), per = nfePeriodoNF(r);
+      return [r.nf, fmtDataBR(r.dataEmissao), nfeRotulo(r), [b ? `${b}${r.numero ? " - " + r.numero : ""}` : "", per!=="—" ? per : ""].filter(Boolean).join("  ·  ") || "-", String(nfeDias(r.dataEmissao, hoje)), nfgBRL(r.valor)]; }),
+    foot:[[{ content:`Total (${ls.length} NF${ls.length===1?"":"s"})`, colSpan:5 }, nfgBRL(total)]],
+    theme:"striped", margin:{ left:14, right:14 }, styles:{ fontSize:8.5, cellPadding:1.8, valign:"middle" },
+    headStyles:{ fillColor:[208,2,27] }, footStyles:{ fillColor:[20,20,26], textColor:[255,255,255], fontStyle:"bold" },
+    columnStyles:{ 0:{ fontStyle:"bold", cellWidth:16 }, 1:{ cellWidth:20 }, 4:{ halign:"center", cellWidth:20 }, 5:{ halign:"right", cellWidth:28 } },
+    showFoot:"lastPage", didParseCell:(d)=>{ if(d.column.index===5) d.cell.styles.halign = "right"; if(d.column.index===4 && d.section==="head") d.cell.styles.halign = "center"; } });
+  const n = doc.internal.getNumberOfPages();
+  for(let i = 1; i <= n; i++){ doc.setPage(i); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(140, 140, 150);
+    doc.text(`Avance Transporte Logístico · gerado em ${fmtDataBR(hoje)} às ${frotaHora()}`, 14, 290); doc.text(`Página ${i} de ${n}`, W-14, 290, { align:"right" }); }
+  return doc;
+}
+window.nfgCobBaixar = async () => {
+  const ls = nfgCobLista(); if(!ls.length){ toast("Nenhuma NF em aberto nesse filtro."); return; }
+  try{ (await nfgCobPDF(ls)).save(nfgCobNomeArquivo()); toast("PDF gerado ✓"); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); }
+};
+window.nfgCobWhatsApp = async () => {
+  const ls = nfgCobLista(); if(!ls.length){ toast("Nenhuma NF em aberto nesse filtro."); return; }
+  let doc; try{ doc = await nfgCobPDF(ls); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); return; }
+  const nome = nfgCobNomeArquivo(), texto = nfgCobTexto(ls);
+  const arq = new File([doc.output("blob")], nome, { type:"application/pdf" });
+  if(navigator.canShare && navigator.canShare({ files:[arq] })){
+    try{ await navigator.share({ files:[arq], title:"NFs em aberto — Avance", text:texto.replace(/\*/g,"") }); return; }
+    catch(e){ if(e.name === "AbortError") return; }   // cancelou o compartilhamento
+  }
+  doc.save(nome);
+  window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank");
+  toast("PDF baixado — no WhatsApp, anexe o arquivo " + nome);
+};
+
 function nfgDetalhe(linhas){
   const hoje = frotaHojeISO();
   const L = NFG_SEL ? linhas.find(x=>x.a.chave===NFG_SEL.ativ) : null;
@@ -8323,9 +8408,17 @@ function nfgDetalhe(linhas){
     return `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;"><h3 style="margin:0;"><span class="nfe-dot" style="--c:${a.cor};"></span>${a.label} — NFs emitidas · ${NFG_MES==="todos" ? "todos os meses" : nfeNomeMes(NFG_MES)}</h3>${voltar}</div>` + tabNF(ls, false);
   }
   if(!x){
-    const pend = NFE.lista.filter(r=>!r.dataPagamento).sort((a,b)=>(a.dataEmissao||"").localeCompare(b.dataEmissao||""));
-    return `<h3 style="margin:0;">💵 Recebimentos aguardando baixa (${pend.length})</h3>
-      <div class="hint">Todas as operações, da NF mais antiga para a mais nova. Quando o valor cair na conta, escolha a data e clique em "Dar baixa".</div>${tabNF(pend, false)}`;
+    nfgCarregarPDF().catch(()=>{});   // deixa a biblioteca do PDF pronta para o clique
+    const pend = nfgCobLista(), ativs = NFE_ATIVIDADES.filter(a=>NFE.lista.some(r=>!r.dataPagamento && r.atividade===a.chave));
+    return `<div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">💵 Recebimentos aguardando baixa (${pend.length})</h3>
+          <div class="hint">Da NF mais antiga para a mais nova. Quando o valor cair na conta, escolha a data e clique em "Dar baixa".</div></div>
+        <div class="nfg-cob">
+          <label>Operação<select onchange="nfgCobAtiv(this.value)"><option value="todas">Todas as operações</option>${ativs.map(a=>`<option value="${a.chave}" ${NFG_COB_ATIV===a.chave?"selected":""}>${a.label}</option>`).join("")}</select></label>
+          <button class="os-btn" onclick="nfgCobBaixar()">📄 Baixar PDF</button>
+          <button class="os-btn green" onclick="nfgCobWhatsApp()">📲 Enviar no WhatsApp</button>
+        </div>
+      </div>${tabNF(pend, false)}`;
   }
   const tit = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;"><h3 style="margin:0;"><span class="nfe-dot" style="--c:${e.cor};"></span>${L.a.label} — ${e.label}</h3>${voltar}</div>`;
   if(x.ciclos) return tit + manTabela(x.ciclos);
