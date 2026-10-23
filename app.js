@@ -7426,23 +7426,6 @@ async function nfeGravarPainel(atividade, periodo, campos){
   }
   nfeSalvarLocal(); return true;
 }
-window.nfeCardPeriodo = (ch, chave) => { NFE_CARD_SEL[ch] = chave; nfeRerender(); };
-window.nfeMarcar = async (ch, chave, status) => {
-  const atual = (NFE.painel[`${ch}|${chave}`]||{}).status;
-  const obsEl = document.getElementById(`nfe-obs-${ch}`);
-  if(await nfeGravarPainel(ch, chave, { status: atual===status ? "" : status, ...(obsEl ? { obs: obsEl.value.trim() } : {}) }))
-    toast(atual===status ? "Status removido" : status==="andamento" ? "Marcado como em andamento 🟡" : "Marcado como sem operação 🟢");
-  nfeRerender();
-};
-window.nfeSalvarObsPainel = async (ch, chave, el) => { if(await nfeGravarPainel(ch, chave, { obs: el.value.trim() })) toast("Observação salva ✓"); };
-window.nfeLancarDoPainel = (ch, chave) => {
-  NFE_EDIT = null; NFE_ATIV = ch; NFE_SENTIDO = "";
-  const a = nfeAtiv(ch), p = a.cad ? nfePeriodoPorChave(a.cad, chave) : null;
-  NFE_PERIODO = a.semPeriodo ? "" : a.periodoLivre && p ? `D:${p.ini}:${p.fim}` : chave;
-  nfeRedesenhar(); document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
-  setTimeout(()=>document.getElementById("nfe-nf")?.focus(), 400);
-};
-
 /* ---------- Formulário ---------- */
 function nfeLerForm(){ const g = (id)=>document.getElementById(id)?.value || ""; return { numero:g("nfe-numero"), nf:g("nfe-nf"), valor:g("nfe-valor"), data:g("nfe-data"), obs:g("nfe-obs") }; }
 function nfePreencher(d){ const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; }; s("nfe-numero", d.numero); s("nfe-nf", d.nf); s("nfe-valor", d.valor); s("nfe-data", d.data); s("nfe-obs", d.obs); }
@@ -7480,6 +7463,7 @@ window.nfeSalvar = async () => {
     const novo = { id:"tmp"+osNovoId(), ...reg, por:(MEU_EMAIL||"").split("@")[0] };
     if(sb){ const { data, error } = await sb.from("nf_emitidas").insert({ ...banco, criado_por:MEU_EMAIL }).select().single(); if(error){ toast("⚠ Não salvou: " + error.message); return; } novo.id = data.id; }
     NFE.lista.unshift(novo);
+    if(NFE_BALSA_ID){ await balVincularNF(NFE_BALSA_ID, novo.id); NFE_BALSA_ID = null; }
     toast(`NF ${nf} registrada ✓${reg.periodo ? " — painel atualizado 🟢" : ""}`);
   }
   nfeSalvarLocal();
@@ -7494,48 +7478,164 @@ window.nfeEditar = (id) => {
   nfePreencher({ numero:r.numero, nf:r.nf, valor:"R$ "+r.valor.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}), data:r.dataEmissao, obs:r.obs });
   document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
 };
-window.nfeCancelar = () => { NFE_EDIT = null; NFE_SENTIDO = ""; nfeRedesenhar(); nfePreencher({ numero:"", nf:"", valor:"", data:"", obs:"" }); };
+window.nfeCancelar = () => { NFE_EDIT = null; NFE_SENTIDO = ""; NFE_BALSA_ID = null; nfeRedesenhar(); nfePreencher({ numero:"", nf:"", valor:"", data:"", obs:"" }); };
 window.nfeExcluir = async (id) => {
   const r = NFE.lista.find(x=>x.id===id); if(!r || !confirm(`Excluir a NF ${r.nf} (${nfeRotulo(r)} · ${fmtBRL2(r.valor)})?`)) return;
   if(sb){ const { error } = await sb.from("nf_emitidas").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
-  NFE.lista = NFE.lista.filter(x=>x.id!==id); nfeSalvarLocal(); nfeRerender();
+  NFE.lista = NFE.lista.filter(x=>x.id!==id); await balDesvincularNF(id); nfeSalvarLocal(); nfeRerender();
 };
 
-/* ---------- Painel de emissão ---------- */
-function nfePainelHTML(){
-  const ativs = NFE_ATIVIDADES.filter(a=>a.cad);
-  const resumos = ativs.map(a=>({ a, r:nfeResumoAtividade(a) }));
-  const cont = { vermelho:0, amarelo:0, verde:0, cinza:0 }; resumos.forEach(x=>cont[x.r.cor]++);
-  const ICON = { vermelho:"🔴", amarelo:"🟡", verde:"🟢", cinza:"⚪" };
+/* ---------- Controle de balsas (Logística Reversa SW e Carreteira) ----------
+   Etapas de cada balsa até a receita: Abertura → Fechamento (pendente de documento) → Documento do cliente
+   recebido (pendente de NF) → NF emitida (aguardando recebimento) → Recebida (NF com baixa de pagamento).
+   A NF é lançada pelo formulário das NF Emitidas já ligada à balsa (coluna nf_id). Tabela: balsas_viagens. */
+const BAL_LOCAL = "avance_balsas_local_v1";
+const BAL_STATUS = {
+  aberta:     { label:"Aberta",                               cor:"#2E6DB0", icone:"🔵" },
+  pend_doc:   { label:"Pendente de documento",                cor:"#E1971F", icone:"🟠" },
+  pend_nf:    { label:"Pendente de NF",                       cor:"#D0021B", icone:"🔴" },
+  nf_emitida: { label:"NF emitida — aguardando recebimento",  cor:"#8E2EB0", icone:"🟣" },
+  recebida:   { label:"Recebida",                             cor:"#1C9A6C", icone:"🟢" },
+};
+const BAL_ATIVS = [{ chave:"lr_sw", label:"Logística Reversa SW" }, { chave:"lr_carreteira", label:"Logística Reversa Carreteira" }];
+let BAL = { lista:[], carregado:false, carregando:false, erro:null };
+let BAL_FILTRO = "pendentes";      // pendentes | <status> | todas
+let BAL_ATIV = "lr_sw";
+let NFE_BALSA_ID = null;           // balsa que a NF em lançamento vai quitar
+
+function balNF(b){ return b.nfId ? NFE.lista.find(r=>r.id===b.nfId) : null; }
+function balStatus(b){
+  const nf = balNF(b);
+  if(b.nfId) return nf && nf.dataPagamento ? "recebida" : "nf_emitida";
+  if(b.dataDocumento) return "pend_nf";
+  if(b.dataFechamento) return "pend_doc";
+  return "aberta";
+}
+function balDesdeEtapa(b){
+  const st = balStatus(b), nf = balNF(b);
+  const ref = st==="aberta" ? b.dataAbertura : st==="pend_doc" ? b.dataFechamento : st==="pend_nf" ? b.dataDocumento : st==="nf_emitida" ? (nf ? nf.dataEmissao : "") : (nf ? nf.dataPagamento : "");
+  return ref ? nfeDias(ref, frotaHojeISO()) : null;
+}
+function balNomes(){ return [...new Set([...nfBalsasConhecidas(), ...BAL.lista.map(b=>b.balsa)].filter(Boolean))].sort((a,b)=>a.localeCompare(b,"pt-BR")); }
+const balRotulo = (b) => `${b.balsa}${b.numero ? " – " + b.numero : ""}`;
+
+async function balCarregar(){
+  BAL.carregando = true;
+  if(!sb){ try{ BAL.lista = JSON.parse(localStorage.getItem(BAL_LOCAL)||"[]"); }catch(e){ BAL.lista = []; } }
+  else {
+    const { data, error } = await sb.from("balsas_viagens").select("*").order("data_abertura", { ascending:false });
+    if(error){ BAL.erro = error.message; BAL.carregando = false; BAL.carregado = true; nfeRerender(); return; }
+    BAL.erro = null;
+    BAL.lista = data.map(r=>({ id:r.id, atividade:r.atividade, balsa:r.balsa, numero:r.numero||"", dataAbertura:r.data_abertura, dataFechamento:r.data_fechamento||"",
+      dataDocumento:r.data_documento||"", nfId:r.nf_id||null, obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+  }
+  BAL.carregando = false; BAL.carregado = true; nfeRerender();
+}
+function balSalvarLocal(){ if(!sb) try{ localStorage.setItem(BAL_LOCAL, JSON.stringify(BAL.lista)); }catch(e){} }
+async function balAtualizar(b, campos){
+  if(sb){ const { error } = await sb.from("balsas_viagens").update({ ...campos, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", b.id);
+    if(error){ toast("⚠ Não salvou: " + error.message); return false; } }
+  const mapa = { data_fechamento:"dataFechamento", data_documento:"dataDocumento", nf_id:"nfId", numero:"numero", obs:"obs" };
+  Object.entries(campos).forEach(([k,v])=>{ b[mapa[k]||k] = v || (k==="nf_id" ? null : ""); });
+  balSalvarLocal(); return true;
+}
+
+window.balSetAtiv = (a) => { BAL_ATIV = a; nfeRerender(); };
+window.balFiltro = (f) => { BAL_FILTRO = BAL_FILTRO===f ? "pendentes" : f; nfeRerender(); };
+window.balAbrir = async () => {
+  let balsa = document.getElementById("bal-nome")?.value || "";
+  if(balsa === "__nova"){ balsa = (prompt("Nome da balsa:")||"").trim().toUpperCase(); }
+  if(!balsa){ toast("Escolha a balsa."); return; }
+  const numero = (document.getElementById("bal-num")?.value||"").trim(), data = document.getElementById("bal-data")?.value || frotaHojeISO();
+  const b = { id:"tmp"+osNovoId(), atividade:BAL_ATIV, balsa, numero, dataAbertura:data, dataFechamento:"", dataDocumento:"", nfId:null, obs:"", por:(MEU_EMAIL||"").split("@")[0] };
+  if(sb){ const { data:d, error } = await sb.from("balsas_viagens").insert({ atividade:b.atividade, balsa, numero:numero||null, data_abertura:data, criado_por:MEU_EMAIL, atualizado_por:MEU_EMAIL }).select().single();
+    if(error){ toast("⚠ Não salvou: " + error.message); return; } b.id = d.id; }
+  BAL.lista.unshift(b); balSalvarLocal(); toast(`Balsa ${balRotulo(b)} aberta ✓`); nfeRerender();
+};
+window.balAvancar = async (id, etapa) => {
+  const b = BAL.lista.find(x=>x.id===id); if(!b) return;
+  const data = document.getElementById(`bal-dt-${id}`)?.value || frotaHojeISO();
+  if(etapa==="fechar"){ if(data < b.dataAbertura){ toast("O fechamento está antes da abertura."); return; } if(await balAtualizar(b, { data_fechamento:data })) toast(`${balRotulo(b)} fechada — pendente de documento 🟠`); }
+  if(etapa==="documento"){ if(data < b.dataFechamento){ toast("O documento está antes do fechamento."); return; } if(await balAtualizar(b, { data_documento:data })) toast(`Documento recebido — ${balRotulo(b)} pendente de NF 🔴`); }
+  nfeRerender();
+};
+window.balVoltar = async (id) => {
+  const b = BAL.lista.find(x=>x.id===id); if(!b) return;
+  const st = balStatus(b);
+  const campos = st==="nf_emitida" || st==="recebida" ? { nf_id:null } : st==="pend_nf" ? { data_documento:null } : st==="pend_doc" ? { data_fechamento:null } : null;
+  if(!campos) return;
+  if(!confirm(`Voltar ${balRotulo(b)} uma etapa?${campos.nf_id===null ? " (a NF continua lançada, só deixa de estar ligada a esta balsa)" : ""}`)) return;
+  await balAtualizar(b, campos); nfeRerender();
+};
+window.balNumero = async (id, v) => { const b = BAL.lista.find(x=>x.id===id); if(b && await balAtualizar(b, { numero:v.trim() })) toast("Nº da balsa salvo ✓"); nfeRerender(); };
+window.balExcluir = async (id) => {
+  const b = BAL.lista.find(x=>x.id===id); if(!b || !confirm(`Excluir a balsa ${balRotulo(b)} do controle?`)) return;
+  if(sb){ const { error } = await sb.from("balsas_viagens").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  BAL.lista = BAL.lista.filter(x=>x.id!==id); balSalvarLocal(); nfeRerender();
+};
+// "Emitir NF": abre o formulário da NF já com a atividade e a balsa; ao registrar, a NF fica ligada à balsa
+window.balEmitirNF = (id) => {
+  const b = BAL.lista.find(x=>x.id===id); if(!b) return;
+  NFE_EDIT = null; NFE_ATIV = b.atividade; NFE_SENTIDO = ""; NFE_PERIODO = ""; NFE_BALSA_ID = id;
+  nfeRedesenhar(); nfePreencher({ obs:balRotulo(b), numero:b.numero||"" });
+  document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
+  setTimeout(()=>document.getElementById("nfe-nf")?.focus(), 400);
+};
+window.balCancelarVinculo = () => { NFE_BALSA_ID = null; nfeRedesenhar(); };
+async function balVincularNF(balsaId, nfId){
+  const b = BAL.lista.find(x=>x.id===balsaId); if(!b) return;
+  if(await balAtualizar(b, { nf_id:nfId })) toast(`NF ligada à balsa ${balRotulo(b)} — foi para a receita a receber 🟣`);
+}
+async function balDesvincularNF(nfId){
+  for(const b of BAL.lista.filter(x=>x.nfId===nfId)) await balAtualizar(b, { nf_id:null });
+}
+
+function balHTML(){
+  if(!BAL.carregado && !BAL.carregando){ BAL.carregando = true; setTimeout(()=>balCarregar(), 0); }
+  if(BAL.erro) return `<div class="panel" style="margin-bottom:16px;"><h3>🚢 Controle de balsas</h3><div class="os-alerta amber">⚠️ Não foi possível carregar o controle de balsas: ${osEsc(BAL.erro)}. Se falar em tabela inexistente ("balsas_viagens"), rode o SQL do controle de balsas no Supabase.</div></div>`;
+  const comSt = BAL.lista.map(b=>({ b, st:balStatus(b) }));
+  const cont = {}; Object.keys(BAL_STATUS).forEach(k=>cont[k] = comSt.filter(x=>x.st===k).length);
+  const lista = comSt.filter(x=>BAL_FILTRO==="todas" || (BAL_FILTRO==="pendentes" ? x.st!=="recebida" : x.st===BAL_FILTRO))
+    .sort((a,b)=>Object.keys(BAL_STATUS).indexOf(a.st)-Object.keys(BAL_STATUS).indexOf(b.st) || (a.b.dataAbertura||"").localeCompare(b.b.dataAbertura||""));
+  const valorReceber = sumArr(comSt.filter(x=>x.st==="nf_emitida").map(x=>(balNF(x.b)||{}).valor||0));
+  const hoje = frotaHojeISO();
   return `
     <div class="panel" style="margin-bottom:16px;">
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
-        <div><h3 style="margin:0;">🚦 Painel de emissão de NF</h3>
-          <div class="hint">Cada serviço no seu ritmo de faturamento. Prazos em dia útil (fim de semana e feriado nacional passam para o próximo dia útil). Controle a partir de ${nfeBR(NFE_INICIO_CONTROLE)}/${NFE_INICIO_CONTROLE.slice(2,4)}.</div></div>
-        <div class="nfe-legenda"><span>🔴 ${sumArr(resumos.map(x=>x.r.vermelhos))} NF(s) atrasada(s)</span><span>🟡 ${sumArr(resumos.map(x=>x.r.amarelos))} em andamento</span><span>🟢 ${cont.verde} serviço(s) em dia</span></div>
+        <div><h3 style="margin:0;">🚢 Controle de balsas — Logística Reversa</h3>
+          <div class="hint">Abertura → fechamento → documento do cliente → NF → recebimento. Clique num status para filtrar a lista.</div></div>
+        <button class="sub-tab-btn ${BAL_FILTRO==="todas"?"active":""}" onclick="balFiltro('todas')">Ver todas (${BAL.lista.length})</button>
       </div>
-      ${NFE.erroPainel ? `<div class="os-alerta amber">⚠️ O status manual (em andamento / sem operação) ainda não pode ser salvo: rode o SQL do painel de emissão. (${osEsc(NFE.erroPainel)})</div>` : ""}
-      <div class="nfe-cards">${resumos.map(({a, r})=>{
-        const selChave = NFE_CARD_SEL[a.chave] || (r.foco && r.foco.p.chave);
-        const sel = r.per.find(x=>x.p.chave===selChave) || r.foco;
-        const st = sel ? sel.st : null;
-        return `<div class="nfe-card ${r.cor}">
-          <div class="nfe-card-top"><b>${ICON[r.cor]} ${a.label}</b>${a.doc ? `<span class="badge gray">doc: ${a.doc}</span>` : ""}</div>
-          <div class="hint" style="margin:2px 0 8px;">${NFE_CAD_LABEL[a.cad]}${r.vermelhos ? ` · <b style="color:var(--red-dark);">${r.vermelhos} período(s) atrasado(s)</b>` : ""}</div>
-          <div class="nfe-pers">${r.per.slice(0,6).map(x=>`<button class="nfe-per ${x.st.cor} ${x.p.chave===sel?.p.chave?"sel":""}" title="${osEsc(x.p.rotulo)} — ${osEsc(x.st.texto)}" onclick="nfeCardPeriodo('${a.chave}','${x.p.chave}')">${a.cad==="mensal" ? nfeNomeMes(x.p.ini.slice(0,7)) : a.cad==="quinzenal" ? `${x.p.chave.endsWith("-1") ? "1ª" : "2ª"} ${MESES_HE[Number(x.p.ini.slice(5,7))-1]}` : nfeBR(x.p.ini)}</button>`).join("")}</div>
-          ${sel ? `<div class="nfe-det">
-            <div><b>${osEsc(sel.p.rotulo)}</b> · prazo da NF: <b>${nfeBR(sel.p.prazo)}</b></div>
-            <div class="nfe-st ${st.cor}">${ICON[st.cor]} ${osEsc(st.texto)}</div>
-            ${st.nfs.length ? `<div class="hint" style="margin:4px 0 0;">${st.nfs.map(n=>`NF <b>${osEsc(n.nf)}</b> · ${fmtBRL2(n.valor)} · ${fmtDataBR(n.dataEmissao)}`).join("<br>")}</div>` : `
-            <label class="nfe-obs-lbl">Motivo / observação<input id="nfe-obs-${a.chave}" value="${osEsc(st.man.obs||"")}" placeholder="ex: aguardando RQ do cliente" onchange="nfeSalvarObsPainel('${a.chave}','${sel.p.chave}', this)"></label>
-            <div class="nfe-acoes">
-              <button class="os-btn sm ${st.man.status==="andamento"?"amarelo-on":""}" onclick="nfeMarcar('${a.chave}','${sel.p.chave}','andamento')">🟡 ${st.man.status==="andamento" ? "Em andamento ✓" : "Em andamento"}</button>
-              <button class="os-btn sm" onclick="nfeMarcar('${a.chave}','${sel.p.chave}','sem_operacao')">${st.man.status==="sem_operacao" ? "↩ Desfazer sem operação" : "Sem operação"}</button>
-              <button class="os-btn sm green" onclick="nfeLancarDoPainel('${a.chave}','${sel.p.chave}')">🧾 Lançar NF</button>
-            </div>`}
-            ${st.man.por && (st.man.status || st.man.obs) ? `<div class="hint" style="margin:4px 0 0;">atualizado por ${osEsc(st.man.por)}</div>` : ""}
-          </div>` : ""}
-        </div>`; }).join("")}</div>
+      <div class="bal-sts">${Object.entries(BAL_STATUS).map(([k,s])=>`<button class="bal-st ${BAL_FILTRO===k?"sel":""}" style="--c:${s.cor};" onclick="balFiltro('${k}')">
+        <span class="lbl">${s.icone} ${s.label}</span><b>${cont[k]}</b>${k==="nf_emitida" && valorReceber ? `<small>${fmtBRL(valorReceber)} a receber</small>` : ""}</button>`).join("")}</div>
+
+      <div class="os-form bal-abrir">
+        <div class="prog-chips">${BAL_ATIVS.map(a=>`<button type="button" class="sub-tab-btn ${BAL_ATIV===a.chave?"active":""}" onclick="balSetAtiv('${a.chave}')">${a.label}</button>`).join("")}</div>
+        <div class="nf-grid" style="grid-template-columns:2fr 1fr 1fr auto; align-items:end;">
+          <label>Balsa<select id="bal-nome"><option value="">Selecione</option>${balNomes().map(n=>`<option>${osEsc(n)}</option>`).join("")}<option value="__nova">+ outra balsa…</option></select></label>
+          <label>Nº da balsa <small>(pode ficar em branco)</small><input id="bal-num" inputmode="numeric" placeholder="ex: 9252"></label>
+          <label>Data de abertura<input type="date" id="bal-data" value="${hoje}"></label>
+          <button class="entry-submit" style="margin:0;" onclick="balAbrir()">⚓ Abrir balsa</button>
+        </div>
+      </div>
+
+      ${lista.length ? `<div style="overflow-x:auto; margin-top:12px;"><table class="nf-tab bal-tab">
+        <thead><tr><th>Balsa</th><th>Nº</th><th>Atividade</th><th>Abertura</th><th>Fechamento</th><th>Documento</th><th>Status</th><th>Próxima etapa</th><th></th></tr></thead>
+        <tbody>${lista.map(({b, st})=>{ const s = BAL_STATUS[st], nf = balNF(b), dias = balDesdeEtapa(b);
+          const acao = st==="aberta" ? `<input type="date" id="bal-dt-${b.id}" value="${hoje}" class="nfe-pg"> <button class="os-btn sm" onclick="balAvancar('${b.id}','fechar')">🔒 Fechar balsa</button>`
+            : st==="pend_doc" ? `<input type="date" id="bal-dt-${b.id}" value="${hoje}" class="nfe-pg"> <button class="os-btn sm" onclick="balAvancar('${b.id}','documento')">📄 Documento recebido</button>`
+            : st==="pend_nf" ? `<button class="os-btn sm green" onclick="balEmitirNF('${b.id}')">🧾 Emitir NF</button>`
+            : nf ? `NF <b>${osEsc(nf.nf)}</b> · ${fmtBRL2(nf.valor)} · emitida ${fmtDataBR(nf.dataEmissao)}${st==="recebida" ? ` · paga ${fmtDataBR(nf.dataPagamento)}` : ""}` : "NF não encontrada";
+          return `<tr>
+            <td><b>${osEsc(b.balsa)}</b></td>
+            <td><input value="${osEsc(b.numero)}" placeholder="—" class="bal-num" inputmode="numeric" onchange="balNumero('${b.id}', this.value)"></td>
+            <td style="font-size:12px;">${b.atividade==="lr_sw" ? "LR SW" : "LR Carreteira"}</td>
+            <td>${fmtDataBR(b.dataAbertura)}</td><td>${b.dataFechamento ? fmtDataBR(b.dataFechamento) : "—"}</td><td>${b.dataDocumento ? fmtDataBR(b.dataDocumento) : "—"}</td>
+            <td><span class="bal-badge" style="--c:${s.cor};">${s.icone} ${s.label}</span>${dias!=null && st!=="recebida" ? `<div class="hint" style="margin:2px 0 0;">há ${dias} dia(s) nesta etapa</div>` : ""}</td>
+            <td style="white-space:nowrap;">${acao}</td>
+            <td style="white-space:nowrap;">${st!=="aberta" ? `<button class="os-link" onclick="balVoltar('${b.id}')" title="Voltar uma etapa">↩</button>` : ""} <button class="os-link" onclick="balExcluir('${b.id}')" title="Excluir">🗑️</button></td>
+          </tr>`; }).join("")}</tbody>
+      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${BAL.carregando ? "Carregando..." : "Nenhuma balsa neste filtro."}</p></div>`}
     </div>`;
 }
 
@@ -7582,7 +7682,7 @@ function nfePagina(){
   const perOpcoes = a.cad ? nfePeriodos(a.cad) : [];
   if(a.cad && NFE_PERIODO && !perOpcoes.some(p=>p.chave===NFE_PERIODO)){ const extra = nfePeriodoPorChave(a.cad, NFE_PERIODO); if(extra) perOpcoes.push(extra); }
   return `
-    ${nfePainelHTML()}
+    ${balHTML()}
 
     <div class="panel os-form" id="nfe-form" style="margin-bottom:16px; ${NFE_EDIT ? "border:2px solid var(--amber);" : ""}">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
@@ -7604,6 +7704,7 @@ function nfePagina(){
         <label>Valor<input id="nfe-valor" inputmode="numeric" placeholder="R$ 0,00" oninput="osMascaraBRL(this)"></label>
         <label>Data de emissão<input type="date" id="nfe-data" value="${frotaHojeISO()}"></label>
       </div>
+      ${NFE_BALSA_ID ? (()=>{ const b = BAL.lista.find(x=>x.id===NFE_BALSA_ID); return b ? `<div class="os-alerta amber">🚢 Esta NF vai quitar a balsa <b>${osEsc(balRotulo(b))}</b> (${b.atividade==="lr_sw" ? "LR SW" : "LR Carreteira"}). <button class="os-link" onclick="balCancelarVinculo()">não ligar</button></div>` : ""; })() : ""}
       <label>Observação<input id="nfe-obs" placeholder="opcional"></label>
       <button class="entry-submit" onclick="nfeSalvar()">${NFE_EDIT ? "Salvar alterações" : "Registrar NF"}</button>
     </div>
