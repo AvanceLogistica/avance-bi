@@ -7415,7 +7415,7 @@ function nfeRerender(){
   if(pg !== "gerencial" && (pg !== "emissaonf" || NF_ABA !== "nfe")) return;
   const foco = document.activeElement;
   if(foco && foco.closest && (foco.closest("#nfe-form") || foco.closest(".nfe-card") || foco.classList.contains("nfe-pg")) && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
-  const y = window.scrollY; document.getElementById("content").innerHTML = renderers.emissaonf(); window.scrollTo(0,y);
+  const y = window.scrollY; document.getElementById("content").innerHTML = renderers[pg](); window.scrollTo(0,y);
   requestAnimationFrame(nfeGrafico);
 }
 async function nfeGravarPainel(atividade, periodo, campos){
