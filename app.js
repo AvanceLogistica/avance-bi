@@ -8441,9 +8441,83 @@ function nfgDetalhe(linhas){
   return tit;
 }
 
+/* ---------- Calendário de lead time das operações (topo do Painel Gerencial) ----------
+   Referência de prazos por operação: execução → emissão do documento → emissão da NF (1 dia).
+   Todas as barras na MESMA escala de dias, para comparar o lead time das operações; abaixo de cada barra,
+   as datas do ciclo que está correndo agora e a marca de "hoje". */
+const NFG_LEADTIME = [
+  { chave:"lr_sw",           label:"Logística Reversa",            exec:"semanal", doc:"semanal", nf:1 },
+  { chave:"desatrelamento",  label:"Desatrelamento SW",            exec:"semanal", doc:"semanal", nf:1 },
+  { chave:"puxadas",         label:"Puxada de carreta avaria NC",  exec:"semanal", doc:"semanal", nf:1 },
+  { chave:"devolucao_motos", label:"Devolução de motos",           exec:"mensal",  doc:"mensal",  nf:1 },
+  { chave:"manutencao",      label:"Manutenção de Carreta",        exec:"semanal", doc:"semanal", nf:1 },
+  { chave:"lr_carreteira",   label:"Logística Reversa Carreteira", exec:"semanal", doc:"semanal", nf:1 },
+];
+const NFG_LT_FASES = [
+  { k:"exec", label:"Execução",              cor:"#2E6DB0" },
+  { k:"doc",  label:"Emissão de documento",  cor:"#E1971F" },
+  { k:"nf",   label:"Emissão da NF",         cor:"#1C9A6C" },
+];
+let NFG_LT_ABERTO = true;
+try{ NFG_LT_ABERTO = localStorage.getItem("avance_lt_aberto") !== "0"; }catch(e){}
+window.nfgLtToggle = (v) => { NFG_LT_ABERTO = v; try{ localStorage.setItem("avance_lt_aberto", v ? "1" : "0"); }catch(e){} };
+// Ciclo que contém hoje: semanal = segunda a domingo; mensal = mês corrente
+function nfgLtCiclo(o){
+  const hoje = frotaHojeISO();
+  const bloco = (cad, ini) => cad==="mensal" ? { ini, fim:nfeFimMes(ini.slice(0,7)) } : { ini, fim:nfeAddDias(ini, 6) };
+  const ini = o.exec==="mensal" ? `${hoje.slice(0,7)}-01` : nfeSegunda(hoje);
+  const exec = bloco(o.exec, ini);
+  const doc = bloco(o.doc, nfeAddDias(exec.fim, 1));
+  const nf = { ini:nfeAddDias(doc.fim, 1), fim:nfeAddDias(doc.fim, o.nf) };
+  const dur = (b) => nfeDias(b.ini, b.fim) + 1;
+  return { ini, exec, doc, nf, d:{ exec:dur(exec), doc:dur(doc), nf:dur(nf) }, total:dur(exec)+dur(doc)+dur(nf), hojeDia:nfeDias(ini, hoje) };
+}
+function nfgLeadTimeHTML(){
+  const linhas = NFG_LEADTIME.map(o=>({ o, a:nfeAtiv(o.chave), c:nfgLtCiclo(o) }));
+  const escala = Math.ceil(Math.max(...linhas.map(l=>l.c.total)) / 7) * 7;   // semanas inteiras
+  const pct = (dias) => (dias / escala * 100).toFixed(3) + "%";
+  const cad = (v) => v==="mensal" ? "Mensal" : "Semanal";
+  const per = (b) => b.ini===b.fim ? nfeBR(b.ini) : `${nfeBR(b.ini)} a ${nfeBR(b.fim)}`;
+  const ticks = []; for(let d = 0; d <= escala; d += 7) ticks.push(d);
+  const semanais = linhas.filter(l=>l.o.exec==="semanal"), mensal = linhas.find(l=>l.o.exec==="mensal");
+  return `<details class="panel nfg-lt" ${NFG_LT_ABERTO ? "open" : ""} ontoggle="nfgLtToggle(this.open)">
+    <summary>
+      <div><h3>🗓️ Calendário de lead time das operações</h3>
+        <div class="hint" style="margin:2px 0 0;">Da execução do serviço até a emissão da NF — todas as operações na mesma escala de dias</div></div>
+      <div class="nfg-lt-resumo">
+        ${semanais.length ? `<span><b>${semanais[0].c.total} dias</b> operações semanais</span>` : ""}
+        ${mensal ? `<span><b>${mensal.c.total} dias</b> ${mensal.o.label.toLowerCase()}</span>` : ""}
+        <span class="nfg-lt-seta"></span>
+      </div>
+    </summary>
+    <div class="nfg-lt-legenda">${NFG_LT_FASES.map(f=>`<span><i style="background:${f.cor};"></i>${f.label}</span>`).join("")}<span><i class="hoje"></i>Hoje</span></div>
+    <div class="nfg-lt-grid">
+      <div class="nfg-lt-cab"></div>
+      <div class="nfg-lt-regua">${ticks.map(d=>`<span style="left:${pct(d)};">${d===0 ? "início" : d + "d"}</span>`).join("")}</div>
+      ${linhas.map(({o, a, c})=>`
+        <div class="nfg-lt-nome"><span class="nfe-dot" style="--c:${a.cor};"></span><div><b>${o.label}</b>
+          <div class="nfg-lt-cad">${cad(o.exec)} · ${cad(o.doc)} · NF ${o.nf} dia</div></div></div>
+        <div class="nfg-lt-linha">
+          <div class="nfg-lt-trilho">
+            ${ticks.slice(1, -1).map(d=>`<i class="nfg-lt-grade" style="left:${pct(d)};"></i>`).join("")}
+            <div class="nfg-lt-barra" style="width:${pct(c.total)};">
+              <span class="fase exec" style="flex:${c.d.exec};" title="Execução: ${per(c.exec)} (${c.d.exec} dias)">${cad(o.exec)}</span>
+              <span class="fase doc" style="flex:${c.d.doc};" title="Emissão de documento: ${per(c.doc)} (${c.d.doc} dias)">Documento</span>
+              <span class="fase nf" style="flex:${c.d.nf};" title="Emissão da NF: ${per(c.nf)}">NF</span>
+            </div>
+            <span class="nfg-lt-total" style="left:${pct(c.total)};">${c.total} dias</span>
+            <i class="nfg-lt-hoje" style="left:${pct(c.hojeDia + 0.5)};" title="Hoje — dia ${c.hojeDia + 1} do ciclo"></i>
+          </div>
+          <div class="nfg-lt-datas">Ciclo atual: <b>execução</b> ${per(c.exec)} → <b>documento</b> ${per(c.doc)} → <b>NF</b> ${per(c.nf)}</div>
+        </div>`).join("")}
+    </div>
+    <div class="hint" style="margin:10px 0 0;">Passe o mouse (ou toque) numa fase para ver as datas. Lead time = dias corridos do início da execução até a emissão da NF.</div>
+  </details>`;
+}
+
 // Painel Gerencial: item próprio no menu (só Diretor)
 initCharts.gerencial = () => nfgGrafico();
-renderers.gerencial = () => `<div class="page-head"><h2>Painel Gerencial</h2><p>Todas as operações e o status de cada uma — da operação ao recebimento da NF · a baixa do recebimento é da Diretoria</p></div>` + nfgPagina();
+renderers.gerencial = () => `<div class="page-head"><h2>Painel Gerencial</h2><p>Todas as operações e o status de cada uma — da operação ao recebimento da NF · a baixa do recebimento é da Diretoria</p></div>` + nfgLeadTimeHTML() + nfgPagina();
 renderers.emissaonf = () => {
   if(MEU_PAPEL === "manutencao") return `<div class="page-head"><h2>O.S de Manutenção</h2></div>
     <div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">🔧</div><h4>Esta tela foi desativada</h4><p>A O.S de Manutenção foi retirada do sistema. Fale com a diretoria.</p></div></div>`;
