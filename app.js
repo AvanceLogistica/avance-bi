@@ -9032,15 +9032,17 @@ window.oseSalvar = async (emitir) => {
   if(ehOS) await oseSincronizarCiclo(local.saida || local.entrada);
   oseRedesenhar();
 };
-// Líder da operação: valida o plano do dia → as Pré O.S vão para a administração
-window.oseLiderValidar = async (dia) => {
-  const ls = OSE.lista.filter(o=>o.status==="plano" && oseDiaPlano(o)===dia); if(!ls.length){ toast("Nenhuma Pré O.S em lançamento neste dia."); return; }
-  if(!confirm(`Validar o plano de ${fmtDataBR(dia)} e enviar ${ls.length} Pré O.S para a administração?\n\nDepois disso a operação não altera mais essas Pré O.S.`)) return;
+// Líder da operação: valida cada Pré O.S individualmente (nominal) → ela vai para a administração
+window.oseLiderValidar = async (id) => {
+  const o = OSE.lista.find(x=>x.id===id); if(!o || o.status!=="plano") return;
+  if(!confirm(`Validar a Pré O.S da frota ${o.frota}${o.placa ? " · " + o.placa : ""} (${o.itens.length} serviço(s)) e enviar para a administração?
+
+Depois disso a operação não altera mais esta Pré O.S.`)) return;
   const agora = new Date().toISOString();
-  if(sb){ const { error } = await sb.from("manutencao_os").update({ status:"pre", lider_por:MEU_EMAIL, lider_em:agora, atualizado_por:MEU_EMAIL, atualizado_em:agora }).in("id", ls.map(o=>o.id));
+  if(sb){ const { error } = await sb.from("manutencao_os").update({ status:"pre", lider_por:MEU_EMAIL, lider_em:agora, atualizado_por:MEU_EMAIL, atualizado_em:agora }).eq("id", id);
     if(error){ toast(/lider/i.test(error.message) ? "⚠ Falta rodar o SQL da Emissão de O.S no Supabase." : "⚠ Não salvou: " + error.message); return; } }
-  ls.forEach(o=>{ o.status = "pre"; o.liderPor = (MEU_EMAIL||"").split("@")[0]; o.liderEm = agora; }); oseSalvarLocal();
-  toast(`Plano de ${fmtDataBR(dia)} validado ✓ — ${ls.length} Pré O.S enviadas para a administração`); oseRedesenhar();
+  o.status = "pre"; o.liderPor = (MEU_EMAIL||"").split("@")[0]; o.liderEm = agora; oseSalvarLocal();
+  toast(`Pré O.S da frota ${o.frota} validada ✓ — enviada para a administração`); oseRedesenhar();
 };
 window.oseReabrir = async (id) => {
   const o = OSE.lista.find(x=>x.id===id); if(!o || o.status!=="pre" || !confirm("Devolver esta Pré O.S para a operação (volta para Em lançamento)?")) return;
@@ -9160,19 +9162,19 @@ function osePlanoHTML(diaFixo){
       <span class="ose-pill green">✅ Viraram O.S <b>${doDia.filter(o=>o.status==="validada").length}</b></span>
       <span style="flex:1;"></span>
       <button class="os-btn" onclick="oseNovaPre()">+ Lançar Pré O.S</button>
-      ${emLanc.length ? `<button class="entry-submit" style="margin:0; background:var(--green);" onclick="oseLiderValidar('${d}')">✅ Líder: validar o plano (${emLanc.length}) e enviar</button>` : ""}
+      ${emLanc.length ? `<span class="hint" style="margin:0;">Líder: valide cada Pré O.S na linha (✅ Validar)</span>` : ""}
     </div>
     ${doDia.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
       <thead><tr><th>Frota · Placa</th><th>Serviços planejados</th>${veV ? `<th class="num">Valor estimado</th>` : ""}<th>Situação</th><th>Lançado por</th><th></th></tr></thead>
       <tbody>${doDia.map(o=>{ const s = OSE_ST[o.status], os = oseDaPre(o.id); return `<tr>
         <td><b>${osEsc(o.frota)}</b>${o.placa ? ` · ${osEsc(o.placa)}` : ""}</td>
         <td class="ose-chips">${resumoItens(o) || "—"}</td>${veV ? `<td class="num">${fmtBRL2(oseValor(o))}</td>` : ""}
-        <td><span class="badge ${s.badge}">${s.icone} ${s.label}${o.status==="validada" && os ? ` · O.S ${oseNum(os.numero)}` : ""}</span>${o.liderPor ? `<div class="hint" style="margin:0;">líder: ${osEsc(o.liderPor)}</div>` : ""}</td>
+        <td><span class="badge ${s.badge}">${s.icone} ${s.label}${o.status==="validada" && os ? ` · O.S ${oseNum(os.numero)}` : ""}</span>${o.liderPor ? `<div class="hint" style="margin:0;">validada por ${osEsc(o.liderPor)}${o.liderEm ? ` · ${frotaHora(o.liderEm)}` : ""}</div>` : ""}</td>
         <td style="font-size:12px;">${osEsc(o.por||"")}</td>
-        <td style="white-space:nowrap;">${o.status==="plano" ? `<button class="os-link" onclick="oseEditarPre('${o.id}')" title="Editar">✏️</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir">🗑️</button>` : ""}</td>
+        <td style="white-space:nowrap;">${o.status==="plano" ? `<button class="os-btn sm green" onclick="oseLiderValidar('${o.id}')" title="Líder: validar esta Pré O.S e enviar para a administração">✅ Validar</button> <button class="os-link" onclick="oseEditarPre('${o.id}')" title="Editar">✏️</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir">🗑️</button>` : ""}</td>
       </tr>`; }).join("")}</tbody></table></div>`
       : `<div class="empty-state" style="padding:16px;"><p>Nenhuma Pré O.S lançada para ${fmtDataBR(d)}. Clique em <b>+ Lançar Pré O.S</b>${diaFixo ? " ou em <b>📝 Pré O.S</b> na carreta da fila" : ""}.</p></div>`}
-    ${enviadas.length && !emLanc.length ? `<div class="hint" style="margin-top:8px;">✓ Plano de ${fmtDataBR(d)} validado pelo líder e enviado para a administração.</div>` : ""}
+    ${enviadas.length && !emLanc.length ? `<div class="hint" style="margin-top:8px;">✓ Todas as Pré O.S de ${fmtDataBR(d)} foram validadas pelo líder e estão com a administração.</div>` : ""}
   </div>`;
 }
 
