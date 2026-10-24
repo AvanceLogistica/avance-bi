@@ -7575,6 +7575,7 @@ window.nfeSalvar = async () => {
     if(sb){ const { data, error } = await sb.from("nf_emitidas").insert({ ...banco, criado_por:MEU_EMAIL }).select().single(); if(error){ toast(/balsa/i.test(error.message) ? "⚠ Falta rodar o SQL do campo Balsa no Supabase." : "⚠ Não salvou: " + error.message); return; } novo.id = data.id; }
     NFE.lista.unshift(novo);
     if(NFE_BALSA_ID){ await balVincularNF(NFE_BALSA_ID, novo.id); NFE_BALSA_ID = null; }
+    if(NFE_OS_ID){ await oseVincularNF(NFE_OS_ID, novo); NFE_OS_ID = null; }
     toast(`NF ${nf} registrada ✓${reg.periodo ? " — painel atualizado 🟢" : ""}`);
   }
   nfeSalvarLocal();
@@ -7589,7 +7590,7 @@ window.nfeEditar = (id) => {
   nfePreencher({ numero:r.numero, balsa:nfeBalsaDe(r), nf:r.nf, valor:"R$ "+r.valor.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}), data:r.dataEmissao, obs:r.obs });
   document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" });
 };
-window.nfeCancelar = () => { NFE_EDIT = null; NFE_SENTIDO = ""; NFE_BALSA_ID = null; nfeRedesenhar(); nfePreencher({ numero:"", nf:"", valor:"", data:"", obs:"" }); };
+window.nfeCancelar = () => { NFE_EDIT = null; NFE_SENTIDO = ""; NFE_BALSA_ID = null; NFE_OS_ID = null; nfeRedesenhar(); nfePreencher({ numero:"", nf:"", valor:"", data:"", obs:"" }); };
 window.nfeExcluir = async (id) => {
   const r = NFE.lista.find(x=>x.id===id); if(!r || !confirm(`Excluir a NF ${r.nf} (${nfeRotulo(r)} · ${fmtBRL2(r.valor)})?`)) return;
   if(sb){ const { error } = await sb.from("nf_emitidas").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
@@ -7843,6 +7844,7 @@ function nfeRotuloPeriodo(r){ if(r.periodo && r.periodo.startsWith("D:")){ const
 
 function nfePagina(){
   if(!NFE.carregado && !NFE.carregando){ NFE.carregando = true; setTimeout(()=>nfeCarregar(), 0); }
+  if(NFE_OS_ID) oseGarantirCarga();
   if(NFE.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar as NF emitidas</h4><p>${osEsc(NFE.erro)}</p><p>Se falar em tabela inexistente ("nf_emitidas") ou coluna "periodo", rode o SQL das NF Emitidas no Supabase.</p></div></div>`;
   const meses = [...new Set(NFE.lista.map(r=>(r.dataEmissao||"").slice(0,7)).filter(Boolean))].sort().reverse();
   const hojeMes = frotaHojeISO().slice(0,7);
@@ -7882,6 +7884,7 @@ function nfePagina(){
         <label>Valor<input id="nfe-valor" inputmode="numeric" placeholder="R$ 0,00" oninput="osMascaraBRL(this)"></label>
         <label>Data de emissão<input type="date" id="nfe-data" value="${frotaHojeISO()}"></label>
       </div>
+      ${NFE_OS_ID ? (()=>{ const o = OSE.lista.find(x=>x.id===NFE_OS_ID); return o ? `<div class="os-alerta amber">🧾 Esta NF fecha a <b>O.S ${oseNum(o.numero)}</b> (frota ${osEsc(o.frota)} · ${fmtBRL2(oseValor(o))}). Ao registrar, a O.S fica com a NF. <button class="os-link" onclick="oseCancelarVinculoNF()">não ligar</button></div>` : ""; })() : ""}
       ${NFE_BALSA_ID ? (()=>{ const b = BAL.lista.find(x=>x.id===NFE_BALSA_ID); return b ? `<div class="os-alerta amber">🚢 Esta NF vai quitar a balsa <b>${osEsc(balRotulo(b))}</b> (${b.atividade==="lr_sw" ? "LR SW" : "LR Carreteira"}). <button class="os-link" onclick="balCancelarVinculo()">não ligar</button></div>` : ""; })() : ""}
       <label>Observação<input id="nfe-obs" placeholder="opcional"></label>
       <button class="entry-submit" onclick="nfeSalvar()">${NFE_EDIT ? "Salvar alterações" : "Registrar NF"}</button>
@@ -8921,7 +8924,8 @@ async function oseCarregar(){
     OSE.lista = l.map(r=>({ id:r.id, numero:r.numero, status:r.status||"emitida", filaId:r.fila_id||null, preId:r.pre_id||null, dataPlano:r.data_plano||"",
       entrada:r.entrada_data, entradaHora:r.entrada_hora||"", saida:r.saida_data||"", saidaHora:r.saida_hora||"", frota:r.frota||"", placa:r.placa||"",
       itens:r.itens||[], obs:r.obs||"", referencia:r.referencia||"", liderPor:(r.lider_por||"").split("@")[0], liderEm:r.lider_em||"",
-      emitidaEm:r.emitida_em||"", emitidaPor:(r.emitida_por||"").split("@")[0], por:(r.criado_por||r.atualizado_por||"").split("@")[0] }));
+      emitidaEm:r.emitida_em||"", emitidaPor:(r.emitida_por||"").split("@")[0], por:(r.criado_por||r.atualizado_por||"").split("@")[0],
+      assinadaEm:r.assinada_em||"", nfNumero:r.nf_numero||"", nfId:r.nf_id||null, nfEm:r.nf_em||"" }));
     if(s) OSE.servicos = s.map(x=>({ cod:Number(x.cod), servico:x.servico, grupo:x.grupo||"", mo:x.mo!=null ? Number(x.mo) : null, mat:x.mat!=null ? Number(x.mat) : null })).sort((a,b)=>a.cod-b.cod);
     if(c) OSE.carretas = c.map(x=>({ placa:x.placa, frota:String(x.frota) }));
     if(cfg && !cfg.error && cfg.data && cfg.data.valor){ OSE.cfg = cfg.data.valor; OSE.cfgSalvo = true; }
@@ -9065,6 +9069,72 @@ window.oseExcluir = async (id) => {
   if(o.status==="emitida") await oseSincronizarCiclo(o.saida || o.entrada, o.numero);
   oseRedesenhar();
 };
+/* ---------- Depois da emissão: retorno assinado da Combitrans → NF emitida ---------- */
+let OSE_OS_FILTRO = "todas";   // todas | aguardando | assinada | nf
+let NFE_OS_ID = null;          // O.S que a NF em lançamento (NF Emitidas) vai fechar
+const OSE_PRAZO_ASSINATURA = 7;
+function oseSituacao(o){
+  if(o.nfNumero) return { k:"nf", label:`NF ${o.nfNumero} emitida`, badge:"green", icone:"🧾" };
+  if(o.assinadaEm) return { k:"assinada", label:"Assinada — pendente de NF", badge:"amber", icone:"✍️" };
+  const lim = o.emitidaEm ? nfeAddDias(o.emitidaEm.slice(0,10), OSE_PRAZO_ASSINATURA) : null, atrasada = !!lim && frotaHojeISO() > lim;
+  return { k:"aguardando", label: atrasada ? "Assinatura atrasada" : "Aguardando assinatura", badge: atrasada ? "red" : "gray", icone:"⏳", lim, atrasada };
+}
+async function oseAtualizarOS(o, campos, local){
+  if(sb){ const { error } = await sb.from("manutencao_os").update({ ...campos, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", o.id);
+    if(error){ toast(/assinada|nf_/i.test(error.message) ? "⚠ Falta rodar o SQL do retorno da O.S (assinatura e NF) no Supabase." : "⚠ Não salvou: " + error.message); return false; } }
+  Object.assign(o, local); oseSalvarLocal(); return true;
+}
+window.oseOSFiltro = (f) => { OSE_OS_FILTRO = OSE_OS_FILTRO===f ? "todas" : f; oseRedesenhar(); };
+window.oseAssinada = async (id) => {
+  const o = OSE.lista.find(x=>x.id===id); if(!o) return;
+  const d = document.getElementById(`ose-ass-${id}`)?.value || frotaHojeISO();
+  if(o.emitidaEm && d < o.emitidaEm.slice(0,10)){ toast("A data do retorno está antes da emissão da O.S."); return; }
+  if(await oseAtualizarOS(o, { assinada_em:d }, { assinadaEm:d })){ toast(`O.S ${oseNum(o.numero)} assinada pela Combitrans ✓ — agora é emitir a NF`); await oseSincronizarCiclo(o.saida || o.entrada); }
+  oseRedesenhar();
+};
+window.oseDesfazerAssinatura = async (id) => {
+  const o = OSE.lista.find(x=>x.id===id); if(!o || !confirm(`Desfazer o retorno assinado da O.S ${oseNum(o.numero)}?`)) return;
+  if(await oseAtualizarOS(o, { assinada_em:null }, { assinadaEm:"" })) oseRedesenhar();
+};
+// Abre o formulário das NF Emitidas já preenchido (Manutenção de Carreta, período da O.S, valor e observação)
+window.oseEmitirNF = (id) => {
+  const o = OSE.lista.find(x=>x.id===id); if(!o) return;
+  NF_ABA = "nfe"; NFE_EDIT = null; NFE_BALSA_ID = null; NFE_OS_ID = id; NFE_ATIV = "manutencao"; NFE_SENTIDO = "";
+  NFE_PERIODO = `D:${o.entrada}:${o.saida || o.entrada}`;
+  navigate("emissaonf");
+  setTimeout(()=>{ nfePreencher({ valor:"R$ " + oseValor(o).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }), obs:`O.S nº ${oseNum(o.numero)} — frota ${o.frota}${o.placa ? " / " + o.placa : ""}`, data:frotaHojeISO() });
+    document.getElementById("nfe-form")?.scrollIntoView({ behavior:"smooth", block:"start" }); }, 80);
+};
+window.oseCancelarVinculoNF = () => { NFE_OS_ID = null; nfeRedesenhar(); };
+async function oseVincularNF(osId, nf){
+  const o = OSE.lista.find(x=>x.id===osId); if(!o) return;
+  const ok = await oseAtualizarOS(o, { nf_id:nf.id && !String(nf.id).startsWith("tmp") ? nf.id : null, nf_numero:nf.nf, nf_em:nf.dataEmissao||frotaHojeISO(), ...(o.assinadaEm ? {} : { assinada_em:nf.dataEmissao||frotaHojeISO() }) },
+    { nfId:nf.id, nfNumero:nf.nf, nfEm:nf.dataEmissao||frotaHojeISO(), assinadaEm:o.assinadaEm || nf.dataEmissao || frotaHojeISO() });
+  if(ok) toast(`NF ${nf.nf} ligada à O.S ${oseNum(o.numero)} ✓`);
+}
+// NF já emitida antes: informa o número (liga à NF das NF Emitidas quando encontrar)
+window.oseInformarNF = async (id) => {
+  const o = OSE.lista.find(x=>x.id===id); if(!o) return;
+  if(!NFE.carregado && !NFE.carregando) await nfeCarregar();
+  const num = (prompt(`Nº da NF emitida para a O.S ${oseNum(o.numero)}:`) || "").trim().replace(/^\/|\/$/g,""); if(!num) return;
+  const nf = NFE.lista.find(r=>r.nf===num || String(r.nf).split("/").includes(num));
+  if(!nf && !confirm(`A NF ${num} não está nas NF Emitidas. Registrar só o número na O.S?`)) return;
+  await oseVincularNF(id, nf || { id:null, nf:num, dataEmissao:frotaHojeISO() }); oseRedesenhar();
+};
+window.oseDesvincularNF = async (id) => {
+  const o = OSE.lista.find(x=>x.id===id); if(!o || !confirm(`Tirar a NF ${o.nfNumero} da O.S ${oseNum(o.numero)}? (a NF continua nas NF Emitidas)`)) return;
+  if(await oseAtualizarOS(o, { nf_id:null, nf_numero:null, nf_em:null }, { nfId:null, nfNumero:"", nfEm:"" })) oseRedesenhar();
+};
+function oseSituacaoHTML(o){
+  const st = oseSituacao(o), hoje = frotaHojeISO();
+  const base = `<span class="badge ${st.badge}">${st.icone} ${st.label}</span>`;
+  if(st.k==="aguardando") return `${base}<div class="hint" style="margin:2px 0 4px;">${st.lim ? `limite ${fmtDataBR(st.lim)}` : ""}</div>
+    <span style="white-space:nowrap;"><input type="date" id="ose-ass-${o.id}" value="${hoje}" class="nfe-pg"> <button class="os-btn sm" onclick="oseAssinada('${o.id}')">✍️ Retorno assinado</button></span>`;
+  if(st.k==="assinada") return `${base}<div class="hint" style="margin:2px 0 4px;">assinada em ${fmtDataBR(o.assinadaEm)} <button class="os-link" onclick="oseDesfazerAssinatura('${o.id}')">desfazer</button></div>
+    <span style="white-space:nowrap;"><button class="os-btn sm green" onclick="oseEmitirNF('${o.id}')">🧾 Emitir NF</button> <button class="os-link" onclick="oseInformarNF('${o.id}')">já emiti — informar nº</button></span>`;
+  return `${base}<div class="hint" style="margin:2px 0 0;">${o.nfEm ? `em ${fmtDataBR(o.nfEm)} · ` : ""}assinada ${o.assinadaEm ? fmtDataBR(o.assinadaEm) : "—"} <button class="os-link" onclick="oseDesvincularNF('${o.id}')">desfazer</button></div>`;
+}
+
 // O ciclo semanal da Combitrans (Painel Gerencial) recebe os números e o valor das O.S emitidas da semana
 async function oseSincronizarCiclo(dataRef, removido){
   if(!dataRef || typeof manGravar!=="function") return;
@@ -9074,8 +9144,9 @@ async function oseSincronizarCiclo(dataRef, removido){
     const da = OSE.lista.filter(o=>o.status==="emitida" && nfeSegunda(o.saida || o.entrada)===sem).sort((a,b)=>(a.numero||0)-(b.numero||0));
     if(!da.length && !(removido && String(c.osNumero||"").split(/,\s*/).includes(oseNum(removido)))) return;
     const primeira = da.map(o=>(o.emitidaEm||"").slice(0,10)).filter(Boolean).sort()[0] || frotaHojeISO();
+    const ass = da.length && da.every(o=>o.assinadaEm) ? da.map(o=>o.assinadaEm).sort().pop() : null;
     await manGravar(sem, da.length ? { osNumero:da.map(o=>oseNum(o.numero)).join(", "), osValor:Math.round(sumArr(da.map(oseValor))*100)/100,
-      dataOS:c.dataOS || primeira, dataDocumento:c.dataDocumento || primeira } : { osNumero:"", osValor:null });
+      dataOS:c.dataOS || primeira, dataDocumento:c.dataDocumento || primeira, ...(ass && !c.dataAssinatura ? { dataAssinatura:ass } : {}) } : { osNumero:"", osValor:null });
   }catch(e){ console.warn("ciclo Combitrans", e); }
 }
 
@@ -9280,7 +9351,8 @@ function osePagina(){
   const emitMes = emit.filter(o=>(o.emitidaEm||o.entrada||"").startsWith(mes));
   if(!["pre","validada"].includes(OSE_FILTRO)) OSE_FILTRO = "pre";
   const listaPre = (OSE_FILTRO==="pre" ? pre : validadas).sort((a,b)=>oseDiaPlano(a).localeCompare(oseDiaPlano(b)));
-  const listaOS = [...emit].sort((a,b)=>(b.numero||0)-(a.numero||0) || (b.entrada||"").localeCompare(a.entrada||""));
+  const contSit = { aguardando:0, assinada:0, nf:0 }; emit.forEach(o=>contSit[oseSituacao(o).k]++);
+  const listaOS = emit.filter(o=>OSE_OS_FILTRO==="todas" || oseSituacao(o).k===OSE_OS_FILTRO).sort((a,b)=>(b.numero||0)-(a.numero||0) || (b.entrada||"").localeCompare(a.entrada||""));
   const resumoItens = (o) => (o.itens||[]).map(it=>`<span class="ose-chip" title="${osEsc(it.servico)}"><b>${it.cod}</b> ${String(it.qtd).replace(".", ",")}${it.un==="m" ? "m" : ""}</span>`).join("");
   const destaque = (o) => OSE_EDIT && (OSE_EDIT.id===o.id || OSE_EDIT.preId===o.id) ? 'style="background:#FCF1DE;"' : "";
   return `
@@ -9288,7 +9360,8 @@ function osePagina(){
       <div><span>1</span><b>Plano do dia</b><small>operação lança a Pré O.S</small><em>${emLanc.length} em lançamento</em></div>
       <div><span>2</span><b>Líder valida</b><small>no fim do dia</small><em>${pre.length} com a administração</em></div>
       <div><span>3</span><b>Administração</b><small>confere e gera a O.S</small><em>${emitMes.length} O.S no mês · ${fmtBRL(sumArr(emitMes.map(oseValor)))}</em></div>
-      <div><span>4</span><b>Combitrans</b><small>PDF da O.S para assinatura</small><em>última O.S ${emit.length ? oseNum(Math.max(...emit.map(o=>Number(o.numero)||0))) : "—"}</em></div>
+      <div><span>4</span><b>Combitrans</b><small>assina a O.S (até ${OSE_PRAZO_ASSINATURA} dias)</small><em>${emit.filter(o=>oseSituacao(o).k==="aguardando").length} aguardando assinatura</em></div>
+      <div><span>5</span><b>NF emitida</b><small>após o retorno assinado</small><em>${emit.filter(o=>oseSituacao(o).k==="assinada").length} pendente(s) de NF</em></div>
     </div>
     ${oseEditorHTML()}
     ${osePlanoHTML()}
@@ -9324,8 +9397,14 @@ function osePagina(){
           <div class="hint">Lançamentos da administração. Excluir uma O.S que veio de Pré O.S devolve a Pré O.S para conferência.</div></div>
         <button class="os-btn" onclick="oseNova()">+ O.S avulsa</button>
       </div>
+      <div class="prog-chips" style="margin:10px 0 0;">
+        <button class="sub-tab-btn ${OSE_OS_FILTRO==="todas"?"active":""}" onclick="oseOSFiltro('todas')">Todas (${emit.length})</button>
+        <button class="sub-tab-btn ${OSE_OS_FILTRO==="aguardando"?"active":""}" onclick="oseOSFiltro('aguardando')">⏳ Aguardando assinatura (${contSit.aguardando})</button>
+        <button class="sub-tab-btn ${OSE_OS_FILTRO==="assinada"?"active":""}" onclick="oseOSFiltro('assinada')">✍️ Assinadas — pendentes de NF (${contSit.assinada})</button>
+        <button class="sub-tab-btn ${OSE_OS_FILTRO==="nf"?"active":""}" onclick="oseOSFiltro('nf')">🧾 NF emitida (${contSit.nf})</button>
+      </div>
       ${listaOS.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
-        <thead><tr><th>Nº O.S</th><th>Início</th><th>Saída</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor p/ NF</th><th>Origem</th><th></th></tr></thead>
+        <thead><tr><th>Nº O.S</th><th>Início</th><th>Saída</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor p/ NF</th><th>Situação</th><th>Origem</th><th></th></tr></thead>
         <tbody>${listaOS.map(o=>{ const pr = OSE.lista.find(x=>x.id===o.preId); return `<tr ${destaque(o)}>
           <td><b>${oseNum(o.numero)}</b>${o.referencia ? `<div class="hint" style="margin:0;">${osEsc(o.referencia)}</div>` : ""}</td>
           <td>${o.entrada ? fmtDataBR(o.entrada) : "—"}${o.entradaHora ? `<div class="hint" style="margin:0;">${o.entradaHora}</div>` : ""}</td>
@@ -9333,12 +9412,13 @@ function osePagina(){
           <td><b>${osEsc(o.frota)}</b>${o.placa ? ` · ${osEsc(o.placa)}` : ""}</td>
           <td class="ose-chips">${resumoItens(o) || "—"}</td>
           <td class="num"><b>${fmtBRL2(oseValor(o))}</b>${pr && Math.abs(oseValor(pr) - oseValor(o)) > 0.005 ? `<div class="hint" style="margin:0;">Pré O.S: ${fmtBRL2(oseValor(pr))}</div>` : ""}</td>
-          <td style="font-size:12px;">${pr ? `📝 Pré O.S de ${osEsc(pr.por||"operação")}` : "avulsa"}${o.emitidaPor ? `<div class="hint" style="margin:0;">emitida por ${osEsc(o.emitidaPor)}</div>` : ""}</td>
+          <td>${oseSituacaoHTML(o)}</td>
+          <td style="font-size:12px;">${pr ? `📝 Pré O.S de ${osEsc(pr.por||"operação")}` : "avulsa"}${o.emitidaPor ? `<div class="hint" style="margin:0;">emitida por ${osEsc(o.emitidaPor)}${o.emitidaEm ? ` · ${fmtDataBR(o.emitidaEm.slice(0,10))}` : ""}</div>` : ""}</td>
           <td style="white-space:nowrap;"><button class="os-btn sm" onclick="osePDF('${o.id}')">📄 PDF</button> <button class="os-btn sm green" onclick="oseEnviar('${o.id}')">📲 Enviar</button>
             <button class="os-link" onclick="oseConferir('${o.id}')" title="Editar O.S">✏️</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir O.S">🗑️</button></td>
         </tr>`; }).join("")}</tbody>
-        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="5">Total (${listaOS.length})</td><td class="num">${fmtBRL2(sumArr(listaOS.map(oseValor)))}</td><td colspan="2"></td></tr></tfoot>
-      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nenhuma O.S emitida ainda.</p></div>`}
+        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="5">Total (${listaOS.length})</td><td class="num">${fmtBRL2(sumArr(listaOS.map(oseValor)))}</td><td colspan="3"></td></tr></tfoot>
+      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${emit.length ? "Nenhuma O.S nesta situação." : "Nenhuma O.S emitida ainda."}</p></div>`}
     </div>
 
     <details class="panel" id="ose-cfg" style="margin-bottom:16px;" ${OSE.cfgSalvo ? "" : "open"}>
