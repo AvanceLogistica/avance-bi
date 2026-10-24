@@ -9211,6 +9211,64 @@ function osePreCelula(c){
 /* ---------- Plano do dia (operação lança as Pré O.S; o líder valida no fim do dia) ---------- */
 window.oseSetPlanoDia = (d) => { if(d){ OSE_PLANO_DIA = d; oseRedesenhar(); } };
 // Plano do dia em PDF: abre numa aba nova para visualizar e imprimir (a oficina não vê valores)
+// Pré O.S completas em PDF (todas as informações de cada uma): lista da conferência ou uma só
+window.osePreImprimir = async (id) => {
+  const veV = oseVeValores();
+  const ls = id ? OSE.lista.filter(o=>o.id===id)
+    : OSE.lista.filter(o=>o.status===(OSE_FILTRO==="validada" ? "validada" : "pre")).sort((a,b)=>oseDiaPlano(a).localeCompare(oseDiaPlano(b)) || (a.frota||"").localeCompare(b.frota||"", undefined, { numeric:true }));
+  if(!ls.length){ toast("Nenhuma Pré O.S para imprimir."); return; }
+  const aba = window.open("", "_blank");
+  try{
+    await nfgCarregarPDF();
+    const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12;
+    const hm = (iso) => iso ? `${fmtDataBR(iso.slice(0,10))} ${frotaHora(iso)}` : "—";
+    const br = (iso, hora) => iso ? `${fmtDataBR(iso)}${hora ? ` às ${hora}` : ""}` : "—";
+    doc.setFillColor(214, 40, 30); doc.rect(0, 0, W, 4, "F");
+    doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(20, 20, 26); doc.text("AVANCE LOGÍSTICA INTEGRADA", M, 15);
+    doc.setFontSize(12); doc.setTextColor(214, 40, 30);
+    doc.text(id ? "Pré O.S — manutenção de carreta" : (OSE_FILTRO==="validada" ? "Pré O.S que viraram O.S" : "Pré O.S validadas pelo líder — para conferência da administração"), M, 22);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(90, 90, 100);
+    doc.text(`${ls.length} Pré O.S · ${sumArr(ls.map(o=>o.itens.length))} serviço(s)${veV ? ` · valor estimado ${oseBRL(sumArr(ls.map(oseValor)))}` : ""} · gerado em ${fmtDataBR(frotaHojeISO())} às ${frotaHora()}`, M, 28);
+    let y = 33;
+    ls.forEach((o, n)=>{
+      const os = oseDaPre(o.id), st = OSE_ST[o.status] || { label:o.status };
+      if(y > H - 60){ doc.addPage(); y = 16; }
+      // faixa da Pré O.S
+      doc.setFillColor(20, 20, 26); doc.rect(M, y, W-2*M, 8, "F");
+      doc.setFont("helvetica", "bold"); doc.setFontSize(10.5); doc.setTextColor(255, 255, 255);
+      doc.text(`${n+1}. Frota ${o.frota||"-"}${o.placa ? "  ·  Placa " + o.placa : ""}`, M+3, y+5.5);
+      doc.setFontSize(8.5); doc.text(`${st.label}${o.status==="validada" && os ? ` · O.S ${oseNum(os.numero)}` : ""}`, W-M-3, y+5.5, { align:"right" });
+      y += 8;
+      // informações
+      const info = [["Plano de", oseDiaPlano(o) ? fmtDataBR(oseDiaPlano(o)) : "—"], ["Início (entrada)", br(o.entrada, o.entradaHora)], ["Saída", br(o.saida, o.saidaHora)],
+        ["Lançada por", o.por || "—"], ["Validada pelo líder", o.liderPor ? `${o.liderPor} · ${hm(o.liderEm)}` : "—"], ["Carreta da fila do pátio", o.filaId ? "sim" : "não (lançada direto no plano)"]];
+      doc.autoTable({ startY:y, margin:{ left:M, right:M }, theme:"grid", body:[info.slice(0,3).flat(), info.slice(3).flat()],
+        styles:{ fontSize:8, cellPadding:1.5, lineColor:[200,200,206], lineWidth:0.2, textColor:[20,20,26] },
+        columnStyles:{ 0:{ fontStyle:"bold", fillColor:[245,245,247], cellWidth:28 }, 2:{ fontStyle:"bold", fillColor:[245,245,247], cellWidth:30 }, 4:{ fontStyle:"bold", fillColor:[245,245,247], cellWidth:34 } } });
+      y = doc.lastAutoTable.finalY;
+      // serviços
+      const head = ["Cód", "Serviço", "Qtd", "Cobrança", ...(veV ? ["Mão de obra", "Peças", "Total"] : [])];
+      doc.autoTable({ startY:y, margin:{ left:M, right:M }, theme:"striped", head:[head],
+        body:(o.itens.length ? o.itens : []).map(it=>[String(it.cod), it.servico, `${String(it.qtd).replace(".", ",")}${it.un==="m" ? " m" : ""}`, OSE_COBRAR[it.cobrar] || OSE_COBRAR.ambos,
+          ...(veV ? [it.cobrar==="mat" ? "-" : oseBRL(it.mo), it.cobrar==="mo" ? "-" : oseBRL(it.mat), oseBRL(oseValorItem(it))] : [])]),
+        ...(veV ? { foot:[[{ content:"Valor estimado da Pré O.S", colSpan:6 }, oseBRL(oseValor(o))]] } : {}),
+        styles:{ fontSize:8, cellPadding:1.5, valign:"middle", textColor:[20,20,26] }, headStyles:{ fillColor:[214,40,30], textColor:[255,255,255] }, footStyles:{ fillColor:[245,245,247], textColor:[20,20,26], fontStyle:"bold" },
+        columnStyles:{ 0:{ cellWidth:12, fontStyle:"bold" }, 2:{ cellWidth:15, halign:"center" }, 3:{ cellWidth:28 }, ...(veV ? { 4:{ cellWidth:24, halign:"right" }, 5:{ cellWidth:22, halign:"right" }, 6:{ cellWidth:24, halign:"right" } } : {}) },
+        didParseCell:(c)=>{ if(veV && c.column.index>=4) c.cell.styles.halign = "right"; } });
+      y = doc.lastAutoTable.finalY;
+      if(o.obs){ doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(20, 20, 26); doc.text("Observação:", M, y+5);
+        doc.setFont("helvetica", "normal"); const l = doc.splitTextToSize(o.obs, W-2*M-22); doc.text(l, M+20, y+5); y += 3 + l.length*4; }
+      y += 9;
+    });
+    if(!id && veV){ if(y > H - 25){ doc.addPage(); y = 20; }
+      doc.setFillColor(255, 214, 0); doc.rect(M, y, W-2*M, 8, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(20, 20, 26);
+      doc.text(`Total estimado (${ls.length} Pré O.S)`, M+3, y+5.5); doc.text(oseBRL(sumArr(ls.map(oseValor))), W-M-3, y+5.5, { align:"right" }); }
+    const np = doc.internal.getNumberOfPages();
+    for(let i = 1; i <= np; i++){ doc.setPage(i); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(140, 140, 150); doc.text("Avance Logística Integrada · Pré O.S", M, H-6); doc.text(`Página ${i} de ${np}`, W-M, H-6, { align:"right" }); }
+    const url = doc.output("bloburl");
+    if(aba){ aba.location.href = url; } else doc.save(id ? `Pre_OS_frota_${ls[0].frota}.pdf` : "Pre_OS_conferencia.pdf");
+  }catch(e){ if(aba) aba.close(); toast("⚠ Não foi possível gerar o PDF: " + e.message); }
+};
 window.osePlanoImprimir = async () => {
   const d = OSE_PLANO_DIA, veV = oseVeValores();
   const ls = OSE.lista.filter(o=>oseEhPre(o) && oseDiaPlano(o)===d).sort((a,b)=>(a.frota||"").localeCompare(b.frota||"", undefined, { numeric:true }));
@@ -9420,6 +9478,7 @@ function osePagina(){
         <div class="prog-chips" style="margin:0;">
           <button class="sub-tab-btn ${OSE_FILTRO==="pre"?"active":""}" onclick="oseFiltro('pre')">Para conferir (${pre.length})</button>
           <button class="sub-tab-btn ${OSE_FILTRO==="validada"?"active":""}" onclick="oseFiltro('validada')">Já viraram O.S (${validadas.length})</button>
+          ${listaPre.length ? `<button class="os-btn" onclick="osePreImprimir()" title="Abre todas as Pré O.S desta lista em PDF, com todas as informações">🖨️ Visualizar / imprimir</button>` : ""}
         </div>
       </div>
       ${listaPre.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
@@ -9432,8 +9491,8 @@ function osePagina(){
           <td style="font-size:12px;">lançou: ${osEsc(o.por||"—")}${o.liderPor ? `<div class="hint" style="margin:0;">líder: ${osEsc(o.liderPor)}${o.liderEm ? ` · ${fmtDataBR(o.liderEm.slice(0,10))}` : ""}</div>` : ""}</td>
           <td>${o.status==="pre" ? `<span class="badge amber">📤 Para conferir</span>` : `<span class="badge green">✅ O.S ${os ? oseNum(os.numero) : ""}</span>`}</td>
           <td style="white-space:nowrap;">${o.status==="pre"
-            ? `<button class="os-btn sm green" onclick="oseConferir('${o.id}')">🔎 Conferir e gerar O.S</button> <button class="os-link" onclick="oseReabrir('${o.id}')" title="Devolver para a operação">↩</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir Pré O.S">🗑️</button>`
-            : `<span class="hint" style="margin:0;">${os && os.emitidaPor ? `por ${osEsc(os.emitidaPor)}` : ""}</span>`}</td>
+            ? `<button class="os-btn sm green" onclick="oseConferir('${o.id}')">🔎 Conferir e gerar O.S</button> <button class="os-link" onclick="osePreImprimir('${o.id}')" title="Ver / imprimir esta Pré O.S">🖨️</button> <button class="os-link" onclick="oseReabrir('${o.id}')" title="Devolver para a operação">↩</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir Pré O.S">🗑️</button>`
+            : `<button class="os-link" onclick="osePreImprimir('${o.id}')" title="Ver / imprimir esta Pré O.S">🖨️</button> <span class="hint" style="margin:0;">${os && os.emitidaPor ? `por ${osEsc(os.emitidaPor)}` : ""}</span>`}</td>
         </tr>`; }).join("")}</tbody>
       </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${OSE_FILTRO==="pre" ? `Nenhuma Pré O.S aguardando conferência. ✓${emLanc.length ? ` (${emLanc.length} ainda em lançamento — falta o líder validar)` : ""}` : "Nenhuma Pré O.S virou O.S ainda."}</p></div>`}
     </div>
