@@ -9210,6 +9210,52 @@ function osePreCelula(c){
 
 /* ---------- Plano do dia (operação lança as Pré O.S; o líder valida no fim do dia) ---------- */
 window.oseSetPlanoDia = (d) => { if(d){ OSE_PLANO_DIA = d; oseRedesenhar(); } };
+// Plano do dia em PDF: abre numa aba nova para visualizar e imprimir (a oficina não vê valores)
+window.osePlanoImprimir = async () => {
+  const d = OSE_PLANO_DIA, veV = oseVeValores();
+  const ls = OSE.lista.filter(o=>oseEhPre(o) && oseDiaPlano(o)===d).sort((a,b)=>(a.frota||"").localeCompare(b.frota||"", undefined, { numeric:true }));
+  if(!ls.length){ toast(`Nenhuma Pré O.S no plano de ${fmtDataBR(d)}.`); return; }
+  const aba = window.open("", "_blank");   // abre já no clique (o navegador não bloqueia)
+  try{
+    await nfgCarregarPDF();
+    const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4", orientation:"landscape" }), W = doc.internal.pageSize.getWidth(), M = 12;
+    doc.setFillColor(214, 40, 30); doc.rect(0, 0, W, 4, "F");
+    doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(20, 20, 26); doc.text("AVANCE LOGÍSTICA INTEGRADA", M, 15);
+    doc.setFontSize(12); doc.setTextColor(214, 40, 30); doc.text(`Plano do dia — Pré O.S de manutenção de carretas`, M, 22);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(90, 90, 100);
+    doc.text(`${progDiaSemana(d)}, ${fmtDataBR(d)}  ·  ${ls.length} carreta(s)  ·  ${sumArr(ls.map(o=>o.itens.length))} serviço(s)`, M, 28);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(20, 20, 26);
+    doc.text(`Em lançamento: ${ls.filter(o=>o.status==="plano").length}   ·   Validadas pelo líder: ${ls.filter(o=>o.status==="pre").length}   ·   Viraram O.S: ${ls.filter(o=>o.status==="validada").length}`, W-M, 28, { align:"right" });
+    const body = [];
+    ls.forEach(o=>{ const st = OSE_ST[o.status], os = oseDaPre(o.id), n = Math.max(1, o.itens.length);
+      const sit = `${st.label}${o.status==="validada" && os ? ` · O.S ${oseNum(os.numero)}` : ""}${o.liderPor ? `\npor ${o.liderPor}` : ""}`;
+      (o.itens.length ? o.itens : [null]).forEach((it, i)=>{
+        const linha = [];
+        if(i===0) linha.push({ content:o.frota||"-", rowSpan:n, styles:{ fontStyle:"bold", fontSize:10 } }, { content:o.placa||"-", rowSpan:n });
+        linha.push(it ? String(it.cod) : "-", it ? it.servico : "(sem serviços)", it ? `${String(it.qtd).replace(".", ",")}${it.un==="m" ? " m" : ""}` : "");
+        if(veV) linha.push(it ? oseBRL(oseValorItem(it)) : "");
+        if(i===0) linha.push({ content:sit, rowSpan:n }, { content:o.por||"-", rowSpan:n }, { content:"", rowSpan:n });
+        body.push(linha); });
+    });
+    const head = ["Frota", "Placa", "Cód", "Serviço planejado", "Qtd", ...(veV ? ["Valor est."] : []), "Situação", "Lançado por", "Feito"];
+    const ci = (k) => head.indexOf(k);
+    doc.autoTable({ startY:33, margin:{ left:M, right:M }, theme:"grid", head:[head], body,
+      ...(veV ? { foot:[[{ content:"Valor estimado do plano", colSpan:5 }, oseBRL(sumArr(ls.map(oseValor))), { content:"", colSpan:3 }]], showFoot:"lastPage" } : {}),
+      styles:{ fontSize:8.5, cellPadding:1.8, valign:"middle", lineColor:[180,180,188], lineWidth:0.2, textColor:[20,20,26] },
+      headStyles:{ fillColor:[20,20,26], textColor:[255,255,255] }, footStyles:{ fillColor:[245,245,247], textColor:[20,20,26], fontStyle:"bold" },
+      columnStyles:{ [ci("Frota")]:{ cellWidth:20 }, [ci("Placa")]:{ cellWidth:24 }, [ci("Cód")]:{ cellWidth:13, halign:"center" }, [ci("Qtd")]:{ cellWidth:15, halign:"center" },
+        ...(veV ? { [ci("Valor est.")]:{ cellWidth:24, halign:"right" } } : {}), [ci("Situação")]:{ cellWidth:40 }, [ci("Lançado por")]:{ cellWidth:26 }, [ci("Feito")]:{ cellWidth:18 } },
+      didParseCell:(c)=>{ if(veV && c.column.index===ci("Valor est.")) c.cell.styles.halign = "right"; } });
+    let y = doc.lastAutoTable.finalY + 14; if(y > 185){ doc.addPage(); y = 30; }
+    doc.setDrawColor(150, 150, 160); doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(80, 80, 90);
+    doc.line(M, y, M+85, y); doc.text("Líder da operação — validação do plano", M, y+4.5);
+    doc.line(W-M-85, y, W-M, y); doc.text("Data / hora: ____/____/________  ____:____", W-M-85, y+4.5);
+    const np = doc.internal.getNumberOfPages();
+    for(let i = 1; i <= np; i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(140, 140, 150); doc.text(`Gerado em ${fmtDataBR(frotaHojeISO())} às ${frotaHora()}`, M, 203); doc.text(`Página ${i} de ${np}`, W-M, 203, { align:"right" }); }
+    const url = doc.output("bloburl");
+    if(aba){ aba.location.href = url; } else doc.save(`Plano_do_dia_${d}.pdf`);
+  }catch(e){ if(aba) aba.close(); toast("⚠ Não foi possível gerar o plano: " + e.message); }
+};
 window.oseMoverPlanoDia = (n) => oseSetPlanoDia(nfeAddDias(OSE_PLANO_DIA, n));
 function osePlanoHTML(diaFixo){
   if(diaFixo) OSE_PLANO_DIA = diaFixo;
@@ -9232,6 +9278,7 @@ function osePlanoHTML(diaFixo){
       <span class="ose-pill amber">📤 Validadas pelo líder <b>${doDia.filter(o=>o.status==="pre").length}</b></span>
       <span class="ose-pill green">✅ Viraram O.S <b>${doDia.filter(o=>o.status==="validada").length}</b></span>
       <span style="flex:1;"></span>
+      ${doDia.length ? `<button class="os-btn" onclick="osePlanoImprimir()" title="Abre o plano do dia em PDF para visualizar e imprimir">🖨️ Visualizar / imprimir plano</button>` : ""}
       <button class="os-btn" onclick="oseNovaPre()">+ Lançar Pré O.S</button>
       ${emLanc.length ? `<span class="hint" style="margin:0;">Líder: valide cada Pré O.S na linha (✅ Validar)</span>` : ""}
     </div>
