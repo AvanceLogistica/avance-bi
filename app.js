@@ -8863,22 +8863,34 @@ renderers.organograma = () => {
 };
 initCharts.organograma = () => { orgDepoisDeDesenhar(); if(ORG_FICHA) orgDesenharFicha(); };
 
-/* -------------------- EMISSÃO DE O.S (Pré O.S da operação → O.S validada pelo administrativo) --------------------
-   1) No Controle diário de carretas a operação planeja o dia: para cada carreta lança os serviços
-      (código da tabela de serviços + quantidade) → vira uma PRÉ O.S (status "pre").
-   2) Em Emissão de NF › Emissão de O.S o administrativo confere todos os campos (frota, placa, datas,
-      serviços, quantidades e cobrança), ajusta se precisar e emite a O.S com número sequencial, com PDF
-      para enviar à Combitrans. A O.S emitida alimenta o ciclo semanal da Combitrans (nº e valor da semana).
-   Pré O.S e O.S são LANÇAMENTOS SEPARADOS na tabela manutencao_os: a Pré O.S (status "pre" → "validada")
-   fica como a operação planejou; ao validar, o administrativo gera uma O.S nova (status "emitida", pre_id
-   aponta para a Pré O.S). Preços na tabela os_servicos (nunca no código do site).
-   O perfil da oficina não vê valores. */
-let OSE = { lista:[], servicos:[], carretas:[], carregado:false, carregando:false, erro:null };
-let OSE_EDIT = null;        // cabeçalho da (pré) O.S aberta no editor
+/* -------------------- EMISSÃO DE O.S (plano do dia → Pré O.S → O.S para a Combitrans) --------------------
+   Fluxo, com lançamentos separados na tabela manutencao_os:
+     1) PLANO DO DIA — a operação lança as Pré O.S do dia (frota/carreta + serviços da tabela + quantidade).
+        status "plano" (ainda editável pela operação)
+     2) LÍDER — no fim do dia o líder da operação valida o plano → status "pre" (vai para a administração)
+     3) ADMINISTRAÇÃO — no dia seguinte confere cada Pré O.S e gera a O.S (lançamento NOVO, status
+        "emitida", pre_id = Pré O.S de origem); a Pré O.S fica "validada", como a operação lançou.
+   A O.S sai em PDF no modelo da Avance para a Combitrans e alimenta o ciclo semanal da Combitrans.
+   Preços na tabela os_servicos; dados do cabeçalho (Avance e cliente) em app_config — nada disso no
+   código do site, que é público. O perfil da oficina não vê valores. */
+let OSE = { lista:[], servicos:[], carretas:[], carregado:false, carregando:false, erro:null, cfg:null, cfgSalvo:false };
+let OSE_EDIT = null;        // cabeçalho da Pré O.S / O.S aberta no editor
 let OSE_ITENS = [];         // serviços em edição
-let OSE_FILTRO = "pre";     // pre | validada | emitida
+let OSE_FILTRO = "pre";     // pre | validada (lista da administração)
+let OSE_PLANO_DIA = frotaHojeISO();
 const OSE_LOCAL = "avance_os_emissao_v1";
-const OSE_COBRAR = { mo:"Mão de obra", mat:"Material", ambos:"M.O + material" };
+const OSE_COBRAR = { mo:"Mão de obra", mat:"Peças / material", ambos:"M.O + peças" };
+const OSE_ST = {
+  plano:    { label:"Em lançamento",           badge:"gray",  icone:"📝" },
+  pre:      { label:"Validada pelo líder",     badge:"amber", icone:"📤" },
+  validada: { label:"O.S gerada",              badge:"green", icone:"✅" },
+};
+// Cabeçalho da O.S — lido da foto do modelo; a administração confere e salva (fica no banco)
+const OSE_CFG_PADRAO = {
+  empresa:"AVANCE LOGÍSTICA INTEGRADA LTDA", razao:"AVANCE LOGÍSTICA INTEGRADA LTDA", cnpj:"50.056.061/0001-49",
+  endereco:"Rua Macatuba, Nº 84, Bairro: Cidade de Deus", cep:"69099-266",
+  cliente:"COMBITRANS AMAZONAS LTDA", clienteEndereco:"Rua Ponta Grossa, 303 - Col. Oliveira Machado", clienteCnpj:"05.501.594/0002-19",
+};
 const oseVeValores = () => MEU_PAPEL !== "oficina";
 const osePodeEmitir = () => !sb || ["diretor","coordenacao"].includes(MEU_PAPEL);
 function oseUn(serv){ return /METRO|\(M\)|MTS/i.test(serv||"") ? "m" : "un"; }
@@ -8886,58 +8898,73 @@ function oseValorItem(it){ const mo = it.cobrar==="mat" ? 0 : (it.mo||0), mat = 
 function oseValor(o){ return sumArr((o.itens||[]).map(oseValorItem)); }
 function oseCobrarPadrao(s){ return s.mo && s.mat ? "ambos" : s.mat && !s.mo ? "mat" : "mo"; }
 function oseServico(txt){ const m = String(txt||"").trim().match(/^(\d{1,4})/); return m ? OSE.servicos.find(s=>s.cod===parseInt(m[1],10)) || null : null; }
-// Pré O.S da carreta (lançamento da operação) e a O.S gerada a partir dela
-function osePorFila(filaId){ return filaId ? OSE.lista.find(o=>o.filaId===filaId && o.status!=="emitida") || OSE.lista.find(o=>o.filaId===filaId) || null : null; }
+const oseEhPre = (o) => ["plano","pre","validada"].includes(o.status);
+function osePorFila(filaId){ return filaId ? OSE.lista.find(o=>o.filaId===filaId && oseEhPre(o)) || OSE.lista.find(o=>o.filaId===filaId) || null : null; }
 function oseDaPre(preId){ return preId ? OSE.lista.find(o=>o.status==="emitida" && o.preId===preId) || null : null; }
 function oseCarretas(){ return CAR.carretas.length ? CAR.carretas : OSE.carretas; }
 function oseProxNumero(){ const n = OSE.lista.map(o=>Number(o.numero)||0); return (n.length ? Math.max(...n) : 0) + 1; }
+function oseCfg(){ return { ...OSE_CFG_PADRAO, ...(OSE.cfg||{}) }; }
 const oseBRL = (v) => "R$ " + Number(v||0).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 });
 const oseNum = (n) => n ? String(n).padStart(4, "0") : "—";
+const oseDiaPlano = (o) => o.dataPlano || o.entrada || "";
 
 async function oseCarregar(){
   OSE.carregando = true;
-  if(!sb){ try{ const d = JSON.parse(localStorage.getItem(OSE_LOCAL)||"{}"); OSE.lista = d.lista||[]; if(d.servicos) OSE.servicos = d.servicos; }catch(e){} }
+  if(!sb){ try{ const d = JSON.parse(localStorage.getItem(OSE_LOCAL)||"{}"); OSE.lista = d.lista||[]; if(d.servicos) OSE.servicos = d.servicos; if(d.cfg){ OSE.cfg = d.cfg; OSE.cfgSalvo = true; } }catch(e){} }
   else {
     const t = await sb.from("manutencao_os").select("id,status").limit(1);
     if(t.error){ OSE.erro = t.error.message; OSE.carregando = false; OSE.carregado = true; oseRedesenhar(true); return; }
     OSE.erro = null;
-    const [l, s, c] = await Promise.all([ sbFetchAll("manutencao_os"), OSE.servicos.length ? Promise.resolve(null) : sbFetchAll("os_servicos"),
-      CAR.carretas.length || OSE.carretas.length ? Promise.resolve(null) : sbFetchAll("os_carretas") ]);
-    OSE.lista = l.map(r=>({ id:r.id, numero:r.numero, status:r.status||"emitida", filaId:r.fila_id||null, preId:r.pre_id||null, entrada:r.entrada_data, entradaHora:r.entrada_hora||"",
-      saida:r.saida_data||"", saidaHora:r.saida_hora||"", frota:r.frota||"", placa:r.placa||"", itens:r.itens||[], obs:r.obs||"",
-      emitidaEm:r.emitida_em||"", emitidaPor:(r.emitida_por||"").split("@")[0], por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+    const [l, s, c, cfg] = await Promise.all([ sbFetchAll("manutencao_os"), OSE.servicos.length ? Promise.resolve(null) : sbFetchAll("os_servicos"),
+      CAR.carretas.length || OSE.carretas.length ? Promise.resolve(null) : sbFetchAll("os_carretas"),
+      sb.from("app_config").select("valor").eq("chave", "os_cabecalho").maybeSingle() ]);
+    OSE.lista = l.map(r=>({ id:r.id, numero:r.numero, status:r.status||"emitida", filaId:r.fila_id||null, preId:r.pre_id||null, dataPlano:r.data_plano||"",
+      entrada:r.entrada_data, entradaHora:r.entrada_hora||"", saida:r.saida_data||"", saidaHora:r.saida_hora||"", frota:r.frota||"", placa:r.placa||"",
+      itens:r.itens||[], obs:r.obs||"", referencia:r.referencia||"", liderPor:(r.lider_por||"").split("@")[0], liderEm:r.lider_em||"",
+      emitidaEm:r.emitida_em||"", emitidaPor:(r.emitida_por||"").split("@")[0], por:(r.criado_por||r.atualizado_por||"").split("@")[0] }));
     if(s) OSE.servicos = s.map(x=>({ cod:Number(x.cod), servico:x.servico, grupo:x.grupo||"", mo:x.mo!=null ? Number(x.mo) : null, mat:x.mat!=null ? Number(x.mat) : null })).sort((a,b)=>a.cod-b.cod);
     if(c) OSE.carretas = c.map(x=>({ placa:x.placa, frota:String(x.frota) }));
+    if(cfg && !cfg.error && cfg.data && cfg.data.valor){ OSE.cfg = cfg.data.valor; OSE.cfgSalvo = true; }
   }
   OSE.carregando = false; OSE.carregado = true; oseRedesenhar(true);
 }
 function oseGarantirCarga(){ if(!OSE.carregado && !OSE.carregando){ OSE.carregando = true; setTimeout(()=>oseCarregar(), 0); } }
-function oseSalvarLocal(){ if(!sb) try{ localStorage.setItem(OSE_LOCAL, JSON.stringify({ lista:OSE.lista, servicos:OSE.servicos })); }catch(e){} }
+function oseSalvarLocal(){ if(!sb) try{ localStorage.setItem(OSE_LOCAL, JSON.stringify({ lista:OSE.lista, servicos:OSE.servicos, cfg:OSE.cfgSalvo ? OSE.cfg : null })); }catch(e){} }
 // Redesenha a tela onde a O.S aparece (controle diário de carretas ou Emissão de O.S)
 function oseRedesenhar(seguro){
   const pg = document.querySelector('nav.menu button.active')?.dataset.page;
   const naCar = pg==="manutencao" && MAN_ABA==="diario", naEmissao = pg==="emissaonf" && NF_ABA==="os";
   if(!naCar && !naEmissao) return;
-  if(seguro){ const f = document.activeElement; if(f && f.closest && f.closest("#ose-form") && /INPUT|SELECT|TEXTAREA/.test(f.tagName)) return; }
+  if(seguro){ const f = document.activeElement; if(f && f.closest && (f.closest("#ose-form") || f.closest("#ose-cfg")) && /INPUT|SELECT|TEXTAREA/.test(f.tagName)) return; }
   const y = window.scrollY; document.getElementById("content").innerHTML = renderers[pg](); window.scrollTo(0,y);
   if(naCar) requestAnimationFrame(carGrafico);
 }
+setInterval(()=>{ if(sb && document.visibilityState==="visible" && document.querySelector('nav.menu button.active')?.dataset.page==="emissaonf" && NF_ABA==="os" && !OSE_EDIT) oseCarregar(); }, 60000);
 
-/* ---------- Editor (o mesmo para a Pré O.S da operação e para a conferência do administrativo) ---------- */
+/* ---------- Editor ---------- */
 function oseAbrir(dados, itens){ OSE_EDIT = dados; OSE_ITENS = (itens||[]).map(i=>({ ...i })); oseRedesenhar(); setTimeout(()=>document.getElementById("ose-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); }
+function osePodeEditarPre(o){ return o.status==="plano" || (o.status==="pre" && osePodeEmitir()); }
+// a partir de uma carreta do Controle diário
 window.osePreAbrir = (filaId) => {
   const c = CAR.fila.find(x=>x.id===filaId); if(!c) return;
   const o = osePorFila(filaId);
-  if(o && o.status!=="pre"){ const os = o.status==="emitida" ? o : oseDaPre(o.id); toast(`A Pré O.S desta carreta já foi validada${os ? ` — O.S ${oseNum(os.numero)}` : ""}.`); return; }
-  oseAbrir(o ? { ...o } : { id:null, filaId, status:"pre", numero:null, frota:c.frota, placa:c.placa, entrada:c.entrada, saida:c.conclusao||"", obs:"" }, o ? o.itens : []);
+  if(o && !osePodeEditarPre(o)){ const os = o.status==="emitida" ? o : oseDaPre(o.id);
+    toast(o.status==="pre" ? "Esta Pré O.S já foi validada pelo líder e está com a administração." : `Esta Pré O.S já virou a O.S ${os ? oseNum(os.numero) : ""}.`); return; }
+  oseAbrir(o ? { ...o } : { id:null, filaId, status:"plano", dataPlano:CAR_DIA, numero:null, frota:c.frota, placa:c.placa, entrada:c.entrada, entradaHora:"", saida:c.conclusao||"", saidaHora:"", obs:"" }, o ? o.itens : []);
 };
+// nova Pré O.S direto no plano do dia (sem passar pela fila do pátio)
+window.oseNovaPre = () => { const d = OSE_PLANO_DIA; oseAbrir({ id:null, filaId:null, status:"plano", dataPlano:d, numero:null, frota:"", placa:"", entrada:d, entradaHora:"", saida:"", saidaHora:"", obs:"" }, []); };
+window.oseEditarPre = (id) => { const o = OSE.lista.find(x=>x.id===id); if(!o) return; if(!osePodeEditarPre(o)){ toast("Esta Pré O.S não pode mais ser alterada."); return; } oseAbrir({ ...o }, o.itens); };
+// administração: Pré O.S validada pelo líder → monta uma O.S NOVA; O.S emitida → edita a própria O.S
 window.oseConferir = (id) => {
   const o = OSE.lista.find(x=>x.id===id); if(!o) return;
   if(o.status==="emitida") return oseAbrir({ ...o }, o.itens);
   if(o.status==="validada"){ const os = oseDaPre(o.id); toast(`Esta Pré O.S já virou a O.S ${os ? oseNum(os.numero) : ""}.`); return; }
-  oseAbrir({ id:null, preId:o.id, filaId:o.filaId, status:"nova", numero:oseProxNumero(), frota:o.frota, placa:o.placa, entrada:o.entrada, saida:o.saida, obs:o.obs, preDe:o.por }, o.itens);
+  if(o.status==="plano"){ toast("O líder ainda não validou este plano."); return; }
+  oseAbrir({ id:null, preId:o.id, filaId:o.filaId, status:"nova", numero:oseProxNumero(), frota:o.frota, placa:o.placa, entrada:o.entrada, entradaHora:o.entradaHora||"",
+    saida:o.saida, saidaHora:o.saidaHora||"", obs:o.obs, referencia:"", preDe:o.por, liderPor:o.liderPor }, o.itens);
 };
-window.oseNova = () => oseAbrir({ id:null, preId:null, filaId:null, status:"nova", numero:oseProxNumero(), frota:"", placa:"", entrada:frotaHojeISO(), saida:"", obs:"" }, []);
+window.oseNova = () => oseAbrir({ id:null, preId:null, filaId:null, status:"nova", numero:oseProxNumero(), frota:"", placa:"", entrada:frotaHojeISO(), entradaHora:"", saida:"", saidaHora:"", obs:"", referencia:"" }, []);
 window.oseCancelar = () => { OSE_EDIT = null; OSE_ITENS = []; oseRedesenhar(); };
 window.oseCampo = (campo, v) => { if(!OSE_EDIT) return; OSE_EDIT[campo] = v;
   if(campo==="frota"){ const t = String(v||"").toUpperCase().trim(), car = oseCarretas().find(x=>x.frota.toUpperCase()===t || x.placa.toUpperCase()===t || carRotulo(x).toUpperCase()===t);
@@ -8962,60 +8989,80 @@ window.oseAtualizarPrecos = () => {
 window.oseSalvar = async (emitir) => {
   const e = OSE_EDIT; if(!e) return;
   const g = (id) => document.getElementById(id);
-  ["frota","placa","entrada","saida","obs"].forEach(k=>{ if(g(`ose-${k}`)) e[k] = g(`ose-${k}`).value; });
+  ["frota","placa","entrada","entradaHora","saida","saidaHora","obs","referencia"].forEach(k=>{ if(g(`ose-${k}`)) e[k] = g(`ose-${k}`).value; });
   if(g("ose-numero")) e.numero = parseInt(g("ose-numero").value, 10) || null;
   e.frota = String(e.frota||"").toUpperCase().trim(); e.placa = String(e.placa||"").toUpperCase().trim();
   if(!e.frota){ toast("Informe a frota."); return; }
   if(!e.entrada){ toast("Informe a data de entrada."); return; }
   if(!OSE_ITENS.length){ toast("Lance pelo menos um serviço."); return; }
   if(e.saida && e.saida < e.entrada){ toast("A saída está antes da entrada."); return; }
+  if(e.status==="nova" && !emitir) return;
   if(emitir){
-    if(!osePodeEmitir()){ toast("A emissão da O.S é feita pelo administrativo."); return; }
+    if(!osePodeEmitir()){ toast("A emissão da O.S é feita pela administração."); return; }
     if(!e.numero){ toast("Informe o nº da O.S."); return; }
-    if(OSE.lista.some(o=>o.id!==e.id && Number(o.numero)===e.numero)){ toast(`Já existe a O.S nº ${oseNum(e.numero)}.`); return; }
+    if(OSE.lista.some(o=>o.id!==e.id && o.status==="emitida" && Number(o.numero)===e.numero)){ toast(`Já existe a O.S nº ${oseNum(e.numero)}.`); return; }
     if(!e.placa && !confirm("A O.S está sem placa. Emitir assim mesmo?")) return;
   }
-  if(e.status==="nova" && !emitir) return;   // O.S nova só existe depois de emitida
-  const status = emitir || e.status==="emitida" ? "emitida" : "pre", agora = new Date().toISOString();
-  const reg = { status, fila_id:e.filaId||null, ...(status==="emitida" ? { pre_id:e.preId||null } : {}), numero: status==="emitida" ? e.numero : null,
-    entrada_data:e.entrada, saida_data:e.saida||null, frota:e.frota, placa:e.placa||null, itens:OSE_ITENS, obs:(e.obs||"").trim()||null,
-    valor: Math.round(sumArr(OSE_ITENS.map(oseValorItem))*100)/100, atualizado_por:MEU_EMAIL, atualizado_em:agora,
+  const ehOS = emitir || e.status==="emitida", status = ehOS ? "emitida" : (e.status==="pre" ? "pre" : "plano"), agora = new Date().toISOString();
+  const reg = { status, fila_id:e.filaId||null, numero: ehOS ? e.numero : null, entrada_data:e.entrada, entrada_hora:e.entradaHora||null, saida_data:e.saida||null, saida_hora:e.saidaHora||null,
+    frota:e.frota, placa:e.placa||null, itens:OSE_ITENS, obs:(e.obs||"").trim()||null, valor:Math.round(sumArr(OSE_ITENS.map(oseValorItem))*100)/100,
+    atualizado_por:MEU_EMAIL, atualizado_em:agora,
+    ...(ehOS ? { pre_id:e.preId||null, referencia:(e.referencia||"").trim()||null } : { data_plano:e.dataPlano||e.entrada }),
     ...(emitir && e.status!=="emitida" ? { emitida_em:agora, emitida_por:MEU_EMAIL } : {}) };
   let id = e.id;
   if(sb){
     const r = id ? await sb.from("manutencao_os").update(reg).eq("id", id).select("id").single()
                  : await sb.from("manutencao_os").insert({ ...reg, criado_por:MEU_EMAIL }).select("id").single();
-    if(r.error){ toast(/status|fila_id|pre_id|valor|emitida|numero/i.test(r.error.message) ? "⚠ Falta rodar o SQL da Emissão de O.S no Supabase." : "⚠ Não salvou: " + r.error.message); return; }
+    if(r.error){ toast(/status|fila_id|pre_id|data_plano|referencia|valor|emitida|numero|lider/i.test(r.error.message) ? "⚠ Falta rodar o SQL da Emissão de O.S no Supabase." : "⚠ Não salvou: " + r.error.message); return; }
     id = r.data.id;
-    if(emitir && e.preId){   // a Pré O.S fica registrada como validada (lançamento separado da O.S)
+    if(emitir && e.preId){
       const v = await sb.from("manutencao_os").update({ status:"validada", atualizado_por:MEU_EMAIL, atualizado_em:agora }).eq("id", e.preId);
       if(v.error) toast("⚠ A O.S foi emitida, mas a Pré O.S não foi marcada como validada: " + v.error.message);
     }
   } else if(!id) id = osNovoId();
   if(emitir && e.preId){ const pr = OSE.lista.find(o=>o.id===e.preId); if(pr) pr.status = "validada"; }
-  const local = { id, numero:reg.numero, status, filaId:reg.fila_id, preId: status==="emitida" ? e.preId||null : null, entrada:reg.entrada_data, saida:reg.saida_data||"", frota:reg.frota, placa:reg.placa||"", itens:OSE_ITENS.map(i=>({ ...i })), obs:reg.obs||"",
-    emitidaEm: reg.emitida_em || e.emitidaEm || "", emitidaPor: reg.emitida_por ? reg.emitida_por.split("@")[0] : e.emitidaPor || "", por:(MEU_EMAIL||"").split("@")[0] };
+  const antigo = OSE.lista.find(o=>o.id===id) || {};
+  const local = { ...antigo, id, numero:reg.numero, status, filaId:reg.fila_id, preId: ehOS ? e.preId||null : null, dataPlano: ehOS ? "" : reg.data_plano,
+    entrada:reg.entrada_data, entradaHora:reg.entrada_hora||"", saida:reg.saida_data||"", saidaHora:reg.saida_hora||"", frota:reg.frota, placa:reg.placa||"",
+    itens:OSE_ITENS.map(i=>({ ...i })), obs:reg.obs||"", referencia: ehOS ? reg.referencia||"" : "",
+    emitidaEm: reg.emitida_em || e.emitidaEm || "", emitidaPor: reg.emitida_por ? reg.emitida_por.split("@")[0] : e.emitidaPor || "", por: antigo.por || (MEU_EMAIL||"").split("@")[0] };
   const k = OSE.lista.findIndex(o=>o.id===id); if(k>=0) OSE.lista[k] = local; else OSE.lista.push(local);
   oseSalvarLocal(); OSE_EDIT = null; OSE_ITENS = [];
-  toast(emitir && e.status!=="emitida" ? `O.S ${oseNum(local.numero)} emitida ✓${e.preId ? " — Pré O.S validada" : ""}` : status==="emitida" ? "O.S atualizada ✓" : "Pré O.S salva ✓ — o administrativo vai conferir");
-  if(status==="emitida") await oseSincronizarCiclo(local.saida || local.entrada);
+  toast(emitir && e.status!=="emitida" ? `O.S ${oseNum(local.numero)} emitida ✓${e.preId ? " — Pré O.S validada" : ""}` : ehOS ? "O.S atualizada ✓" : status==="pre" ? "Pré O.S atualizada ✓" : "Pré O.S lançada no plano do dia ✓ — o líder valida no fim do dia");
+  if(ehOS) await oseSincronizarCiclo(local.saida || local.entrada);
   oseRedesenhar();
+};
+// Líder da operação: valida o plano do dia → as Pré O.S vão para a administração
+window.oseLiderValidar = async (dia) => {
+  const ls = OSE.lista.filter(o=>o.status==="plano" && oseDiaPlano(o)===dia); if(!ls.length){ toast("Nenhuma Pré O.S em lançamento neste dia."); return; }
+  if(!confirm(`Validar o plano de ${fmtDataBR(dia)} e enviar ${ls.length} Pré O.S para a administração?\n\nDepois disso a operação não altera mais essas Pré O.S.`)) return;
+  const agora = new Date().toISOString();
+  if(sb){ const { error } = await sb.from("manutencao_os").update({ status:"pre", lider_por:MEU_EMAIL, lider_em:agora, atualizado_por:MEU_EMAIL, atualizado_em:agora }).in("id", ls.map(o=>o.id));
+    if(error){ toast(/lider/i.test(error.message) ? "⚠ Falta rodar o SQL da Emissão de O.S no Supabase." : "⚠ Não salvou: " + error.message); return; } }
+  ls.forEach(o=>{ o.status = "pre"; o.liderPor = (MEU_EMAIL||"").split("@")[0]; o.liderEm = agora; }); oseSalvarLocal();
+  toast(`Plano de ${fmtDataBR(dia)} validado ✓ — ${ls.length} Pré O.S enviadas para a administração`); oseRedesenhar();
+};
+window.oseReabrir = async (id) => {
+  const o = OSE.lista.find(x=>x.id===id); if(!o || o.status!=="pre" || !confirm("Devolver esta Pré O.S para a operação (volta para Em lançamento)?")) return;
+  if(sb){ const { error } = await sb.from("manutencao_os").update({ status:"plano", lider_por:null, lider_em:null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id);
+    if(error){ toast("⚠ Não salvou: " + error.message); return; } }
+  o.status = "plano"; o.liderPor = ""; o.liderEm = ""; oseSalvarLocal(); oseRedesenhar();
 };
 window.oseExcluir = async (id) => {
   const o = OSE.lista.find(x=>x.id===id); if(!o) return;
   if(o.status==="emitida" && !osePodeEmitir()){ toast("A O.S já foi emitida."); return; }
+  if(o.status==="pre" && !osePodeEmitir()){ toast("Esta Pré O.S já foi validada pelo líder e está com a administração."); return; }
   if(o.status==="validada"){ const os = oseDaPre(o.id); toast(`Esta Pré O.S já virou a O.S ${os ? oseNum(os.numero) : ""}. Exclua a O.S primeiro.`); return; }
   const pre = o.status==="emitida" ? OSE.lista.find(x=>x.id===o.preId) : null;
-  if(!confirm(o.status==="emitida" ? `Excluir a O.S ${oseNum(o.numero)} (frota ${o.frota})?${pre ? "\n\nA Pré O.S de origem volta para conferência." : ""}` : `Excluir a Pré O.S da frota ${o.frota}?`)) return;
+  if(!confirm(o.status==="emitida" ? `Excluir a O.S ${oseNum(o.numero)} (frota ${o.frota})?${pre ? "\n\nA Pré O.S de origem volta para a conferência da administração." : ""}` : `Excluir a Pré O.S da frota ${o.frota}?`)) return;
   if(sb){ const { error } = await sb.from("manutencao_os").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; }
     if(pre){ const v = await sb.from("manutencao_os").update({ status:"pre", atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", pre.id); if(v.error) toast("⚠ " + v.error.message); } }
   if(pre) pre.status = "pre";
   OSE.lista = OSE.lista.filter(x=>x.id!==id); oseSalvarLocal(); toast(o.status==="emitida" ? `O.S ${oseNum(o.numero)} excluída` : "Pré O.S excluída");
-  if(OSE_EDIT && OSE_EDIT.id===id){ OSE_EDIT = null; OSE_ITENS = []; }
+  if(OSE_EDIT && (OSE_EDIT.id===id || OSE_EDIT.preId===id)){ OSE_EDIT = null; OSE_ITENS = []; }
   if(o.status==="emitida") await oseSincronizarCiclo(o.saida || o.entrada, o.numero);
   oseRedesenhar();
 };
-window.oseDesfazerEmissao = (id) => oseExcluir(id);
 // O ciclo semanal da Combitrans (Painel Gerencial) recebe os números e o valor das O.S emitidas da semana
 async function oseSincronizarCiclo(dataRef, removido){
   if(!dataRef || typeof manGravar!=="function") return;
@@ -9032,101 +9079,169 @@ async function oseSincronizarCiclo(dataRef, removido){
 
 function oseEditorHTML(){
   const e = OSE_EDIT; if(!e) return "";
-  const adm = osePodeEmitir(), veV = oseVeValores(), emitida = e.status==="emitida";
+  const adm = osePodeEmitir(), veV = oseVeValores(), ehOS = e.status==="nova" || e.status==="emitida";
   const total = sumArr(OSE_ITENS.map(oseValorItem));
   const dif = OSE_ITENS.filter(it=>{ const s = OSE.servicos.find(x=>x.cod===it.cod); return s && (s.mo!==it.mo || s.mat!==it.mat); }).length;
-  return `<div class="panel os-form ose-editor" id="ose-form">
+  const titulo = e.status==="emitida" ? `🧾 O.S ${oseNum(e.numero)} — editar` : e.status==="nova" ? (e.preId ? "🔎 Conferir Pré O.S e gerar a O.S" : "🧾 Nova O.S avulsa")
+    : `📝 Pré O.S — plano de ${fmtDataBR(e.dataPlano || e.entrada)}${e.id ? " (editar)" : ""}`;
+  return `<div class="panel os-form ose-editor ${ehOS ? "os" : ""}" id="ose-form">
     <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-      <h3 style="margin:0;">${emitida ? `🧾 O.S ${oseNum(e.numero)} — editar` : e.status==="nova" ? (e.preId ? "🔎 Conferir Pré O.S e emitir a O.S" : "🧾 Nova O.S avulsa") : e.id ? "📝 Editar Pré O.S" : "📝 Nova Pré O.S"}</h3>
-      <button class="os-btn" onclick="oseCancelar()">Fechar</button>
+      <h3 style="margin:0;">${titulo}</h3><button class="os-btn" onclick="oseCancelar()">Fechar</button>
     </div>
-    ${e.status==="nova" && e.preId ? `<div class="os-alerta amber" style="margin-top:8px;">Pré O.S lançada pela operação${e.preDe ? ` (<b>${osEsc(e.preDe)}</b>)` : ""}. Confira <b>frota, placa, datas, serviços, quantidades e cobrança</b> e ajuste o que precisar — os ajustes ficam só na O.S; a Pré O.S continua registrada como a operação lançou.</div>` : ""}
+    ${e.status==="nova" && e.preId ? `<div class="os-alerta amber" style="margin-top:8px;">Pré O.S lançada por <b>${osEsc(e.preDe||"operação")}</b>${e.liderPor ? ` e validada pelo líder <b>${osEsc(e.liderPor)}</b>` : ""}. Confira <b>frota, placa, datas, horários, serviços, quantidades e cobrança</b> — os ajustes ficam só na O.S; a Pré O.S continua como a operação lançou.</div>` : ""}
     <div class="nf-grid ose-cab">
-      ${adm && (e.status==="nova" || emitida) ? `<label>Nº da O.S<input id="ose-numero" type="number" min="1" value="${e.numero||""}" onchange="oseCampo('numero', this.value)"></label>` : ""}
+      ${adm && ehOS ? `<label>Nº da O.S<input id="ose-numero" type="number" min="1" value="${e.numero||""}"></label>` : ""}
       <label>Frota<input id="ose-frota" list="ose-car" value="${osEsc(e.frota)}" style="text-transform:uppercase;" onchange="oseCampo('frota', this.value)"></label>
       <label>Placa<input id="ose-placa" value="${osEsc(e.placa)}" style="text-transform:uppercase;" onchange="oseCampo('placa', this.value)"></label>
-      <label>Entrada<input id="ose-entrada" type="date" value="${e.entrada||""}" onchange="oseCampo('entrada', this.value)"></label>
+      <label>Início (entrada)<input id="ose-entrada" type="date" value="${e.entrada||""}" onchange="oseCampo('entrada', this.value)"></label>
+      <label>Hora<input id="ose-entradaHora" type="time" value="${e.entradaHora||""}" onchange="oseCampo('entradaHora', this.value)"></label>
       <label>Saída<input id="ose-saida" type="date" value="${e.saida||""}" onchange="oseCampo('saida', this.value)"></label>
+      <label>Hora<input id="ose-saidaHora" type="time" value="${e.saidaHora||""}" onchange="oseCampo('saidaHora', this.value)"></label>
+      ${adm && ehOS ? `<label>Orçamento / referência<input id="ose-referencia" value="${osEsc(e.referencia||"")}" placeholder="opcional" onchange="oseCampo('referencia', this.value)"></label>` : ""}
     </div>
     <datalist id="ose-car">${oseCarretas().map(c=>`<option value="${osEsc(c.frota)}">${osEsc(c.placa)}</option>`).join("")}</datalist>
     <div class="ose-add">
-      <label style="flex:1; min-width:240px;">Serviço (código ou nome)<input id="ose-serv" list="ose-servs" placeholder="${OSE.servicos.length ? "ex: 12 ou TROCA DE LONA" : "tabela de serviços não importada"}" onkeydown="if(event.key==='Enter') oseAddItem()"></label>
+      <label style="flex:1; min-width:240px;">Serviço (código ou nome)<input id="ose-serv" list="ose-servs" placeholder="${OSE.servicos.length ? "ex: 12 ou REBITAMENTO" : "tabela de serviços não importada"}" onkeydown="if(event.key==='Enter') oseAddItem()"></label>
       <label style="width:90px;">Qtd<input id="ose-qtd" inputmode="decimal" value="1" onkeydown="if(event.key==='Enter') oseAddItem()"></label>
       <button class="entry-submit" style="margin:0;" onclick="oseAddItem()">+ Serviço</button>
     </div>
     <datalist id="ose-servs">${OSE.servicos.map(s=>`<option value="${s.cod} — ${osEsc(s.servico)}">`).join("")}</datalist>
     ${OSE_ITENS.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab ose-itens">
-      <thead><tr><th>Cód</th><th>Serviço</th><th class="num">Qtd</th><th>Cobrança</th>${veV ? `<th class="num">M.O</th><th class="num">Material</th><th class="num">Total</th>` : ""}<th></th></tr></thead>
+      <thead><tr><th>Cód</th><th>Serviço</th><th class="num">Qtd</th><th>Cobrança</th>${veV ? `<th class="num">Mão de obra</th><th class="num">Peças</th><th class="num">Total</th>` : ""}<th></th></tr></thead>
       <tbody>${OSE_ITENS.map((it,i)=>`<tr>
         <td><b>${it.cod}</b></td><td>${osEsc(it.servico)}</td>
         <td class="num"><input class="bal-num" style="width:64px; text-align:right;" value="${String(it.qtd).replace(".", ",")}" inputmode="decimal" onchange="oseQtd(${i}, this.value)"> ${it.un==="m" ? "m" : ""}</td>
-        <td>${it.mo && it.mat ? `<select onchange="oseCobrarItem(${i}, this.value)" style="padding:4px 6px; font-size:12px;">${Object.entries(OSE_COBRAR).map(([k,l])=>`<option value="${k}" ${it.cobrar===k?"selected":""}>${l}</option>`).join("")}</select>` : `<span class="hint" style="margin:0;">${it.mat && !it.mo ? "Material" : "Mão de obra"}</span>`}</td>
+        <td>${it.mo && it.mat ? `<select onchange="oseCobrarItem(${i}, this.value)" style="padding:4px 6px; font-size:12px;">${Object.entries(OSE_COBRAR).map(([k,l])=>`<option value="${k}" ${it.cobrar===k?"selected":""}>${l}</option>`).join("")}</select>` : `<span class="hint" style="margin:0;">${it.mat && !it.mo ? "Peças / material" : "Mão de obra"}</span>`}</td>
         ${veV ? `<td class="num">${it.cobrar==="mat" ? "—" : fmtBRL2(it.mo||0)}</td><td class="num">${it.cobrar==="mo" ? "—" : fmtBRL2(it.mat||0)}</td><td class="num"><b>${fmtBRL2(oseValorItem(it))}</b></td>` : ""}
         <td><button class="os-link" onclick="oseRemover(${i})" title="Remover">🗑️</button></td></tr>`).join("")}</tbody>
-      ${veV ? `<tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="6">Total da O.S</td><td class="num">${fmtBRL2(total)}</td><td></td></tr></tfoot>` : ""}
+      ${veV ? `<tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="6">${ehOS ? "Valor para emissão de NF" : "Valor estimado"}</td><td class="num">${fmtBRL2(total)}</td><td></td></tr></tfoot>` : ""}
     </table></div>` : `<div class="empty-state" style="padding:14px;"><p>Nenhum serviço lançado ainda.</p></div>`}
     ${adm && dif ? `<div class="hint" style="margin-top:6px; color:var(--amber);">⚠ ${dif} serviço(s) com preço diferente da tabela atual. <button class="os-link" onclick="oseAtualizarPrecos()">usar preços da tabela</button></div>` : ""}
     <label>Observação<input id="ose-obs" value="${osEsc(e.obs||"")}" placeholder="opcional" onchange="oseCampo('obs', this.value)"></label>
     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
-      ${e.status==="nova" ? `<button class="entry-submit" style="margin:0; background:var(--green);" onclick="oseSalvar(true)">✅ ${e.preId ? "Validar e emitir O.S" : "Emitir O.S"}</button>`
-        : `<button class="entry-submit" style="margin:0;" onclick="oseSalvar(false)">${emitida ? "💾 Salvar alterações da O.S" : "💾 Salvar Pré O.S"}</button>`}
+      ${e.status==="nova" ? `<button class="entry-submit" style="margin:0; background:var(--green);" onclick="oseSalvar(true)">✅ ${e.preId ? "Validar e gerar a O.S" : "Emitir O.S"}</button>`
+        : `<button class="entry-submit" style="margin:0;" onclick="oseSalvar(false)">${e.status==="emitida" ? "💾 Salvar alterações da O.S" : e.id ? "💾 Salvar Pré O.S" : "💾 Lançar no plano do dia"}</button>`}
     </div>
   </div>`;
 }
 
-// Bloco no Controle diário de carretas: célula da Pré O.S em cada carreta
+// Célula da Pré O.S em cada carreta do Controle diário
 function osePreCelula(c){
   const o = osePorFila(c.id);
   if(!o) return `<button class="os-link ose-pre-btn" onclick="osePreAbrir('${c.id}')">📝 Pré O.S</button>`;
-  if(o.status==="validada"){ const os = oseDaPre(o.id); return `<span class="badge green" title="Pré O.S validada pelo administrativo">✅ validada${os ? ` · O.S ${oseNum(os.numero)}` : ""}</span>`; }
-  if(o.status==="emitida") return `<span class="badge green" title="O.S emitida">🧾 O.S ${oseNum(o.numero)}</span>`;
-  return `<button class="os-link" onclick="osePreAbrir('${c.id}')" title="Editar a Pré O.S"><span class="badge amber">📝 Pré O.S · ${o.itens.length} serv.</span></button>`;
+  if(o.status==="emitida") return `<span class="badge green">🧾 O.S ${oseNum(o.numero)}</span>`;
+  if(o.status==="validada"){ const os = oseDaPre(o.id); return `<span class="badge green" title="A administração gerou a O.S">✅ O.S ${os ? oseNum(os.numero) : "gerada"}</span>`; }
+  if(o.status==="pre") return `<span class="badge amber" title="Validada pelo líder — com a administração">📤 com a administração</span>`;
+  return `<button class="os-link" onclick="osePreAbrir('${c.id}')" title="Editar a Pré O.S"><span class="badge gray">📝 em lançamento · ${o.itens.length} serv.</span></button>`;
 }
 
-/* ---------- PDF da O.S (para enviar à Combitrans) ---------- */
+/* ---------- Plano do dia (operação lança as Pré O.S; o líder valida no fim do dia) ---------- */
+window.oseSetPlanoDia = (d) => { if(d){ OSE_PLANO_DIA = d; oseRedesenhar(); } };
+window.oseMoverPlanoDia = (n) => oseSetPlanoDia(nfeAddDias(OSE_PLANO_DIA, n));
+function osePlanoHTML(diaFixo){
+  if(diaFixo) OSE_PLANO_DIA = diaFixo;
+  if(OSE.erro) return `<div class="os-alerta amber" style="margin-bottom:16px;">⚠️ Pré O.S indisponível: ${osEsc(OSE.erro)}. Rode o SQL da Emissão de O.S no Supabase.</div>`;
+  const d = OSE_PLANO_DIA, hoje = d===frotaHojeISO(), veV = oseVeValores();
+  const doDia = OSE.lista.filter(o=>oseEhPre(o) && oseDiaPlano(o)===d).sort((a,b)=>(a.frota||"").localeCompare(b.frota||"", undefined, { numeric:true }));
+  const emLanc = doDia.filter(o=>o.status==="plano"), enviadas = doDia.filter(o=>o.status!=="plano");
+  const resumoItens = (o) => (o.itens||[]).map(it=>`<span class="ose-chip" title="${osEsc(it.servico)}"><b>${it.cod}</b> ${String(it.qtd).replace(".", ",")}${it.un==="m" ? "m" : ""}</span>`).join("");
+  return `<div class="panel ose-bloco plano" style="margin-bottom:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+      <div><h3 style="margin:0;">📝 Plano do dia — Pré O.S da operação</h3>
+        <div class="hint">A operação lança o que será feito em cada carreta; no fim do dia o <b>líder valida</b> e as Pré O.S vão para a administração.</div></div>
+      ${diaFixo ? `<b>${fmtDataBR(d)}</b>` : `<div class="prog-dia">
+        <button class="os-btn" onclick="oseMoverPlanoDia(-1)">◀</button><input type="date" value="${d}" onchange="oseSetPlanoDia(this.value)"><button class="os-btn" onclick="oseMoverPlanoDia(1)">▶</button>
+        ${hoje ? `<span class="badge green">hoje</span>` : `<button class="os-link" onclick="oseSetPlanoDia('${frotaHojeISO()}')">hoje</button>`}
+      </div>`}
+    </div>
+    <div class="ose-plano-topo">
+      <span class="ose-pill gray">📝 Em lançamento <b>${emLanc.length}</b></span>
+      <span class="ose-pill amber">📤 Validadas pelo líder <b>${doDia.filter(o=>o.status==="pre").length}</b></span>
+      <span class="ose-pill green">✅ Viraram O.S <b>${doDia.filter(o=>o.status==="validada").length}</b></span>
+      <span style="flex:1;"></span>
+      <button class="os-btn" onclick="oseNovaPre()">+ Lançar Pré O.S</button>
+      ${emLanc.length ? `<button class="entry-submit" style="margin:0; background:var(--green);" onclick="oseLiderValidar('${d}')">✅ Líder: validar o plano (${emLanc.length}) e enviar</button>` : ""}
+    </div>
+    ${doDia.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
+      <thead><tr><th>Frota · Placa</th><th>Serviços planejados</th>${veV ? `<th class="num">Valor estimado</th>` : ""}<th>Situação</th><th>Lançado por</th><th></th></tr></thead>
+      <tbody>${doDia.map(o=>{ const s = OSE_ST[o.status], os = oseDaPre(o.id); return `<tr>
+        <td><b>${osEsc(o.frota)}</b>${o.placa ? ` · ${osEsc(o.placa)}` : ""}</td>
+        <td class="ose-chips">${resumoItens(o) || "—"}</td>${veV ? `<td class="num">${fmtBRL2(oseValor(o))}</td>` : ""}
+        <td><span class="badge ${s.badge}">${s.icone} ${s.label}${o.status==="validada" && os ? ` · O.S ${oseNum(os.numero)}` : ""}</span>${o.liderPor ? `<div class="hint" style="margin:0;">líder: ${osEsc(o.liderPor)}</div>` : ""}</td>
+        <td style="font-size:12px;">${osEsc(o.por||"")}</td>
+        <td style="white-space:nowrap;">${o.status==="plano" ? `<button class="os-link" onclick="oseEditarPre('${o.id}')" title="Editar">✏️</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir">🗑️</button>` : ""}</td>
+      </tr>`; }).join("")}</tbody></table></div>`
+      : `<div class="empty-state" style="padding:16px;"><p>Nenhuma Pré O.S lançada para ${fmtDataBR(d)}. Clique em <b>+ Lançar Pré O.S</b>${diaFixo ? " ou em <b>📝 Pré O.S</b> na carreta da fila" : ""}.</p></div>`}
+    ${enviadas.length && !emLanc.length ? `<div class="hint" style="margin-top:8px;">✓ Plano de ${fmtDataBR(d)} validado pelo líder e enviado para a administração.</div>` : ""}
+  </div>`;
+}
+
+/* ---------- PDF da O.S — modelo da Avance para a Combitrans ---------- */
 async function osePDFDoc(o){
   await nfgCarregarPDF();
-  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth();
-  const total = oseValor(o);
-  doc.setFillColor(208, 2, 27); doc.rect(0, 0, W, 4, "F");
-  doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(20, 20, 26); doc.text("AVANCE TRANSPORTE LOGÍSTICO", 14, 16);
-  doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(90, 90, 100); doc.text("Manutenção de carretas · Cliente: COMBITRANS", 14, 22);
-  doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(208, 2, 27); doc.text("ORDEM DE SERVIÇO", W-14, 13, { align:"right" });
-  doc.setFontSize(20); doc.setTextColor(20, 20, 26); doc.text(`Nº ${oseNum(o.numero)}`, W-14, 21, { align:"right" });
-  const campos = [["Frota", o.frota||"-"], ["Placa", o.placa||"-"], ["Entrada", o.entrada ? fmtDataBR(o.entrada) : "-"], ["Saída", o.saida ? fmtDataBR(o.saida) : "-"], ["Emitida em", o.emitidaEm ? fmtDataBR(o.emitidaEm.slice(0,10)) : fmtDataBR(frotaHojeISO())]];
-  const bw = (W - 28 - 4*3) / 5;
-  campos.forEach(([l, v], i)=>{ const x = 14 + i*(bw+3); doc.setFillColor(245, 245, 247); doc.roundedRect(x, 28, bw, 15, 2, 2, "F");
-    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(110, 110, 120); doc.text(l.toUpperCase(), x+3, 33);
-    doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(20, 20, 26); doc.text(String(v), x+3, 40); });
-  doc.autoTable({ startY:50, margin:{ left:14, right:14 },
-    head:[["Cód", "Serviço", "Qtd", "Cobrança", "M.O (un.)", "Material (un.)", "Total"]],
-    body:(o.itens||[]).map(it=>[String(it.cod), it.servico, `${String(it.qtd).replace(".", ",")}${it.un==="m" ? " m" : ""}`, OSE_COBRAR[it.cobrar] || OSE_COBRAR.ambos,
-      it.cobrar==="mat" ? "-" : oseBRL(it.mo), it.cobrar==="mo" ? "-" : oseBRL(it.mat), oseBRL(oseValorItem(it))]),
-    foot:[[{ content:"Total da O.S", colSpan:6 }, oseBRL(total)]], showFoot:"lastPage", theme:"striped",
-    styles:{ fontSize:8.5, cellPadding:1.8, valign:"middle" }, headStyles:{ fillColor:[208,2,27] }, footStyles:{ fillColor:[20,20,26], textColor:[255,255,255], fontStyle:"bold" },
-    columnStyles:{ 0:{ cellWidth:12, fontStyle:"bold" }, 2:{ halign:"center", cellWidth:14 }, 3:{ cellWidth:26 }, 4:{ halign:"right", cellWidth:22 }, 5:{ halign:"right", cellWidth:24 }, 6:{ halign:"right", cellWidth:24 } },
-    didParseCell:(d)=>{ if(d.column.index>=4) d.cell.styles.halign = "right"; if(d.column.index===2) d.cell.styles.halign = "center"; } });
-  let y = doc.lastAutoTable.finalY + 8;
-  if(o.obs){ doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(20, 20, 26); doc.text("Observação", 14, y);
-    doc.setFont("helvetica", "normal"); const l = doc.splitTextToSize(o.obs, W-28); doc.text(l, 14, y+5); y += 8 + l.length*4.5; }
-  y = Math.max(y + 18, 240); if(y > 270){ doc.addPage(); y = 40; }
-  doc.setDrawColor(150, 150, 160); doc.setFontSize(8.5); doc.setTextColor(90, 90, 100); doc.setFont("helvetica", "normal");
-  doc.line(14, y, 92, y); doc.text("Avance Transporte Logístico", 14, y+5); doc.text(`Emitida por: ${o.emitidaPor || (MEU_EMAIL||"").split("@")[0] || "-"}`, 14, y+10);
-  doc.line(W-92, y, W-14, y); doc.text("Combitrans — análise e assinatura", W-92, y+5); doc.text("Data: ____/____/________", W-92, y+10);
-  doc.setFontSize(7.5); doc.setTextColor(140, 140, 150); doc.text(`Prazo de análise da Combitrans: até 7 dias da emissão · gerado em ${fmtDataBR(frotaHojeISO())} às ${frotaHora()}`, 14, 290);
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), cfg = oseCfg();
+  const total = oseValor(o), M = 12;
+  const br = (iso) => iso ? `${iso.slice(8,10)}-${iso.slice(5,7)}-${iso.slice(0,4)}` : "";
+  // logotipo: seta vermelha + AVANCE
+  doc.setDrawColor(40, 40, 46); doc.setLineWidth(0.4); doc.rect(M, 10, 112, 26);
+  doc.setFillColor(214, 40, 30); doc.triangle(M+6, 15, M+19, 23, M+6, 31, "F"); doc.setFillColor(255, 255, 255); doc.triangle(M+6, 18, M+12, 23, M+6, 28, "F");
+  doc.setFillColor(232, 80, 40); doc.triangle(M+4, 14, M+10, 17, M+5, 19, "F");
+  doc.setFont("helvetica", "bold"); doc.setFontSize(30); doc.setTextColor(40, 40, 50); doc.text("A V A N C E", M+24, 28);
+  // dados da empresa
+  doc.rect(M+114, 10, W-2*M-114, 26);
+  doc.setFontSize(7); doc.setTextColor(20, 20, 26);
+  [["EMPRESA", cfg.empresa], ["RAZÃO SOCIAL", cfg.razao], ["CNPJ", cfg.cnpj], ["ENDEREÇO", cfg.endereco], ["CEP", cfg.cep]].forEach(([l, v], i)=>{
+    doc.setFont("helvetica", "bold"); doc.text(`${l}:`, M+116, 15 + i*4.6); const lw = doc.getTextWidth(`${l}: `) + 0.8;
+    doc.setFont("helvetica", "normal"); doc.text(doc.splitTextToSize(String(v||""), W-2*M-118-lw)[0] || "", M+116+lw, 15 + i*4.6); });
+  // cliente (esquerda) e quadro da O.S (direita)
+  doc.setFontSize(8.5); doc.setTextColor(20, 20, 26);
+  [["Cliente", cfg.cliente], ["Endereço", cfg.clienteEndereco], ["CNPJ", cfg.clienteCnpj]].forEach(([l, v], i)=>{ doc.setFont("helvetica", "bold"); doc.text(`${l}:`, M, 47 + i*5); const lw = doc.getTextWidth(`${l}: `) + 0.8; doc.setFont("helvetica", "normal"); doc.text(String(v||""), M + lw, 47 + i*5); });
+  const X = M+108, QW = W-M-X;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.text(`ORDEM DE SERVIÇO Nº ${oseNum(o.numero)}`, X + QW/2, 41.5, { align:"center" });
+  doc.setFillColor(235, 235, 238); doc.rect(X, 43.5, QW, 5, "F"); doc.setFont("helvetica", "normal"); doc.setFontSize(8);
+  doc.text(o.referencia ? `Orçamento ${o.referencia}` : "Orçamento —", X + QW/2, 47, { align:"center" });
+  doc.rect(X, 48.5, QW, 10); doc.line(X, 53.5, X+QW, 53.5); doc.line(X+QW*0.62, 48.5, X+QW*0.62, 58.5);
+  doc.text(`Início: ${br(o.entrada)}${o.entradaHora ? ` / Hora: ${o.entradaHora}` : ""}`, X+2, 52); doc.text(`Placa: ${o.placa||""}`, X+QW*0.62+2, 52);
+  doc.text(`Saída: ${br(o.saida)}${o.saidaHora ? ` / Hora: ${o.saidaHora}` : ""}`, X+2, 57); doc.text(`Frota: ${o.frota||""}`, X+QW*0.62+2, 57);
+  doc.setFillColor(255, 214, 0); doc.rect(X, 58.5, QW, 6, "FD"); doc.setFont("helvetica", "bold"); doc.setFontSize(8.5);
+  doc.text("VALOR PARA EMISSÃO DE NF.", X+2, 62.7); doc.text(oseBRL(total), X+QW-2, 62.7, { align:"right" });
+  // serviços
+  doc.autoTable({ startY:66, margin:{ left:M, right:M }, theme:"grid",
+    head:[["SERVIÇO", "CÓD", "Qntd", "MÃO DE OBRA", "Qntd", "PEÇAS", "Valor Total"]],
+    body:(o.itens||[]).map(it=>{ const q = `${String(it.qtd).replace(".", ",")}${it.un==="m" ? " m" : ""}`, temMo = it.cobrar!=="mat" && it.mo, temMat = it.cobrar!=="mo" && it.mat;
+      return [it.servico, String(it.cod), temMo ? q : "", temMo ? oseBRL(it.mo) : "", temMat ? q : "", temMat ? oseBRL(it.mat) : "", oseBRL(oseValorItem(it))]; }),
+    foot:[[{ content:"", colSpan:6, styles:{ fillColor:[235,235,238] } }, { content:oseBRL(total), styles:{ fillColor:[255,214,0], textColor:[20,20,26], fontStyle:"bold", halign:"right" } }]], showFoot:"lastPage",
+    styles:{ fontSize:8, cellPadding:1.6, lineColor:[60,60,66], lineWidth:0.2, textColor:[20,20,26], valign:"middle" },
+    headStyles:{ fillColor:[214,40,30], textColor:[255,255,255], fontStyle:"bold", halign:"center" }, footStyles:{ fillColor:[235,235,238] },
+    columnStyles:{ 0:{ cellWidth:"auto" }, 1:{ halign:"center", cellWidth:12 }, 2:{ halign:"center", cellWidth:13 }, 3:{ halign:"right", cellWidth:25 }, 4:{ halign:"center", cellWidth:13 }, 5:{ halign:"right", cellWidth:22 }, 6:{ halign:"right", cellWidth:26 } } });
+  let y = doc.lastAutoTable.finalY + 10;
+  if(o.obs){ doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); doc.text("Observação:", M, y); doc.setFont("helvetica", "normal"); const l = doc.splitTextToSize(o.obs, W-2*M-22); doc.text(l, M+20, y); y += 6 + l.length*4; }
+  doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.text("CARIMBOS :", M, y + 6);
+  y = Math.max(y + 40, 250);
+  doc.setDrawColor(150, 150, 160); doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(80, 80, 90);
+  doc.line(M, y, M+80, y); doc.text("Avance Logística Integrada", M, y+4.5); if(o.emitidaPor) doc.text(`Emitida por: ${o.emitidaPor}`, M, y+9);
+  doc.line(W-M-80, y, W-M, y); doc.text(`${cfg.cliente || "Cliente"} — análise e assinatura`, W-M-80, y+4.5); doc.text("Data: ____/____/________", W-M-80, y+9);
   return doc;
 }
 const oseNomePDF = (o) => `OS_${oseNum(o.numero)}_frota_${String(o.frota).replace(/[^A-Z0-9]+/gi,"")}.pdf`;
-window.osePDF = async (id) => { const o = OSE.lista.find(x=>x.id===id); if(!o) return; try{ (await osePDFDoc(o)).save(oseNomePDF(o)); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); } };
+function oseConfereCfg(){ return OSE.cfgSalvo || confirm("Os dados do cabeçalho da O.S (CNPJ, endereço da Avance e do cliente) ainda não foram conferidos e salvos.\n\nGerar o PDF assim mesmo?"); }
+window.osePDF = async (id) => { const o = OSE.lista.find(x=>x.id===id); if(!o || !oseConfereCfg()) return; try{ (await osePDFDoc(o)).save(oseNomePDF(o)); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); } };
 window.oseEnviar = async (id) => {
-  const o = OSE.lista.find(x=>x.id===id); if(!o) return;
+  const o = OSE.lista.find(x=>x.id===id); if(!o || !oseConfereCfg()) return;
   let doc; try{ doc = await osePDFDoc(o); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); return; }
-  const nome = oseNomePDF(o), texto = `*Avance Transporte Logístico*\nO.S nº ${oseNum(o.numero)} — frota ${o.frota}${o.placa ? " / " + o.placa : ""}\nValor: *${oseBRL(oseValor(o))}*\nSegue a O.S para análise e assinatura.`;
+  const nome = oseNomePDF(o), texto = `*Avance Logística Integrada*\nO.S nº ${oseNum(o.numero)} — frota ${o.frota}${o.placa ? " / " + o.placa : ""}\nValor para emissão de NF: *${oseBRL(oseValor(o))}*\nSegue a O.S para análise e assinatura.`;
   const arq = new File([doc.output("blob")], nome, { type:"application/pdf" });
   if(navigator.canShare && navigator.canShare({ files:[arq] })){
     try{ await navigator.share({ files:[arq], title:`O.S ${oseNum(o.numero)}`, text:texto.replace(/\*/g,"") }); return; } catch(e){ if(e.name === "AbortError") return; }
   }
   doc.save(nome); window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank"); toast("PDF baixado — no WhatsApp, anexe o arquivo " + nome);
+};
+// Dados do cabeçalho (Avance e cliente) — salvos no banco
+window.oseSalvarCfg = async () => {
+  const novo = {}; Object.keys(OSE_CFG_PADRAO).forEach(k=>{ novo[k] = (document.getElementById(`ose-cfg-${k}`)?.value || "").trim(); });
+  if(sb){ const { error } = await sb.from("app_config").upsert({ chave:"os_cabecalho", valor:novo, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }, { onConflict:"chave" });
+    if(error){ toast(/app_config/i.test(error.message) ? "⚠ Falta rodar o SQL da Emissão de O.S no Supabase." : "⚠ Não salvou: " + error.message); return; } }
+  OSE.cfg = novo; OSE.cfgSalvo = true; oseSalvarLocal(); toast("Dados do cabeçalho da O.S salvos ✓"); oseRedesenhar();
 };
 
 /* ---------- Importar a tabela de serviços (planilha "TABELA DE SERVIÇO 2026 - CARRETA") ---------- */
@@ -9152,65 +9267,67 @@ window.oseImportarTabela = async () => {
   }catch(e){ st.innerHTML = "⚠ " + (e.message||e); }
 };
 
-/* ---------- Tela: Emissão de NF › Emissão de O.S (administrativo) ---------- */
+/* ---------- Tela: Emissão de NF › Emissão de O.S ---------- */
 window.oseFiltro = (f) => { OSE_FILTRO = f; oseRedesenhar(); };
 function osePagina(){
   oseGarantirCarga();
   if(OSE.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar as O.S</h4><p>${osEsc(OSE.erro)}</p><p>Se falar em tabela ou coluna inexistente ("manutencao_os", "status"), rode o SQL da Emissão de O.S no Supabase.</p></div></div>`;
   if(!OSE.carregado) return `<div class="panel"><div class="empty-state" style="padding:24px;"><p>Carregando...</p></div></div>`;
-  const mes = frotaHojeISO().slice(0,7);
-  const pre = OSE.lista.filter(o=>o.status==="pre"), validadas = OSE.lista.filter(o=>o.status==="validada"), emit = OSE.lista.filter(o=>o.status==="emitida");
+  const mes = frotaHojeISO().slice(0,7), cfg = oseCfg();
+  const emLanc = OSE.lista.filter(o=>o.status==="plano"), pre = OSE.lista.filter(o=>o.status==="pre"), validadas = OSE.lista.filter(o=>o.status==="validada"), emit = OSE.lista.filter(o=>o.status==="emitida");
   const emitMes = emit.filter(o=>(o.emitidaEm||o.entrada||"").startsWith(mes));
   if(!["pre","validada"].includes(OSE_FILTRO)) OSE_FILTRO = "pre";
-  const listaPre = (OSE_FILTRO==="pre" ? pre : validadas).sort((a,b)=>(a.entrada||"").localeCompare(b.entrada||""));
+  const listaPre = (OSE_FILTRO==="pre" ? pre : validadas).sort((a,b)=>oseDiaPlano(a).localeCompare(oseDiaPlano(b)));
   const listaOS = [...emit].sort((a,b)=>(b.numero||0)-(a.numero||0) || (b.entrada||"").localeCompare(a.entrada||""));
   const resumoItens = (o) => (o.itens||[]).map(it=>`<span class="ose-chip" title="${osEsc(it.servico)}"><b>${it.cod}</b> ${String(it.qtd).replace(".", ",")}${it.un==="m" ? "m" : ""}</span>`).join("");
   const destaque = (o) => OSE_EDIT && (OSE_EDIT.id===o.id || OSE_EDIT.preId===o.id) ? 'style="background:#FCF1DE;"' : "";
   return `
-    <div class="os-resumo prog-resumo nfe-tot" style="margin:0 0 14px;">
-      <div>Pré O.S aguardando conferência<b style="color:var(--${pre.length?"amber":"green"});">${pre.length}</b><small>${fmtBRL(sumArr(pre.map(oseValor)))} estimado</small></div>
-      <div>Pré O.S validadas<b style="color:var(--green);">${validadas.length}</b><small>viraram O.S</small></div>
-      <div>O.S emitidas no mês<b>${emitMes.length}</b><small>${fmtBRL(sumArr(emitMes.map(oseValor)))} · ${nfeNomeMes(mes)}</small></div>
-      <div>Última O.S<b>${emit.length ? oseNum(Math.max(...emit.map(o=>Number(o.numero)||0))) : "—"}</b><small>próxima: ${oseNum(oseProxNumero())}</small></div>
+    <div class="ose-fluxo">
+      <div><span>1</span><b>Plano do dia</b><small>operação lança a Pré O.S</small><em>${emLanc.length} em lançamento</em></div>
+      <div><span>2</span><b>Líder valida</b><small>no fim do dia</small><em>${pre.length} com a administração</em></div>
+      <div><span>3</span><b>Administração</b><small>confere e gera a O.S</small><em>${emitMes.length} O.S no mês · ${fmtBRL(sumArr(emitMes.map(oseValor)))}</em></div>
+      <div><span>4</span><b>Combitrans</b><small>PDF da O.S para assinatura</small><em>última O.S ${emit.length ? oseNum(Math.max(...emit.map(o=>Number(o.numero)||0))) : "—"}</em></div>
     </div>
     ${oseEditorHTML()}
+    ${osePlanoHTML()}
 
     <div class="panel ose-bloco pre" style="margin:16px 0;">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
-        <div><h3 style="margin:0;">📝 Pré O.S — lançamentos da operação</h3>
-          <div class="hint">Geradas no plano do dia (Controle diário de carretas). O administrativo confere e valida → vira uma O.S (lançamento separado).</div></div>
+        <div><h3 style="margin:0;">📤 Pré O.S validadas pelo líder — conferência da administração</h3>
+          <div class="hint">Confira cada Pré O.S e gere a O.S. A O.S é um lançamento novo; a Pré O.S fica registrada como a operação lançou.</div></div>
         <div class="prog-chips" style="margin:0;">
           <button class="sub-tab-btn ${OSE_FILTRO==="pre"?"active":""}" onclick="oseFiltro('pre')">Para conferir (${pre.length})</button>
-          <button class="sub-tab-btn ${OSE_FILTRO==="validada"?"active":""}" onclick="oseFiltro('validada')">Validadas (${validadas.length})</button>
+          <button class="sub-tab-btn ${OSE_FILTRO==="validada"?"active":""}" onclick="oseFiltro('validada')">Já viraram O.S (${validadas.length})</button>
         </div>
       </div>
       ${listaPre.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
-        <thead><tr><th>Situação</th><th>Entrada</th><th>Saída</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor estimado</th><th>Lançado por</th><th></th></tr></thead>
+        <thead><tr><th>Plano de</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor estimado</th><th>Operação</th><th>Situação</th><th></th></tr></thead>
         <tbody>${listaPre.map(o=>{ const os = oseDaPre(o.id); return `<tr ${destaque(o)}>
-          <td>${o.status==="pre" ? `<span class="badge amber">📝 Para conferir</span>` : `<span class="badge green">✅ Validada${os ? ` · O.S ${oseNum(os.numero)}` : ""}</span>`}</td>
-          <td>${o.entrada ? fmtDataBR(o.entrada) : "—"}</td><td>${o.saida ? fmtDataBR(o.saida) : "—"}</td>
+          <td><b>${oseDiaPlano(o) ? fmtDataBR(oseDiaPlano(o)) : "—"}</b></td>
           <td><b>${osEsc(o.frota)}</b>${o.placa ? ` · ${osEsc(o.placa)}` : ""}</td>
           <td class="ose-chips">${resumoItens(o) || "—"}</td>
           <td class="num">${fmtBRL2(oseValor(o))}</td>
-          <td style="font-size:12px;">${osEsc(o.por||"")}</td>
+          <td style="font-size:12px;">lançou: ${osEsc(o.por||"—")}${o.liderPor ? `<div class="hint" style="margin:0;">líder: ${osEsc(o.liderPor)}${o.liderEm ? ` · ${fmtDataBR(o.liderEm.slice(0,10))}` : ""}</div>` : ""}</td>
+          <td>${o.status==="pre" ? `<span class="badge amber">📤 Para conferir</span>` : `<span class="badge green">✅ O.S ${os ? oseNum(os.numero) : ""}</span>`}</td>
           <td style="white-space:nowrap;">${o.status==="pre"
-            ? `<button class="os-btn sm green" onclick="oseConferir('${o.id}')">🔎 Conferir e validar</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir Pré O.S">🗑️</button>`
+            ? `<button class="os-btn sm green" onclick="oseConferir('${o.id}')">🔎 Conferir e gerar O.S</button> <button class="os-link" onclick="oseReabrir('${o.id}')" title="Devolver para a operação">↩</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir Pré O.S">🗑️</button>`
             : `<span class="hint" style="margin:0;">${os && os.emitidaPor ? `por ${osEsc(os.emitidaPor)}` : ""}</span>`}</td>
         </tr>`; }).join("")}</tbody>
-      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${OSE_FILTRO==="pre" ? "Nenhuma Pré O.S aguardando conferência. ✓" : "Nenhuma Pré O.S validada ainda."}</p></div>`}
+      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${OSE_FILTRO==="pre" ? `Nenhuma Pré O.S aguardando conferência. ✓${emLanc.length ? ` (${emLanc.length} ainda em lançamento — falta o líder validar)` : ""}` : "Nenhuma Pré O.S virou O.S ainda."}</p></div>`}
     </div>
 
     <div class="panel ose-bloco os" style="margin:16px 0;">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
         <div><h3 style="margin:0;">🧾 O.S emitidas — enviadas para a Combitrans (${emit.length})</h3>
-          <div class="hint">Lançamentos do administrativo. Excluir uma O.S que veio de Pré O.S devolve a Pré O.S para conferência.</div></div>
+          <div class="hint">Lançamentos da administração. Excluir uma O.S que veio de Pré O.S devolve a Pré O.S para conferência.</div></div>
         <button class="os-btn" onclick="oseNova()">+ O.S avulsa</button>
       </div>
       ${listaOS.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
-        <thead><tr><th>Nº O.S</th><th>Entrada</th><th>Saída</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor</th><th>Origem</th><th></th></tr></thead>
+        <thead><tr><th>Nº O.S</th><th>Início</th><th>Saída</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor p/ NF</th><th>Origem</th><th></th></tr></thead>
         <tbody>${listaOS.map(o=>{ const pr = OSE.lista.find(x=>x.id===o.preId); return `<tr ${destaque(o)}>
-          <td><b>${oseNum(o.numero)}</b></td>
-          <td>${o.entrada ? fmtDataBR(o.entrada) : "—"}</td><td>${o.saida ? fmtDataBR(o.saida) : "—"}</td>
+          <td><b>${oseNum(o.numero)}</b>${o.referencia ? `<div class="hint" style="margin:0;">${osEsc(o.referencia)}</div>` : ""}</td>
+          <td>${o.entrada ? fmtDataBR(o.entrada) : "—"}${o.entradaHora ? `<div class="hint" style="margin:0;">${o.entradaHora}</div>` : ""}</td>
+          <td>${o.saida ? fmtDataBR(o.saida) : "—"}${o.saidaHora ? `<div class="hint" style="margin:0;">${o.saidaHora}</div>` : ""}</td>
           <td><b>${osEsc(o.frota)}</b>${o.placa ? ` · ${osEsc(o.placa)}` : ""}</td>
           <td class="ose-chips">${resumoItens(o) || "—"}</td>
           <td class="num"><b>${fmtBRL2(oseValor(o))}</b>${pr && Math.abs(oseValor(pr) - oseValor(o)) > 0.005 ? `<div class="hint" style="margin:0;">Pré O.S: ${fmtBRL2(oseValor(pr))}</div>` : ""}</td>
@@ -9221,6 +9338,16 @@ function osePagina(){
         <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="5">Total (${listaOS.length})</td><td class="num">${fmtBRL2(sumArr(listaOS.map(oseValor)))}</td><td colspan="2"></td></tr></tfoot>
       </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nenhuma O.S emitida ainda.</p></div>`}
     </div>
+
+    <details class="panel" id="ose-cfg" style="margin-bottom:16px;" ${OSE.cfgSalvo ? "" : "open"}>
+      <summary style="cursor:pointer; font-weight:700;">🏢 Cabeçalho da O.S (dados da Avance e do cliente) ${OSE.cfgSalvo ? "" : '<span class="badge amber">confira e salve</span>'}</summary>
+      ${OSE.cfgSalvo ? "" : `<div class="os-alerta amber" style="margin-top:8px;">Estes dados foram lidos da foto do modelo da O.S — <b>confira CNPJ e endereços</b> e clique em Salvar. Eles saem no PDF de toda O.S.</div>`}
+      <div class="nf-grid os-form" style="grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); margin-top:8px;">
+        ${[["empresa","Empresa"],["razao","Razão social"],["cnpj","CNPJ"],["endereco","Endereço"],["cep","CEP"],["cliente","Cliente"],["clienteEndereco","Endereço do cliente"],["clienteCnpj","CNPJ do cliente"]]
+          .map(([k,l])=>`<label>${l}<input id="ose-cfg-${k}" value="${osEsc(cfg[k]||"")}"></label>`).join("")}
+      </div>
+      ${osePodeEmitir() ? `<button class="entry-submit" style="margin-top:10px;" onclick="oseSalvarCfg()">💾 Salvar cabeçalho</button>` : ""}
+    </details>
     <details class="panel" style="margin-bottom:16px;" ${OSE.servicos.length ? "" : "open"}>
       <summary style="cursor:pointer; font-weight:700;">📥 Tabela de serviços e preços <span class="hint" style="margin:0;">· ${OSE.servicos.length} serviços</span></summary>
       <div class="hint" style="margin-top:8px;">Escolha a planilha <b>"TABELA DE SERVIÇO 2026 - CARRETA"</b> para atualizar códigos e preços (M.OBRA / MATERIAL). A tabela é substituída pela da planilha; as O.S já lançadas guardam o preço do dia.</div>
@@ -9425,8 +9552,8 @@ function carPagina(){
       <datalist id="car-l">${CAR.carretas.map(c=>`<option value="${osEsc(carRotulo(c))}">`).join("")}</datalist>
       <label>Observação do dia (vai para o WhatsApp)<input value="${osEsc(D.obsPlano)}" placeholder="ex: 2 mecânicos de folga" onchange="carSalvarObsPlano(this.value)"></label>
     </div>
-    ${OSE.erro ? `<div class="os-alerta amber" style="margin-bottom:16px;">⚠️ Pré O.S indisponível: ${osEsc(OSE.erro)}. Rode o SQL da Emissão de O.S no Supabase.</div>` : ""}
     ${OSE_EDIT ? `<div style="margin-bottom:16px;">${oseEditorHTML()}</div>` : ""}
+    ${osePlanoHTML(CAR_DIA)}
 
     <div class="grid-2">
       <div class="panel">

@@ -491,6 +491,15 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .ose-add label{ margin:0 !important; }
 .ose-chips{ max-width:340px; } .ose-chip{ display:inline-block; font-size:11px; padding:2px 7px; margin:1px 2px; border-radius:12px; background:var(--paper); border:1px solid var(--line); white-space:nowrap; }
 .ose-bloco.pre{ border-top:4px solid var(--amber); } .ose-bloco.os{ border-top:4px solid var(--green); }
+.ose-bloco.plano{ border-top:4px solid #5B5F6B; } .ose-editor.os{ border-color:var(--green); }
+.ose-plano-topo{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+.ose-pill{ font-size:12px; font-weight:700; padding:6px 11px; border-radius:20px; border:1px solid var(--line); background:var(--paper); color:var(--ink-soft); } .ose-pill b{ color:var(--ink); margin-left:3px; }
+.ose-pill.amber{ background:#FFF6E5; border-color:#F2C46D; } .ose-pill.green{ background:#ECF8F2; border-color:#9ED9BC; }
+.ose-fluxo{ display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; margin-bottom:16px; }
+.ose-fluxo > div{ position:relative; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px 12px 50px; display:flex; flex-direction:column; gap:2px; }
+.ose-fluxo > div span{ position:absolute; left:12px; top:12px; width:28px; height:28px; border-radius:50%; background:#14141A; color:#fff; font-weight:800; display:flex; align-items:center; justify-content:center; font-size:13px; }
+.ose-fluxo b{ font-size:13.5px; } .ose-fluxo small{ font-size:11px; color:var(--ink-soft); } .ose-fluxo em{ font-style:normal; font-size:12px; font-weight:700; color:var(--red); margin-top:4px; }
+@media (max-width:800px){ .ose-fluxo{ grid-template-columns:1fr 1fr; } }
 .ose-pre-btn{ font-weight:700; color:#B86E00 !important; }
 .nfg-cob{ display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; } .nfg-cob label{ display:flex; flex-direction:column; gap:3px; font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; }
 .nfg-cob select{ font-family:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--paper); }
@@ -818,7 +827,7 @@ body.pending #pendingScreen{display:flex;}
   <main class="content" id="content"></main>
 </div>
 
-<script src="data.js?v=20261023q"></script>
-<script src="app.js?v=20261023q"></script>
+<script src="data.js?v=20261024a"></script>
+<script src="app.js?v=20261024a"></script>
 </body>
 </html>
