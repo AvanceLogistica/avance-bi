@@ -445,6 +445,9 @@ const PAGINAS_SO_DIRETOR = ["gerencial","faturamento","emissaonf","contaspagar",
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
 const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"] };
+// Telas extras liberadas para um usuário específico (tabela user_paginas_extra), somadas às do perfil restrito dele
+let PAGINAS_EXTRA = [];
+function paginasRestritas(){ const b = PAGINAS_RESTRITAS[MEU_PAPEL]; return b ? [...b, ...PAGINAS_EXTRA.filter(p=>!b.includes(p) && pages.includes(p))] : null; }
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -485,7 +488,7 @@ function navigate(page){
   // Reforço além de esconder os botões no menu: mesmo se alguém forçar a navegação (ex: console do
   // navegador), quem não é Diretor cai de volta no Painel Executivo.
   // Perfis restritos só abrem as telas deles (que podem ser telas da Diretoria, ex: Organograma)
-  const restritas = PAGINAS_RESTRITAS[MEU_PAPEL];
+  const restritas = paginasRestritas();
   if(restritas){ if(!restritas.includes(page)) page = restritas[0]; }
   else if(PAGINAS_SO_DIRETOR.includes(page) && MEU_PAPEL !== "diretor") page = "overview";
   document.getElementById("pageTitle").textContent = titles[page][0];
@@ -5382,6 +5385,11 @@ function updateSyncPill(){
 }
 
 // Perfil Coordenação: carrega só a tabela do faturamento (a Emissão de NF), nada mais do painel
+// Infrações para quem recebeu a tela como acesso extra (perfis restritos não passam pelo carregamento geral)
+async function carregarInfracoesDoBanco(){
+  const infLanc = await sbFetchAll("infracoes_lancamentos");
+  if(infLanc.length){ DATA.infracoes.lancamentos = infLanc.map(r=>({ id:r.id, d:r.data, motorista:r.motorista||"", placa:r.placa||"", turno:r.turno||"", hora:r.hora||"", ocorrencia:r.ocorrencia||"", observacoes:r.observacoes||"" })); deriveInfracoes(); }
+}
 async function carregarFaturamentoDoBanco(){
   const ftLanc = await sbFetchAll("faturamento_lancamentos");
   DATA.faturamento.lancamentos = ftLanc.map(r=>({
@@ -5399,7 +5407,9 @@ async function iniciarPainel(){
   recomputeFolha();
   carregarSessionLogLocal();
   if(MEU_PAPEL === "coordenacao") await carregarFaturamentoDoBanco(); // só os dados da Emissão de NF
-  if(PAGINAS_RESTRITAS[MEU_PAPEL]){ navigate(PAGINAS_RESTRITAS[MEU_PAPEL][0]); return; } // perfis restritos não carregam nenhum outro dado do sistema
+  if(paginasRestritas()){   // perfis restritos não carregam nenhum outro dado do sistema
+    if(paginasRestritas().includes("infracoes")) await carregarInfracoesDoBanco();
+    navigate(paginasRestritas()[0]); return; }
   navigate("overview"); // mostra algo na tela já, com os dados locais/baseline, sem esperar o Supabase
   // loadFromSupabase() é assíncrono e pode demorar (rede lenta no celular, por exemplo). Nesse meio
   // tempo o usuário pode já ter navegado pra outra página, importado uma planilha etc. — navegar de
@@ -5493,7 +5503,7 @@ function aplicarRestricoesDePapel(){
     el.style.display = souDiretor ? "" : "none";
   });
   // Líder: o menu mostra só o Status da Frota; some também o botão de exportar dados do topo
-  const restritas = PAGINAS_RESTRITAS[MEU_PAPEL];
+  const restritas = paginasRestritas();
   const souLider = !!restritas;
   document.querySelectorAll("nav.menu button[data-page], nav.menu .grp-label").forEach(el=>{
     if(souLider) el.style.display = (el.dataset.page && restritas.includes(el.dataset.page)) ? "" : "none";
@@ -10787,6 +10797,8 @@ window.salvarPapelUsuario = async (userId, email) => {
     }
     MEU_PAPEL = roleRow.papel;
     MEU_EMAIL = session.user.email || "";
+    try{ const ex = await sb.from("user_paginas_extra").select("paginas").eq("user_id", session.user.id).maybeSingle();
+      PAGINAS_EXTRA = !ex.error && ex.data && Array.isArray(ex.data.paginas) ? ex.data.paginas : []; }catch(e){ PAGINAS_EXTRA = []; }
     document.body.classList.remove("pending");
     document.body.classList.add("authed");
     document.getElementById("authUserEmail").textContent = session.user.email;
