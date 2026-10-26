@@ -444,7 +444,7 @@ const PAGINAS_SO_DIRETOR = ["gerencial","faturamento","emissaonf","contaspagar",
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"] };
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -6932,6 +6932,8 @@ function frotaOficina(itens){
 renderers.frota = () => {
   const F = frotaCarregar();
   if(!frotaPodeCadastrar() && FROTA_ABA==="cadastro") FROTA_ABA = "painel";
+  const soOficina = MEU_PAPEL === "frotaoficina";   // perfil Oficina da frota: só a aba Oficina
+  if(soOficina) FROTA_ABA = "oficina";
   // O líder abre direto na tela de lançamento
   if(MEU_PAPEL==="lider" && !renderers.frota._abriu){ FROTA_ABA = "lider"; renderers.frota._abriu = true; }
   const itens = frotaDoDia(FROTA_DATA);
@@ -6965,7 +6967,7 @@ renderers.frota = () => {
     <div class="os-proto"><div><b>🧪 Modo local.</b> Sem banco de dados configurado — os dados ficam só neste navegador.</div></div>`}
     <div class="frota-topo">
       <div class="tabs" style="margin:0;">
-        ${aba("painel","📊 Painel do dia")}${aba("lider","📝 Lançamento do líder")}${aba("oficina", `🔧 Oficina${(()=>{ fofGarantirCarga(); const n = FOF.lista.filter(r=>fofStatus(r)==="aguardando").length; return n ? ` <span class="fof-n">${n}</span>` : ""; })()}`)}${frotaPodeCadastrar() ? aba("cadastro","🚛 Caminhões") : ""}
+        ${soOficina ? "" : aba("painel","📊 Painel do dia") + aba("lider","📝 Lançamento do líder")}${aba("oficina", `🔧 Oficina${(()=>{ fofGarantirCarga(); const n = FOF.lista.filter(r=>fofStatus(r)==="aguardando").length; return n ? ` <span class="fof-n">${n}</span>` : ""; })()}`)}${frotaPodeCadastrar() && !soOficina ? aba("cadastro","🚛 Caminhões") : ""}
       </div>
       <label class="frota-data">Dia <input type="date" value="${FROTA_DATA}" onchange="frotaSetData(this.value)"></label>
     </div>
@@ -10351,6 +10353,7 @@ ${u.papel==="manutencao" ? `<option value="manutencao" selected>Manutenção (te
               <option value="rh" ${u.papel==="rh"?"selected":""}>RH (só Organograma)</option>
               <option value="administrativo" ${u.papel==="administrativo"?"selected":""}>Administrativo (Emissão de O.S + Organograma)</option>
               <option value="preos" ${u.papel==="preos"?"selected":""}>Operação (só Pré O.S / plano do dia)</option>
+              <option value="frotaoficina" ${u.papel==="frotaoficina"?"selected":""}>Oficina da frota (só aba Oficina do Status da Frota)</option>
               <option value="oficina" ${u.papel==="oficina"?"selected":""}>Oficina (só Controle de carretas)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
