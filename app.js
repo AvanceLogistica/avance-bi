@@ -9092,6 +9092,80 @@ async function oseAtualizarOS(o, campos, local){
     if(error){ toast(/assinada|nf_/i.test(error.message) ? "⚠ Falta rodar o SQL do retorno da O.S (assinatura e NF) no Supabase." : "⚠ Não salvou: " + error.message); return false; } }
   Object.assign(o, local); oseSalvarLocal(); return true;
 }
+/* ---------- Protocolo de entrega (folha de rosto): faixa de O.S de um dia para a Combitrans assinar ---------- */
+let OSE_PROT = null;   // { data, de, ate } enquanto o painel do protocolo está aberto
+const oseDiaEmissao = (o) => (o.emitidaEm || "").slice(0,10) || o.entrada || "";
+function oseProtFaixa(dia){ const ns = OSE.lista.filter(o=>o.status==="emitida" && oseDiaEmissao(o)===dia).map(o=>Number(o.numero)||0).filter(Boolean).sort((a,b)=>a-b); return ns.length ? { de:ns[0], ate:ns[ns.length-1] } : { de:"", ate:"" }; }
+function oseProtLista(){ if(!OSE_PROT) return []; const de = Number(OSE_PROT.de)||0, ate = Number(OSE_PROT.ate)||0;
+  return OSE.lista.filter(o=>o.status==="emitida" && Number(o.numero)>=de && Number(o.numero)<=ate).sort((a,b)=>(a.numero||0)-(b.numero||0)); }
+window.oseProtAbrir = () => { if(OSE_PROT){ OSE_PROT = null; oseRedesenhar(); return; }
+  const d = frotaHojeISO(); OSE_PROT = { data:d, ...oseProtFaixa(d) }; oseRedesenhar(); };
+window.oseProtCampo = (k, v) => { if(!OSE_PROT) return; OSE_PROT[k] = v; if(k==="data") Object.assign(OSE_PROT, oseProtFaixa(v)); oseRedesenhar(); };
+function oseProtHTML(){
+  if(!OSE_PROT) return "";
+  const ls = oseProtLista(), faltam = [];
+  for(let n = Number(OSE_PROT.de)||0; n && n <= (Number(OSE_PROT.ate)||0) && faltam.length < 30; n++) if(!ls.some(o=>Number(o.numero)===n)) faltam.push(oseNum(n));
+  return `<div class="ose-prot">
+    <h3 style="margin:0;">📋 Protocolo de entrega — folha de rosto para a Combitrans assinar</h3>
+    <div class="hint">Escolha o dia da emissão (a faixa de O.S daquele dia vem sozinha) ou ajuste a faixa de números.</div>
+    <div class="nf-grid os-form" style="grid-template-columns:repeat(auto-fit, minmax(160px, 220px)); align-items:end; margin-top:8px;">
+      <label>Dia da emissão<input type="date" value="${OSE_PROT.data}" onchange="oseProtCampo('data', this.value)"></label>
+      <label>Da O.S nº<input type="number" min="1" value="${OSE_PROT.de}" onchange="oseProtCampo('de', this.value)"></label>
+      <label>Até a O.S nº<input type="number" min="1" value="${OSE_PROT.ate}" onchange="oseProtCampo('ate', this.value)"></label>
+      <button class="entry-submit" style="margin:0;" onclick="oseProtGerar()" ${ls.length ? "" : "disabled"}>🖨️ Gerar protocolo (PDF)</button>
+    </div>
+    <div class="hint" style="margin-top:8px;">${ls.length ? `<b>${ls.length}</b> O.S · ${fmtBRL2(sumArr(ls.map(oseValor)))}${faltam.length ? ` · <span style="color:var(--amber);">números sem O.S emitida na faixa: ${faltam.join(", ")}</span>` : ""}` : "Nenhuma O.S emitida nessa faixa."}</div>
+  </div>`;
+}
+window.oseProtGerar = async () => {
+  const ls = oseProtLista(); if(!ls.length){ toast("Nenhuma O.S na faixa."); return; }
+  if(!oseConfereCfg()) return;
+  const aba = window.open("", "_blank");
+  try{
+    await nfgCarregarPDF();
+    const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 14, cfg = oseCfg();
+    const total = sumArr(ls.map(oseValor)), de = oseNum(ls[0].numero), ate = oseNum(ls[ls.length-1].numero);
+    const diaEm = OSE_PROT.data, nProt = `${diaEm.replace(/-/g,"")}-${de}`;
+    doc.setFillColor(214, 40, 30); doc.rect(0, 0, W, 4, "F");
+    doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(20, 20, 26); doc.text(cfg.empresa || "AVANCE LOGÍSTICA INTEGRADA LTDA", M, 16);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(90, 90, 100);
+    doc.text([`CNPJ: ${cfg.cnpj||"-"}`, `${cfg.endereco||""}${cfg.cep ? " · CEP " + cfg.cep : ""}`], M, 22);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); doc.setTextColor(214, 40, 30); doc.text("PROTOCOLO Nº", W-M, 14, { align:"right" });
+    doc.setFontSize(13); doc.setTextColor(20, 20, 26); doc.text(nProt, W-M, 21, { align:"right" });
+    doc.setFillColor(20, 20, 26); doc.rect(M, 32, W-2*M, 12, "F");
+    doc.setFontSize(14); doc.setTextColor(255, 255, 255); doc.text("PROTOCOLO DE ENTREGA DE ORDENS DE SERVIÇO", W/2, 40, { align:"center" });
+    // resumo em destaque
+    const caixas = [["Faixa de O.S", ls.length === 1 ? `Nº ${de}` : `Nº ${de} a ${ate}`], ["Dia da emissão", fmtDataBR(diaEm)], ["Quantidade", `${ls.length} O.S`], ["Valor total", oseBRL(total)]];
+    const bw = (W - 2*M - 9) / 4;
+    caixas.forEach(([l, v], i)=>{ const x = M + i*(bw+3); doc.setFillColor(i===3 ? 255 : 245, i===3 ? 214 : 245, i===3 ? 0 : 247); doc.roundedRect(x, 48, bw, 18, 2, 2, "F");
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(90, 90, 100); doc.text(l.toUpperCase(), x+3, 54);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(20, 20, 26); doc.text(v, x+3, 62); });
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(20, 20, 26);
+    const txt = `Entregamos à ${cfg.cliente || "Combitrans"}${cfg.clienteCnpj ? ` (CNPJ ${cfg.clienteCnpj})` : ""} as ordens de serviço de manutenção de carretas relacionadas abaixo, emitidas em ${fmtDataBR(diaEm)}, para análise e assinatura no prazo de até ${OSE_PRAZO_ASSINATURA} dias. A assinatura deste protocolo confirma o recebimento de todas as O.S listadas.`;
+    doc.text(doc.splitTextToSize(txt, W-2*M), M, 74);
+    doc.autoTable({ startY:86, margin:{ left:M, right:M }, theme:"grid",
+      head:[["Nº O.S", "Frota", "Placa", "Início", "Saída", "Serviços", "Valor"]],
+      body:ls.map(o=>[oseNum(o.numero), o.frota||"-", o.placa||"-", o.entrada ? fmtDataBR(o.entrada) : "-", o.saida ? fmtDataBR(o.saida) : "-", String((o.itens||[]).length), oseBRL(oseValor(o))]),
+      foot:[[{ content:`Total — ${ls.length} O.S (nº ${de} a ${ate})`, colSpan:6 }, oseBRL(total)]], showFoot:"lastPage",
+      styles:{ fontSize:9, cellPadding:2, lineColor:[190,190,198], lineWidth:0.2, textColor:[20,20,26], valign:"middle" },
+      headStyles:{ fillColor:[214,40,30], textColor:[255,255,255] }, footStyles:{ fillColor:[255,214,0], textColor:[20,20,26], fontStyle:"bold" },
+      columnStyles:{ 0:{ fontStyle:"bold", cellWidth:20 }, 3:{ cellWidth:24 }, 4:{ cellWidth:24 }, 5:{ halign:"center", cellWidth:20 }, 6:{ halign:"right", cellWidth:30 } },
+      didParseCell:(c)=>{ if(c.column.index===6) c.cell.styles.halign = "right"; if(c.column.index===5 && c.section!=="foot") c.cell.styles.halign = "center"; } });
+    let y = doc.lastAutoTable.finalY + 16; if(y > H - 70){ doc.addPage(); y = 30; }
+    // assinaturas
+    doc.setDrawColor(150, 150, 160); doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(20, 20, 26);
+    doc.text("ENTREGUE POR — AVANCE", M, y); doc.text(`RECEBIDO POR — ${(cfg.cliente || "COMBITRANS").toUpperCase()}`, W/2+4, y);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(80, 80, 90);
+    [["Nome", 14], ["Assinatura", 28], ["Data / hora", 42]].forEach(([l, dy])=>{
+      doc.line(M, y+dy, W/2-6, y+dy); doc.text(l, M, y+dy+4.5); doc.line(W/2+4, y+dy, W-M, y+dy); doc.text(l, W/2+4, y+dy+4.5); });
+    doc.text("Carimbo:", W/2+4, y+58); doc.roundedRect(W/2+4, y+61, W/2-4-M, 26, 2, 2);
+    const np = doc.internal.getNumberOfPages();
+    for(let i = 1; i <= np; i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(140, 140, 150);
+      doc.text(`Protocolo ${nProt} · gerado em ${fmtDataBR(frotaHojeISO())} às ${frotaHora()}${MEU_EMAIL ? " por " + MEU_EMAIL.split("@")[0] : ""}`, M, H-7); doc.text(`Página ${i} de ${np}`, W-M, H-7, { align:"right" }); }
+    const url = doc.output("bloburl");
+    if(aba){ aba.location.href = url; } else doc.save(`Protocolo_OS_${de}-${ate}.pdf`);
+  }catch(e){ if(aba) aba.close(); toast("⚠ Não foi possível gerar o protocolo: " + e.message); }
+};
 window.oseOSFiltro = (f) => { OSE_OS_FILTRO = OSE_OS_FILTRO===f ? "todas" : f; oseRedesenhar(); };
 window.oseAssinada = async (id) => {
   const o = OSE.lista.find(x=>x.id===id); if(!o) return;
@@ -9510,8 +9584,12 @@ function osePagina(){
       <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
         <div><h3 style="margin:0;">🧾 O.S emitidas — enviadas para a Combitrans (${emit.length})</h3>
           <div class="hint">Lançamentos da administração. Excluir uma O.S que veio de Pré O.S devolve a Pré O.S para conferência.</div></div>
-        <button class="os-btn" onclick="oseNova()">+ O.S avulsa</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          ${emit.length ? `<button class="os-btn ${OSE_PROT ? "green" : ""}" onclick="oseProtAbrir()" title="Folha de rosto com a faixa de O.S e o dia da emissão, para a Combitrans assinar">📋 Protocolo de entrega</button>` : ""}
+          <button class="os-btn" onclick="oseNova()">+ O.S avulsa</button>
+        </div>
       </div>
+      ${oseProtHTML()}
       <div class="prog-chips" style="margin:10px 0 0;">
         <button class="sub-tab-btn ${OSE_OS_FILTRO==="todas"?"active":""}" onclick="oseOSFiltro('todas')">Todas (${emit.length})</button>
         <button class="sub-tab-btn ${OSE_OS_FILTRO==="aguardando"?"active":""}" onclick="oseOSFiltro('aguardando')">⏳ Aguardando assinatura (${contSit.aguardando})</button>
