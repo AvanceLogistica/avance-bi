@@ -10336,8 +10336,12 @@ window.sinSalvar = async () => {
   const reg = { numero, veiculo_id:v ? v.id : null, placa:v ? v.placa : f.placa, data:f.data, hora:f.hora||null, quem:f.quem.trim()||null, como:f.como.trim()||null, quando:f.quando.trim()||null,
     aonde:f.aonde.trim()||null, analise:f.analise.trim()||null, plano_acao:sinPlanoPreenchido(f.plano).map(x=>({ acao:x.acao.trim(), responsavel:x.responsavel.trim(), prazo:x.prazo })), anexos:f.anexos, anexos_qtd:f.anexos.length, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
   let id = f.id;
-  if(sb){ const q = id ? sb.from("sinistros").update(reg).eq("id", id).select("id").single() : sb.from("sinistros").insert({ ...reg, criado_por:MEU_EMAIL }).select("id").single();
-    const { data, error } = await q; if(error){ toast(/sinistros|plano_acao/i.test(error.message) ? "⚠ Falta rodar o SQL do Sinistro no Supabase." : /too large|payload/i.test(error.message) ? "⚠ Anexos grandes demais — tire algum arquivo." : "⚠ Não salvou: " + error.message); return; } id = data.id; }
+  if(sb){ const gravar = (dados) => id ? sb.from("sinistros").update(dados).eq("id", id).select("id").single() : sb.from("sinistros").insert({ ...dados, criado_por:MEU_EMAIL }).select("id").single();
+    let { data, error } = await gravar(reg);
+    // banco ainda sem a coluna do plano de ação: salva o sinistro sem o plano e avisa
+    if(error && /plano_acao/i.test(error.message)){ const { plano_acao, ...semPlano } = reg; ({ data, error } = await gravar(semPlano));
+      if(!error) setTimeout(()=>toast("⚠ Sinistro salvo, mas SEM o plano de ação — falta rodar o SQL do plano de ação no Supabase."), 1600); }
+    if(error){ toast(/sinistros/i.test(error.message) ? "⚠ Falta rodar o SQL do Sinistro no Supabase." : /too large|payload/i.test(error.message) ? "⚠ Anexos grandes demais — tire algum arquivo." : "⚠ Não salvou: " + error.message); return; } id = data.id; }
   else if(!id) id = osNovoId();
   const local = { id, numero, veiculoId:reg.veiculo_id, placa:reg.placa, data:reg.data, hora:reg.hora||"", quem:reg.quem||"", como:reg.como||"", quando:reg.quando||"", aonde:reg.aonde||"", analise:reg.analise||"", plano:sinPlanoNorm(reg.plano_acao),
     anexosQtd:f.anexos.length, anexos:f.anexos.map(a=>({ ...a })), por:f.por || (MEU_EMAIL||"").split("@")[0] };
