@@ -444,7 +444,7 @@ const PAGINAS_SO_DIRETOR = ["gerencial","faturamento","emissaonf","contaspagar",
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"] };
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -8537,6 +8537,12 @@ renderers.gerencial = () => `<div class="page-head nfg-head"><div><h2>Painel Ger
 renderers.emissaonf = () => {
   if(MEU_PAPEL === "manutencao") return `<div class="page-head"><h2>O.S de Manutenção</h2></div>
     <div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">🔧</div><h4>Esta tela foi desativada</h4><p>A O.S de Manutenção foi retirada do sistema. Fale com a diretoria.</p></div></div>`;
+  // perfil Operação (Pré O.S): só o plano do dia — lança e valida as Pré O.S, sem valores e sem as O.S
+  if(MEU_PAPEL === "preos"){ NF_ABA = "os"; oseGarantirCarga();
+    return `<div class="page-head"><h2>Pré O.S — plano do dia</h2><p>Lance o que será feito em cada carreta; no fim do dia o líder valida cada Pré O.S e ela vai para a administração</p></div>`
+      + (OSE.erro ? `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><p>${osEsc(OSE.erro)}</p></div></div>`
+        : !OSE.carregado ? `<div class="panel"><div class="empty-state" style="padding:24px;"><p>Carregando...</p></div></div>`
+        : `${oseEditorHTML()}${osePlanoHTML()}`); }
   if(MEU_PAPEL === "administrativo") NF_ABA = "os";   // perfil Administrativo: só a Emissão de O.S
   if(!["nf","nfe","os"].includes(NF_ABA)) NF_ABA = "nf";
   const abas = `
@@ -8896,7 +8902,7 @@ const OSE_CFG_PADRAO = {
   endereco:"Rua Macatuba, Nº 84, Bairro: Cidade de Deus", cep:"69099-266",
   cliente:"COMBITRANS AMAZONAS LTDA", clienteEndereco:"Rua Ponta Grossa, 303 - Col. Oliveira Machado", clienteCnpj:"05.501.594/0002-19",
 };
-const oseVeValores = () => MEU_PAPEL !== "oficina";
+const oseVeValores = () => !["oficina","preos"].includes(MEU_PAPEL);
 const osePodeEmitir = () => !sb || ["diretor","coordenacao","administrativo"].includes(MEU_PAPEL);
 function oseUn(serv){ return /METRO|\(M\)|MTS/i.test(serv||"") ? "m" : "un"; }
 function oseValorItem(it){ const mo = it.cobrar==="mat" ? 0 : (it.mo||0), mat = it.cobrar==="mo" ? 0 : (it.mat||0); return (mo + mat) * (Number(it.qtd)||0); }
@@ -10062,6 +10068,7 @@ async function carregarGestaoAcessos(){
 ${u.papel==="manutencao" ? `<option value="manutencao" selected>Manutenção (tela desativada)</option>` : ""}
               <option value="rh" ${u.papel==="rh"?"selected":""}>RH (só Organograma)</option>
               <option value="administrativo" ${u.papel==="administrativo"?"selected":""}>Administrativo (Emissão de O.S + Organograma)</option>
+              <option value="preos" ${u.papel==="preos"?"selected":""}>Operação (só Pré O.S / plano do dia)</option>
               <option value="oficina" ${u.papel==="oficina"?"selected":""}>Oficina (só Controle de carretas)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
