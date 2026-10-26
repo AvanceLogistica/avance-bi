@@ -9162,6 +9162,93 @@ function orgViewLista(desligados){
   </table></div></div>`;
 }
 
+/* ---------- Organograma em PDF (A4 deitado, uma folha por equipe) ----------
+   Folha 1: o topo da empresa (quem não tem gestor) e os subordinados diretos. Depois, uma folha para cada
+   líder com equipe: o líder em cima e os subordinados diretos embaixo; quem também tem equipe mostra
+   "equipe N · pág. X". Equipes grandes continuam na folha seguinte. */
+window.orgPDF = async () => {
+  const ativos = orgAtivos(); if(!ativos.length){ toast("Nenhum colaborador ativo."); return; }
+  const aba = window.open("", "_blank");
+  try{
+    await nfgCarregarPDF();
+    const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4", orientation:"landscape" });
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12;
+    const ids = new Set(ativos.map(p=>p.id));
+    const raizes = ativos.filter(p=>!p.gestorId || !ids.has(p.gestorId));
+    const cores = {}; orgLocais().forEach(l=>cores[l.nome] = l.cor);
+    const rgb = (hex) => { const h = String(hex||"#5B5F6B").replace("#",""); const n = parseInt(h.length===3 ? h.split("").map(c=>c+c).join("") : h, 16); return [(n>>16)&255, (n>>8)&255, n&255]; };
+    const ordenar = (l) => [...l].sort((a,b)=>orgFilhos(b.id).length - orgFilhos(a.id).length || (a.funcao||"").localeCompare(b.funcao||"") || a.nome.localeCompare(b.nome));
+    // folhas: topo + cada líder com equipe (em largura, do topo para baixo)
+    const POR_FOLHA = 20, folhas = [{ tipo:"topo", pessoas:ordenar(raizes) }];
+    const fila = [...raizes], vistos = new Set();
+    while(fila.length){ const p = fila.shift(); if(vistos.has(p.id)) continue; vistos.add(p.id);
+      const filhos = ordenar(orgFilhos(p.id));
+      if(filhos.length){ if(!raizes.includes(p) || raizes.length > 1) for(let i = 0; i < filhos.length; i += POR_FOLHA) folhas.push({ tipo:"equipe", lider:p, pessoas:filhos.slice(i, i+POR_FOLHA), cont:i>0 }); }
+      filhos.forEach(f=>fila.push(f)); }
+    // no topo com uma raiz só, a folha 1 já mostra a equipe dela
+    if(raizes.length === 1){ folhas[0] = { tipo:"equipe", lider:raizes[0], pessoas:ordenar(orgFilhos(raizes[0].id)).slice(0, POR_FOLHA), cont:false, topo:true };
+      const resto = ordenar(orgFilhos(raizes[0].id)).slice(POR_FOLHA); for(let i = 0; i < resto.length; i += POR_FOLHA) folhas.splice(1 + i/POR_FOLHA, 0, { tipo:"equipe", lider:raizes[0], pessoas:resto.slice(i, i+POR_FOLHA), cont:true }); }
+    const paginaDe = {}; folhas.forEach((f, i)=>{ if(f.tipo==="equipe" && !f.cont && !(f.lider.id in paginaDe)) paginaDe[f.lider.id] = i + 1; });
+
+    const caixa = (p, x, y, w, h, grande) => {
+      const cor = rgb(cores[p.local]);
+      doc.setFillColor(255, 255, 255); doc.setDrawColor(205, 205, 212); doc.setLineWidth(0.3); doc.roundedRect(x, y, w, h, 2, 2, "FD");
+      doc.setFillColor(...cor); doc.roundedRect(x, y, 2.2, h, 1, 1, "F");
+      const fs = grande ? 18 : 15, fx = x + 4, fy = y + (h - fs)/2;
+      if(p.foto){ try{ doc.addImage(p.foto, /^data:image\/png/.test(p.foto) ? "PNG" : "JPEG", fx, fy, fs, fs); }catch(e){} }
+      else { doc.setFillColor(235, 235, 240); doc.circle(fx + fs/2, fy + fs/2, fs/2, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(grande ? 10 : 8.5); doc.setTextColor(90, 90, 100);
+        doc.text(p.nome.split(/\s+/).filter(Boolean).slice(0,2).map(s=>s[0]).join("").toUpperCase(), fx + fs/2, fy + fs/2 + 1.5, { align:"center" }); }
+      const tx = fx + fs + 2.5, tw = x + w - tx - 2;
+      doc.setFont("helvetica", "bold"); doc.setFontSize(grande ? 9.5 : 7.8); doc.setTextColor(20, 20, 26);
+      const nome = doc.splitTextToSize(p.nome, tw).slice(0, 2); doc.text(nome, tx, y + (grande ? 6.5 : 5.5));
+      let ty = y + (grande ? 6.5 : 5.5) + nome.length * (grande ? 3.8 : 3.2);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(grande ? 7.5 : 6.4); doc.setTextColor(80, 80, 90);
+      if(p.funcao){ doc.text(doc.splitTextToSize(p.funcao, tw)[0], tx, ty); ty += grande ? 3.4 : 2.9; }
+      if(p.local){ doc.setTextColor(...cor); doc.setFont("helvetica", "bold"); doc.text(doc.splitTextToSize(p.local, tw)[0], tx, ty); }
+      const eq = orgEquipeTotal(p.id);
+      if(eq && !grande){ doc.setFillColor(20, 20, 26); const txt = `equipe ${eq}${paginaDe[p.id] ? ` · pág. ${paginaDe[p.id]}` : ""}`; doc.setFontSize(5.8); doc.setFont("helvetica", "bold");
+        const lw = doc.getTextWidth(txt) + 3; doc.roundedRect(x + w - lw - 1.5, y + h - 4.6, lw, 3.6, 1.2, 1.2, "F"); doc.setTextColor(255, 255, 255); doc.text(txt, x + w - lw/2 - 1.5, y + h - 2, { align:"center" }); }
+    };
+    const total = folhas.length;
+    folhas.forEach((f, i)=>{
+      if(i) doc.addPage();
+      doc.setFillColor(214, 40, 30); doc.rect(0, 0, W, 3, "F");
+      doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(20, 20, 26); doc.text("ORGANOGRAMA — AVANCE LOGÍSTICA INTEGRADA", M, 12);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(90, 90, 100);
+      const sub = f.tipo==="topo" ? `Diretoria / topo da empresa · ${ativos.length} colaboradores ativos`
+        : `${f.topo ? "Topo da empresa · " : ""}Equipe de ${f.lider.nome}${f.lider.funcao ? ` (${f.lider.funcao})` : ""} · ${orgFilhos(f.lider.id).length} subordinado(s) direto(s) · ${orgEquipeTotal(f.lider.id)} na equipe toda${f.cont ? " · continuação" : ""}`;
+      doc.text(sub, M, 17.5);
+      doc.text(`Posição em ${fmtDataBR(orgHoje())}`, W-M, 12, { align:"right" });
+      const bw = 52, bh = 21, gap = 4, cols = 5, x0 = (W - (cols*bw + (cols-1)*gap)) / 2;
+      let topoY = 24;
+      if(f.tipo==="equipe"){
+        const lw = 78, lh = 25, lx = (W - lw)/2; caixa(f.lider, lx, topoY, lw, lh, true);
+        if(f.lider.gestorId && paginaDe[f.lider.gestorId]){ const g = ativos.find(x=>x.id===f.lider.gestorId); doc.setFont("helvetica", "normal"); doc.setFontSize(7); doc.setTextColor(120, 120, 130);
+          doc.text(`responde a ${g ? g.nome : ""} · pág. ${paginaDe[f.lider.gestorId]}`, W/2, topoY - 1.5, { align:"center" }); }
+        topoY += lh;
+      }
+      const ps = f.pessoas, linhas = Math.ceil(ps.length / cols), rowY = (r) => topoY + 14 + r*(bh + 9);
+      doc.setDrawColor(170, 170, 180); doc.setLineWidth(0.35);
+      if(f.tipo==="equipe" && ps.length){ doc.line(W/2, topoY, W/2, rowY(linhas-1) - 5); }
+      for(let r = 0; r < linhas; r++){
+        const linha = ps.slice(r*cols, r*cols + cols), n = linha.length, xs = (W - (n*bw + (n-1)*gap)) / 2, y = rowY(r);
+        const centros = linha.map((_, k)=>xs + k*(bw+gap) + bw/2);
+        if(f.tipo==="equipe"){ doc.line(Math.min(centros[0], W/2), y - 5, Math.max(centros[n-1], W/2), y - 5); centros.forEach(cx=>doc.line(cx, y - 5, cx, y)); }
+        linha.forEach((p, k)=>caixa(p, xs + k*(bw+gap), y, bw, bh, false));
+      }
+      // legenda dos locais e rodapé
+      const locs = orgLocais().filter(l=>ativos.some(p=>p.local===l.nome)); let lx = M;
+      doc.setFontSize(6.8); doc.setFont("helvetica", "normal");
+      let ly = H - 13;   // legenda quebra em linhas para caber na folha, à esquerda do nº da página
+      locs.forEach(l=>{ const t = `${l.nome} (${ativos.filter(p=>p.local===l.nome).length})`, tw = doc.getTextWidth(t) + 9;
+        if(lx + tw > W - M - 30){ lx = M; ly += 4.5; }
+        doc.setFillColor(...rgb(l.cor)); doc.rect(lx, ly - 2.4, 3, 3, "F"); doc.setTextColor(80, 80, 90); doc.text(t, lx + 4, ly); lx += tw; });
+      doc.setTextColor(140, 140, 150); doc.text(`Página ${i+1} de ${total}`, W-M, H-8.5, { align:"right" });
+    });
+    const url = doc.output("bloburl");
+    if(aba) aba.location.href = url; else doc.save(`Organograma_Avance_${orgHoje()}.pdf`);
+  }catch(e){ if(aba) aba.close(); toast("⚠ Não foi possível gerar o PDF: " + e.message); }
+};
 renderers.organograma = () => {
   if(!ORG.carregado && !ORG.carregando){ ORG.carregando = true; setTimeout(()=>orgCarregar(), 0); }
   const cab = `<div class="page-head"><h2>Organograma</h2><p>Colaboradores por local, função e liderança — só a Diretoria vê esta tela</p></div>`;
@@ -9197,6 +9284,7 @@ renderers.organograma = () => {
       <div class="og-barra">
         <input id="og-busca" value="${osEsc(ORG_BUSCA)}" placeholder="🔎 Buscar por nome ou função" oninput="orgBuscar(this.value)">
         <div class="tabs" style="margin:0;">${aba("arvore","🌳 Organograma")}${aba("locais","🧩 Por local")}${aba("lista","📋 Lista")}${aba("desligados",`🗂️ Desligados (${deslig.length})`)}</div>
+        <button class="os-btn" onclick="orgPDF()" title="Organograma em PDF para imprimir em A4 (uma folha por equipe)">🖨️ Visualizar / imprimir PDF</button>
         <button class="entry-submit" style="margin:0;" onclick="orgNovo()">+ Novo colaborador</button>
       </div>
       <div class="og-chips"><button class="og-chip ${!ORG_LOCAL?"on":""}" style="--c:#17181C" onclick="orgSetLocal(null)">Todos <b>${ativos.length}</b></button>
