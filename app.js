@@ -10254,17 +10254,22 @@ let SIN_FORM = null;
 const SIN_LOCAL = "avance_sinistros_v1";
 const SIN_MAX_ARQ = 4 * 1024 * 1024;   // arquivos que não são foto: até 4 MB cada
 const sinNum = (n) => n ? String(n).padStart(4, "0") : "—";
+const SIN_COLS = "id,numero,veiculo_id,placa,data,hora,quem,como,quando,aonde,analise,anexos_qtd,criado_por,created_at";   // sem os anexos (pesados)
+const SIN_N_PLANO = 3;   // linhas do plano de ação
+const sinPlanoVazio = () => Array.from({ length:SIN_N_PLANO }, () => ({ acao:"", responsavel:"", prazo:"" }));
+function sinPlanoNorm(pl){ const l = (Array.isArray(pl) ? pl : []).map(x=>({ acao:x.acao||"", responsavel:x.responsavel||"", prazo:x.prazo||"" })); while(l.length < SIN_N_PLANO) l.push({ acao:"", responsavel:"", prazo:"" }); return l; }
+const sinPlanoPreenchido = (pl) => (pl||[]).filter(x=>x.acao || x.responsavel || x.prazo);
 async function sinCarregar(){
   SIN.carregando = true;
   if(!sb){ try{ SIN.lista = JSON.parse(localStorage.getItem(SIN_LOCAL)||"[]"); }catch(e){ SIN.lista = []; }
     SIN.veiculos = (typeof frotaVeiculosOrdenados==="function" ? frotaVeiculosOrdenados() : []).map(v=>({ id:v.id, placa:v.placa, ordem:v.ordem, motorista:v.motorista||"" })); }
   else {
     const [l, v] = await Promise.all([
-      sb.from("sinistros").select("id,numero,veiculo_id,placa,data,hora,quem,como,quando,aonde,analise,anexos_qtd,criado_por,created_at").order("data", { ascending:false }),
+      sb.from("sinistros").select(SIN_COLS + ",plano_acao").order("data", { ascending:false }).then(r=>r.error && /plano_acao/i.test(r.error.message) ? sb.from("sinistros").select(SIN_COLS).order("data", { ascending:false }) : r),
       sb.from("frota_veiculos").select("id,placa,ordem,motorista").order("ordem") ]);
     if(l.error) SIN.erro = l.error.message;
     else { SIN.erro = null; SIN.lista = l.data.map(r=>({ id:r.id, numero:r.numero, veiculoId:r.veiculo_id, placa:r.placa||"", data:r.data||"", hora:r.hora||"", quem:r.quem||"", como:r.como||"", quando:r.quando||"",
-      aonde:r.aonde||"", analise:r.analise||"", anexosQtd:r.anexos_qtd||0, anexos:null, por:(r.criado_por||"").split("@")[0] })); }
+      aonde:r.aonde||"", analise:r.analise||"", plano:sinPlanoNorm(r.plano_acao), anexosQtd:r.anexos_qtd||0, anexos:null, por:(r.criado_por||"").split("@")[0] })); }
     if(!v.error) SIN.veiculos = v.data.map(x=>({ id:x.id, placa:x.placa, ordem:x.ordem, motorista:x.motorista||"" }));
   }
   SIN.carregando = false; SIN.carregado = true; sinRedesenhar(true);
@@ -10285,11 +10290,12 @@ async function sinAnexos(r){
 }
 // guarda o que já foi digitado (o formulário é redesenhado ao incluir anexos)
 function sinLerForm(){ const f = SIN_FORM; if(!f) return; const g = (id) => document.getElementById(id);
-  ["veiculoId","data","hora","quem","como","quando","aonde","analise"].forEach(k=>{ const el = g(`sin-${k}`); if(el) f[k] = el.value; }); }
-window.sinNovo = () => { const h = new Date(); SIN_FORM = { id:null, veiculoId:"", data:frotaHojeISO(), hora:`${String(h.getHours()).padStart(2,"0")}:${String(h.getMinutes()).padStart(2,"0")}`, quem:"", como:"", quando:"", aonde:"", analise:"", anexos:[] };
+  ["veiculoId","data","hora","quem","como","quando","aonde","analise"].forEach(k=>{ const el = g(`sin-${k}`); if(el) f[k] = el.value; });
+  f.plano = (f.plano || sinPlanoVazio()).map((x, i)=>({ acao:g(`sin-pa-acao-${i}`)?.value ?? x.acao, responsavel:g(`sin-pa-resp-${i}`)?.value ?? x.responsavel, prazo:g(`sin-pa-prazo-${i}`)?.value ?? x.prazo })); }
+window.sinNovo = () => { const h = new Date(); SIN_FORM = { id:null, veiculoId:"", data:frotaHojeISO(), hora:`${String(h.getHours()).padStart(2,"0")}:${String(h.getMinutes()).padStart(2,"0")}`, quem:"", como:"", quando:"", aonde:"", analise:"", plano:sinPlanoVazio(), anexos:[] };
   sinRedesenhar(); setTimeout(()=>document.getElementById("sin-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); };
 window.sinEditar = async (id) => { const r = SIN.lista.find(x=>x.id===id); if(!r) return; const an = await sinAnexos(r);
-  SIN_FORM = { ...r, anexos:an.map(a=>({ ...a })) }; sinRedesenhar(); setTimeout(()=>document.getElementById("sin-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); };
+  SIN_FORM = { ...r, plano:sinPlanoNorm(r.plano).map(x=>({ ...x })), anexos:an.map(a=>({ ...a })) }; sinRedesenhar(); setTimeout(()=>document.getElementById("sin-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); };
 window.sinCancelar = () => { SIN_FORM = null; sinRedesenhar(); };
 window.sinPlaca = (vid) => { sinLerForm(); const v = SIN.veiculos.find(x=>x.id===vid); if(SIN_FORM && v && !SIN_FORM.quem) SIN_FORM.quem = v.motorista || ""; sinRedesenhar(); };
 function sinReduzirFoto(file){
@@ -10328,12 +10334,12 @@ window.sinSalvar = async () => {
   if(!f.como.trim()){ toast("Descreva como aconteceu."); return; }
   const numero = f.numero || (Math.max(0, ...SIN.lista.map(x=>Number(x.numero)||0)) + 1);
   const reg = { numero, veiculo_id:v ? v.id : null, placa:v ? v.placa : f.placa, data:f.data, hora:f.hora||null, quem:f.quem.trim()||null, como:f.como.trim()||null, quando:f.quando.trim()||null,
-    aonde:f.aonde.trim()||null, analise:f.analise.trim()||null, anexos:f.anexos, anexos_qtd:f.anexos.length, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
+    aonde:f.aonde.trim()||null, analise:f.analise.trim()||null, plano_acao:sinPlanoPreenchido(f.plano).map(x=>({ acao:x.acao.trim(), responsavel:x.responsavel.trim(), prazo:x.prazo })), anexos:f.anexos, anexos_qtd:f.anexos.length, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
   let id = f.id;
   if(sb){ const q = id ? sb.from("sinistros").update(reg).eq("id", id).select("id").single() : sb.from("sinistros").insert({ ...reg, criado_por:MEU_EMAIL }).select("id").single();
-    const { data, error } = await q; if(error){ toast(/sinistros/i.test(error.message) ? "⚠ Falta rodar o SQL do Sinistro no Supabase." : /too large|payload/i.test(error.message) ? "⚠ Anexos grandes demais — tire algum arquivo." : "⚠ Não salvou: " + error.message); return; } id = data.id; }
+    const { data, error } = await q; if(error){ toast(/sinistros|plano_acao/i.test(error.message) ? "⚠ Falta rodar o SQL do Sinistro no Supabase." : /too large|payload/i.test(error.message) ? "⚠ Anexos grandes demais — tire algum arquivo." : "⚠ Não salvou: " + error.message); return; } id = data.id; }
   else if(!id) id = osNovoId();
-  const local = { id, numero, veiculoId:reg.veiculo_id, placa:reg.placa, data:reg.data, hora:reg.hora||"", quem:reg.quem||"", como:reg.como||"", quando:reg.quando||"", aonde:reg.aonde||"", analise:reg.analise||"",
+  const local = { id, numero, veiculoId:reg.veiculo_id, placa:reg.placa, data:reg.data, hora:reg.hora||"", quem:reg.quem||"", como:reg.como||"", quando:reg.quando||"", aonde:reg.aonde||"", analise:reg.analise||"", plano:sinPlanoNorm(reg.plano_acao),
     anexosQtd:f.anexos.length, anexos:f.anexos.map(a=>({ ...a })), por:f.por || (MEU_EMAIL||"").split("@")[0] };
   const k = SIN.lista.findIndex(x=>x.id===id); if(k>=0) SIN.lista[k] = local; else SIN.lista.unshift(local);
   sinSalvarLocal(); SIN_FORM = null; toast(`Sinistro nº ${sinNum(numero)} salvo ✓`); sinRedesenhar();
@@ -10370,6 +10376,13 @@ async function sinPDFDoc(r){
     y += 11; doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(20, 20, 26);
     linhas.forEach(l=>{ quebra(5); doc.text(l, M+3, y); y += 5; }); y += 4;
   });
+  const pl = sinPlanoPreenchido(r.plano);
+  quebra(24); doc.setFillColor(20, 20, 26); doc.rect(M, y, W-2*M, 7, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(255, 255, 255); doc.text("PLANO DE AÇÃO", M+3, y+5); y += 8;
+  doc.autoTable({ startY:y, margin:{ left:M, right:M }, theme:"grid", head:[["#", "Ação", "Responsável", "Prazo"]],
+    body:(pl.length ? pl : [{ acao:"—", responsavel:"", prazo:"" }]).map((x, i)=>[String(i+1), x.acao||"—", x.responsavel||"—", x.prazo ? fmtDataBR(x.prazo) : "—"]),
+    styles:{ fontSize:9, cellPadding:2, textColor:[20,20,26], lineColor:[200,200,206], lineWidth:0.2, valign:"middle" }, headStyles:{ fillColor:[245,245,247], textColor:[20,20,26], fontStyle:"bold" },
+    columnStyles:{ 0:{ cellWidth:9, halign:"center" }, 2:{ cellWidth:45 }, 3:{ cellWidth:26, halign:"center" } } });
+  y = doc.lastAutoTable.finalY + 6;
   const fotos = an.filter(a=>/^image\//.test(a.tipo)), outros = an.filter(a=>!/^image\//.test(a.tipo));
   if(an.length){
     quebra(16); doc.setFillColor(214, 40, 30); doc.rect(M, y, W-2*M, 7, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(255, 255, 255);
@@ -10434,6 +10447,15 @@ function sinPagina(){
       ${campo("quando", "Quando?", "momento da ocorrência (ex: durante a manobra no pátio, na saída do turno)")}
       ${campo("aonde", "Aonde?", "local: endereço, pátio, cliente, rodovia/km")}
       ${campo("analise", "Análise da ocorrência?", "causa, responsabilidade, danos, medidas tomadas e próximos passos", 4)}
+      <div class="sin-plano">
+        <span class="sin-plano-tit">Plano de ação</span>
+        <div class="sin-plano-grid"><b>#</b><b>Ação</b><b>Responsável</b><b>Prazo</b>
+          ${(f.plano || sinPlanoVazio()).map((x, i)=>`<span class="sin-plano-n">${i+1}</span>
+            <input id="sin-pa-acao-${i}" value="${osEsc(x.acao)}" placeholder="o que será feito">
+            <input id="sin-pa-resp-${i}" value="${osEsc(x.responsavel)}" placeholder="quem faz">
+            <input id="sin-pa-prazo-${i}" type="date" value="${x.prazo||""}">`).join("")}
+        </div>
+      </div>
       <div class="sin-anexos">
         <label class="sin-q" style="margin:0;"><span>Anexo de evidência (fotos ou arquivos)</span>
           <input type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt" onchange="sinAddAnexos(this)"></label>
@@ -10448,13 +10470,14 @@ function sinPagina(){
         <button class="entry-submit" style="margin:0;" onclick="sinNovo()">+ Registrar sinistro</button>
       </div>
       ${SIN.lista.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
-        <thead><tr><th>Nº</th><th>Data</th><th>Placa</th><th>Quem?</th><th>Como?</th><th>Aonde?</th><th>Anexos</th><th></th></tr></thead>
+        <thead><tr><th>Nº</th><th>Data</th><th>Placa</th><th>Quem?</th><th>Como?</th><th>Aonde?</th><th>Anexos / plano</th><th></th></tr></thead>
         <tbody>${SIN.lista.map(r=>`<tr>
           <td><b>${sinNum(r.numero)}</b></td><td style="white-space:nowrap;">${r.data ? fmtDataBR(r.data) : "—"}${r.hora ? `<div class="hint" style="margin:0;">${r.hora}</div>` : ""}</td>
           <td><b>${osEsc(r.placa)}</b></td><td style="max-width:160px;">${osEsc(r.quem)||"—"}</td>
           <td style="max-width:280px; font-size:12.5px;">${osEsc((r.como||"").slice(0,140))}${(r.como||"").length > 140 ? "…" : ""}</td>
           <td style="max-width:180px; font-size:12.5px;">${osEsc(r.aonde)||"—"}</td>
-          <td>${r.anexosQtd ? `📎 ${r.anexosQtd}` : "—"}</td>
+          <td>${r.anexosQtd ? `📎 ${r.anexosQtd}` : "—"}${(()=>{ const pl = sinPlanoPreenchido(r.plano); if(!pl.length) return ""; const venc = pl.filter(x=>x.prazo && x.prazo < frotaHojeISO()).length;
+            return `<div class="hint" style="margin:0; ${venc ? "color:var(--red); font-weight:700;" : ""}">${pl.length} ação(ões)${venc ? ` · ${venc} vencida(s)` : ""}</div>`; })()}</td>
           <td style="white-space:nowrap;"><button class="os-btn sm" onclick="sinPDF('${r.id}')">📄 PDF</button> <button class="os-btn sm green" onclick="sinEnviar('${r.id}')">📲 WhatsApp</button>
             <button class="os-link" onclick="sinEditar('${r.id}')" title="Editar">✏️</button> <button class="os-link" onclick="sinExcluir('${r.id}')" title="Excluir">🗑️</button></td>
         </tr>`).join("")}</tbody></table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nenhum sinistro registrado.</p></div>`}

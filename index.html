@@ -622,6 +622,12 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .sin-form{ border:2px solid var(--red); } .sin-q{ display:flex; flex-direction:column; gap:4px; margin-top:12px; }
 .sin-q > span{ font-family:inherit; font-size:13px; font-weight:800; color:var(--ink); }
 .sin-q textarea{ width:100%; box-sizing:border-box; font-family:inherit; font-size:14px; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--paper); }
+.sin-plano{ margin-top:12px; padding:12px; border:1px solid var(--line); border-left:4px solid var(--red); border-radius:10px; background:#fff; }
+.sin-plano-tit{ display:block; font-size:13px; font-weight:800; margin-bottom:8px; }
+.sin-plano-grid{ display:grid; grid-template-columns:28px 2fr 1fr 160px; gap:6px 8px; align-items:center; } .sin-plano-grid > b{ font-size:11px; color:var(--ink-soft); text-transform:uppercase; }
+.sin-plano-grid input{ font-family:inherit; font-size:13.5px; padding:8px 9px; border:1px solid var(--line); border-radius:8px; background:var(--paper); min-width:0; }
+.sin-plano-n{ width:24px; height:24px; border-radius:50%; background:var(--red); color:#fff; font-size:12px; font-weight:800; display:flex; align-items:center; justify-content:center; }
+@media (max-width:700px){ .sin-plano-grid{ grid-template-columns:24px 1fr; } .sin-plano-grid > b{ display:none; } .sin-plano-grid input[id^=sin-pa-resp], .sin-plano-grid input[id^=sin-pa-prazo]{ grid-column:2; } }
 .sin-anexos{ margin-top:12px; padding:12px; background:var(--paper); border-radius:10px; } .sin-anexos input[type=file]{ font-size:13px; }
 .sin-thumbs{ display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; } .sin-thumb{ display:flex; flex-direction:column; align-items:center; gap:2px; }
 .sin-thumb img{ width:110px; height:82px; object-fit:cover; border-radius:8px; cursor:pointer; border:1px solid var(--line); }
@@ -848,7 +854,7 @@ body.pending #pendingScreen{display:flex;}
   <main class="content" id="content"></main>
 </div>
 
-<script src="data.js?v=20261026h"></script>
-<script src="app.js?v=20261026h"></script>
+<script src="data.js?v=20261026i"></script>
+<script src="app.js?v=20261026i"></script>
 </body>
 </html>
