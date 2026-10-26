@@ -9162,88 +9162,123 @@ function orgViewLista(desligados){
   </table></div></div>`;
 }
 
-/* ---------- Organograma em PDF (A4 deitado, uma folha por equipe) ----------
-   Folha 1: o topo da empresa (quem não tem gestor) e os subordinados diretos. Depois, uma folha para cada
-   líder com equipe: o líder em cima e os subordinados diretos embaixo; quem também tem equipe mostra
-   "equipe N · pág. X". Equipes grandes continuam na folha seguinte. */
+/* ---------- Organograma em PDF (A4 deitado, 4 folhas) ----------
+   Folha 1: a estrutura de liderança (do topo até os líderes de equipe), com o tamanho de cada equipe e a folha
+   onde ela está. Folhas 2 a 4: as equipes em blocos compactos (líder no cabeçalho, pessoas em cartões
+   pequenos), distribuídas para as três folhas ficarem equilibradas. Se a empresa crescer além do que cabe,
+   o PDF ganha folhas a mais em vez de espremer. */
 window.orgPDF = async () => {
   const ativos = orgAtivos(); if(!ativos.length){ toast("Nenhum colaborador ativo."); return; }
   const aba = window.open("", "_blank");
   try{
     await nfgCarregarPDF();
     const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4", orientation:"landscape" });
-    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12;
-    const ids = new Set(ativos.map(p=>p.id));
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12, AW = W - 2*M;
+    const ids = new Set(ativos.map(p=>p.id)), filhos = (id) => ativos.filter(p=>p.gestorId===id);
+    const lidera = (p) => filhos(p.id).length > 0;
     const raizes = ativos.filter(p=>!p.gestorId || !ids.has(p.gestorId));
     const cores = {}; orgLocais().forEach(l=>cores[l.nome] = l.cor);
     const rgb = (hex) => { const h = String(hex||"#5B5F6B").replace("#",""); const n = parseInt(h.length===3 ? h.split("").map(c=>c+c).join("") : h, 16); return [(n>>16)&255, (n>>8)&255, n&255]; };
-    const ordenar = (l) => [...l].sort((a,b)=>orgFilhos(b.id).length - orgFilhos(a.id).length || (a.funcao||"").localeCompare(b.funcao||"") || a.nome.localeCompare(b.nome));
-    // folhas: topo + cada líder com equipe (em largura, do topo para baixo)
-    const POR_FOLHA = 20, folhas = [{ tipo:"topo", pessoas:ordenar(raizes) }];
-    const fila = [...raizes], vistos = new Set();
-    while(fila.length){ const p = fila.shift(); if(vistos.has(p.id)) continue; vistos.add(p.id);
-      const filhos = ordenar(orgFilhos(p.id));
-      if(filhos.length){ if(!raizes.includes(p) || raizes.length > 1) for(let i = 0; i < filhos.length; i += POR_FOLHA) folhas.push({ tipo:"equipe", lider:p, pessoas:filhos.slice(i, i+POR_FOLHA), cont:i>0 }); }
-      filhos.forEach(f=>fila.push(f)); }
-    // no topo com uma raiz só, a folha 1 já mostra a equipe dela
-    if(raizes.length === 1){ folhas[0] = { tipo:"equipe", lider:raizes[0], pessoas:ordenar(orgFilhos(raizes[0].id)).slice(0, POR_FOLHA), cont:false, topo:true };
-      const resto = ordenar(orgFilhos(raizes[0].id)).slice(POR_FOLHA); for(let i = 0; i < resto.length; i += POR_FOLHA) folhas.splice(1 + i/POR_FOLHA, 0, { tipo:"equipe", lider:raizes[0], pessoas:resto.slice(i, i+POR_FOLHA), cont:true }); }
-    const paginaDe = {}; folhas.forEach((f, i)=>{ if(f.tipo==="equipe" && !f.cont && !(f.lider.id in paginaDe)) paginaDe[f.lider.id] = i + 1; });
-
-    const caixa = (p, x, y, w, h, grande) => {
-      const cor = rgb(cores[p.local]);
-      doc.setFillColor(255, 255, 255); doc.setDrawColor(205, 205, 212); doc.setLineWidth(0.3); doc.roundedRect(x, y, w, h, 2, 2, "FD");
-      doc.setFillColor(...cor); doc.roundedRect(x, y, 2.2, h, 1, 1, "F");
-      const fs = grande ? 18 : 15, fx = x + 4, fy = y + (h - fs)/2;
-      if(p.foto){ try{ doc.addImage(p.foto, /^data:image\/png/.test(p.foto) ? "PNG" : "JPEG", fx, fy, fs, fs); }catch(e){} }
-      else { doc.setFillColor(235, 235, 240); doc.circle(fx + fs/2, fy + fs/2, fs/2, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(grande ? 10 : 8.5); doc.setTextColor(90, 90, 100);
-        doc.text(p.nome.split(/\s+/).filter(Boolean).slice(0,2).map(s=>s[0]).join("").toUpperCase(), fx + fs/2, fy + fs/2 + 1.5, { align:"center" }); }
-      const tx = fx + fs + 2.5, tw = x + w - tx - 2;
-      doc.setFont("helvetica", "bold"); doc.setFontSize(grande ? 9.5 : 7.8); doc.setTextColor(20, 20, 26);
-      const nome = doc.splitTextToSize(p.nome, tw).slice(0, 2); doc.text(nome, tx, y + (grande ? 6.5 : 5.5));
-      let ty = y + (grande ? 6.5 : 5.5) + nome.length * (grande ? 3.8 : 3.2);
-      doc.setFont("helvetica", "normal"); doc.setFontSize(grande ? 7.5 : 6.4); doc.setTextColor(80, 80, 90);
-      if(p.funcao){ doc.text(doc.splitTextToSize(p.funcao, tw)[0], tx, ty); ty += grande ? 3.4 : 2.9; }
-      if(p.local){ doc.setTextColor(...cor); doc.setFont("helvetica", "bold"); doc.text(doc.splitTextToSize(p.local, tw)[0], tx, ty); }
-      const eq = orgEquipeTotal(p.id);
-      if(eq && !grande){ doc.setFillColor(20, 20, 26); const txt = `equipe ${eq}${paginaDe[p.id] ? ` · pág. ${paginaDe[p.id]}` : ""}`; doc.setFontSize(5.8); doc.setFont("helvetica", "bold");
-        const lw = doc.getTextWidth(txt) + 3; doc.roundedRect(x + w - lw - 1.5, y + h - 4.6, lw, 3.6, 1.2, 1.2, "F"); doc.setTextColor(255, 255, 255); doc.text(txt, x + w - lw/2 - 1.5, y + h - 2, { align:"center" }); }
+    const porNome = (a,b) => a.nome.localeCompare(b.nome, "pt-BR");
+    const foto = (p, x, y, s) => {
+      if(p.foto){ try{ doc.addImage(p.foto, /^data:image\/png/.test(p.foto) ? "PNG" : "JPEG", x, y, s, s); return; }catch(e){} }
+      doc.setFillColor(232, 232, 238); doc.rect(x, y, s, s, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(s*0.55); doc.setTextColor(110, 110, 120);
+      doc.text(p.nome.split(/\s+/).filter(Boolean).slice(0,2).map(t=>t[0]).join("").toUpperCase(), x + s/2, y + s/2 + s*0.18, { align:"center" });
     };
-    const total = folhas.length;
-    folhas.forEach((f, i)=>{
-      if(i) doc.addPage();
+    const corta = (t, w) => doc.splitTextToSize(String(t||""), w)[0] || "";
+
+    // ---------- blocos de equipe: cada líder com as pessoas que não lideram ninguém ----------
+    const ordemDFS = []; (function anda(l){ l.forEach(p=>{ ordemDFS.push(p); anda(filhos(p.id).sort((a,b)=>filhos(b.id).length - filhos(a.id).length || porNome(a,b))); }); })(raizes.sort(porNome));
+    const blocos = ordemDFS.filter(lidera).map(l=>({ lider:l, membros:filhos(l.id).filter(p=>!lidera(p)).sort((a,b)=>(a.funcao||"").localeCompare(b.funcao||"") || porNome(a,b)) })).filter(b=>b.membros.length);
+    const CW = 42.6, CH = 14.5, GX = 2.2, GY = 2.4, HB = 11;          // cartão pequeno e cabeçalho do bloco
+    blocos.forEach(b=>{ b.meia = b.membros.length <= 6; b.cols = b.meia ? 3 : 6; b.linhas = Math.ceil(b.membros.length / b.cols); b.h = HB + 3 + b.linhas*(CH+GY) + 2; });
+    // prateleiras: os blocos pequenos (até 6 pessoas) vão em dupla, lado a lado; a ordem segue a hierarquia
+    const prat = [], meias = blocos.filter(b=>b.meia);
+    blocos.forEach(b=>{ if(!b.meia) prat.push([b]); else if(b === meias[0]){ prat.push(meias.splice(0, 2)); } });
+    prat.forEach(s=>s.h = Math.max(...s.map(b=>b.h)) + 4);
+    // divide as prateleiras em 3 folhas (sem mudar a ordem) com a folha mais cheia o menor possível; só usa mais folhas se não couber
+    const Y0 = 24, AH = H - 18 - Y0, hs = prat.map(s=>s.h);
+    const dividir = (k) => { const n = hs.length, pre = [0]; hs.forEach(h=>pre.push(pre[pre.length-1] + h));
+      const best = Array.from({ length:k+1 }, () => Array(n+1).fill(Infinity)), corte = Array.from({ length:k+1 }, () => Array(n+1).fill(0)); best[0][0] = 0;
+      for(let g = 1; g <= k; g++) for(let i = 0; i <= n; i++) for(let j = 0; j <= i; j++){ const v = Math.max(best[g-1][j], pre[i] - pre[j]); if(v < best[g][i]){ best[g][i] = v; corte[g][i] = j; } }
+      const grupos = []; let i = n; for(let g = k; g >= 1; g--){ const j = corte[g][i]; grupos.unshift(prat.slice(j, i)); i = j; }
+      return { grupos, max:best[k][n] }; };
+    let k = 3, div = dividir(k); while(div.max > AH && k < 12){ k++; div = dividir(k); }
+    const folhasEq = div.grupos;
+    const folhaDaEquipe = {}; folhasEq.forEach((f, i)=>f.forEach(s=>s.forEach(b=>folhaDaEquipe[b.lider.id] = i + 2)));
+    const totalFolhas = 1 + folhasEq.filter((f, i)=>f.length || i < 3).length;
+
+    const cabecalho = (n, sub) => {
       doc.setFillColor(214, 40, 30); doc.rect(0, 0, W, 3, "F");
       doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(20, 20, 26); doc.text("ORGANOGRAMA — AVANCE LOGÍSTICA INTEGRADA", M, 12);
-      doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(90, 90, 100);
-      const sub = f.tipo==="topo" ? `Diretoria / topo da empresa · ${ativos.length} colaboradores ativos`
-        : `${f.topo ? "Topo da empresa · " : ""}Equipe de ${f.lider.nome}${f.lider.funcao ? ` (${f.lider.funcao})` : ""} · ${orgFilhos(f.lider.id).length} subordinado(s) direto(s) · ${orgEquipeTotal(f.lider.id)} na equipe toda${f.cont ? " · continuação" : ""}`;
-      doc.text(sub, M, 17.5);
-      doc.text(`Posição em ${fmtDataBR(orgHoje())}`, W-M, 12, { align:"right" });
-      const bw = 52, bh = 21, gap = 4, cols = 5, x0 = (W - (cols*bw + (cols-1)*gap)) / 2;
-      let topoY = 24;
-      if(f.tipo==="equipe"){
-        const lw = 78, lh = 25, lx = (W - lw)/2; caixa(f.lider, lx, topoY, lw, lh, true);
-        if(f.lider.gestorId && paginaDe[f.lider.gestorId]){ const g = ativos.find(x=>x.id===f.lider.gestorId); doc.setFont("helvetica", "normal"); doc.setFontSize(7); doc.setTextColor(120, 120, 130);
-          doc.text(`responde a ${g ? g.nome : ""} · pág. ${paginaDe[f.lider.gestorId]}`, W/2, topoY - 1.5, { align:"center" }); }
-        topoY += lh;
-      }
-      const ps = f.pessoas, linhas = Math.ceil(ps.length / cols), rowY = (r) => topoY + 14 + r*(bh + 9);
-      doc.setDrawColor(170, 170, 180); doc.setLineWidth(0.35);
-      if(f.tipo==="equipe" && ps.length){ doc.line(W/2, topoY, W/2, rowY(linhas-1) - 5); }
-      for(let r = 0; r < linhas; r++){
-        const linha = ps.slice(r*cols, r*cols + cols), n = linha.length, xs = (W - (n*bw + (n-1)*gap)) / 2, y = rowY(r);
-        const centros = linha.map((_, k)=>xs + k*(bw+gap) + bw/2);
-        if(f.tipo==="equipe"){ doc.line(Math.min(centros[0], W/2), y - 5, Math.max(centros[n-1], W/2), y - 5); centros.forEach(cx=>doc.line(cx, y - 5, cx, y)); }
-        linha.forEach((p, k)=>caixa(p, xs + k*(bw+gap), y, bw, bh, false));
-      }
-      // legenda dos locais e rodapé
-      const locs = orgLocais().filter(l=>ativos.some(p=>p.local===l.nome)); let lx = M;
-      doc.setFontSize(6.8); doc.setFont("helvetica", "normal");
-      let ly = H - 13;   // legenda quebra em linhas para caber na folha, à esquerda do nº da página
-      locs.forEach(l=>{ const t = `${l.nome} (${ativos.filter(p=>p.local===l.nome).length})`, tw = doc.getTextWidth(t) + 9;
-        if(lx + tw > W - M - 30){ lx = M; ly += 4.5; }
-        doc.setFillColor(...rgb(l.cor)); doc.rect(lx, ly - 2.4, 3, 3, "F"); doc.setTextColor(80, 80, 90); doc.text(t, lx + 4, ly); lx += tw; });
-      doc.setTextColor(140, 140, 150); doc.text(`Página ${i+1} de ${total}`, W-M, H-8.5, { align:"right" });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(90, 90, 100); doc.text(sub, M, 17.5);
+      doc.text(`Posição em ${fmtDataBR(orgHoje())} · ${ativos.length} colaboradores ativos`, W-M, 12, { align:"right" });
+      const locs = orgLocais().filter(l=>ativos.some(p=>p.local===l.nome)); let lx = M, ly = H - 11; doc.setFontSize(6.6);
+      locs.forEach(l=>{ const t = `${l.nome} (${ativos.filter(p=>p.local===l.nome).length})`, tw = doc.getTextWidth(t) + 8.5;
+        if(lx + tw > W - M - 26){ lx = M; ly += 4.2; }
+        doc.setFillColor(...rgb(l.cor)); doc.rect(lx, ly - 2.3, 2.8, 2.8, "F"); doc.setTextColor(80, 80, 90); doc.text(t, lx + 3.8, ly); lx += tw; });
+      doc.setTextColor(140, 140, 150); doc.text(`Folha ${n} de ${totalFolhas}`, W-M, H-7, { align:"right" });
+    };
+
+    // ---------- FOLHA 1: estrutura de liderança ----------
+    cabecalho(1, "Estrutura de liderança — quem responde a quem · tamanho de cada equipe e a folha onde ela está");
+    const arvore = (p) => ({ p, f:filhos(p.id).filter(lidera).sort((a,b)=>filhos(b.id).length - filhos(a.id).length || porNome(a,b)).map(arvore) });
+    const nos = raizes.filter(lidera).map(arvore).concat(raizes.filter(p=>!lidera(p)).map(p=>({ p, f:[] })));
+    const folhasArv = (n) => n.f.length ? sumArr(n.f.map(folhasArv)) : 1;
+    const prof = (n) => n.f.length ? 1 + Math.max(...n.f.map(prof)) : 1;
+    const unidades = sumArr(nos.map(folhasArv)), niveis = Math.max(...nos.map(prof));
+    const bw = Math.min(54, (AW - (unidades-1)*3) / unidades), bh = 23, dy = Math.min(42, (H - 40 - Y0 - bh) / Math.max(1, niveis-1));
+    const caixaL = (p, x, y, w) => {
+      const cor = rgb(cores[p.local]); doc.setFillColor(255, 255, 255); doc.setDrawColor(205, 205, 212); doc.setLineWidth(0.3); doc.roundedRect(x, y, w, bh, 2, 2, "FD");
+      doc.setFillColor(...cor); doc.rect(x, y, w, 2.2, "F");
+      const fs = Math.min(13, w*0.3); foto(p, x + (w - fs)/2, y + 3.4, fs);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(w < 36 ? 6.4 : 7.4); doc.setTextColor(20, 20, 26); doc.text(corta(p.nome, w - 2), x + w/2, y + fs + 6.6, { align:"center" });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(w < 36 ? 5.4 : 6.1); doc.setTextColor(90, 90, 100); doc.text(corta(p.funcao, w - 2), x + w/2, y + fs + 9.4, { align:"center" });
+      const eq = orgEquipeTotal(p.id); if(eq){ const t = `${eq} pessoa(s)${folhaDaEquipe[p.id] ? ` · folha ${folhaDaEquipe[p.id]}` : ""}`; doc.setFont("helvetica", "bold"); doc.setFontSize(5.4);
+        const tw = Math.min(w - 2, doc.getTextWidth(t) + 3); doc.setFillColor(20, 20, 26); doc.roundedRect(x + (w - tw)/2, y + bh + 0.8, tw, 3.4, 1.2, 1.2, "F"); doc.setTextColor(255, 255, 255); doc.text(t, x + w/2, y + bh + 3.2, { align:"center" }); }
+    };
+    let ux = M + (AW - (unidades*bw + (unidades-1)*3)) / 2;
+    const desenha = (n, nivel) => {
+      const u = folhasArv(n), largura = u*bw + (u-1)*3, x0 = ux, y = Y0 + 4 + nivel*dy;
+      let cxFilhos = [];
+      if(n.f.length){ n.f.forEach(c=>cxFilhos.push(desenha(c, nivel+1))); } else ux += largura + 3;
+      const cx = n.f.length ? (cxFilhos[0] + cxFilhos[cxFilhos.length-1]) / 2 : x0 + largura/2;
+      if(n.f.length){ const yb = y + bh + 6.5; doc.setDrawColor(170, 170, 180); doc.setLineWidth(0.35); doc.line(cx, y + bh + 4.4, cx, yb);
+        doc.line(Math.min(...cxFilhos), yb, Math.max(...cxFilhos), yb); cxFilhos.forEach(c=>doc.line(c, yb, c, Y0 + 4 + (nivel+1)*dy)); }
+      caixaL(n.p, cx - bw/2, y, bw);
+      return cx;
+    };
+    nos.forEach(n=>desenha(n, 0));
+
+    // ---------- FOLHAS 2 a 4: equipes ----------
+    const cartao = (p, x, y) => {
+      const cor = rgb(cores[p.local]); doc.setFillColor(255, 255, 255); doc.setDrawColor(215, 215, 222); doc.setLineWidth(0.25); doc.roundedRect(x, y, CW, CH, 1.5, 1.5, "FD");
+      doc.setFillColor(...cor); doc.rect(x, y, 1.6, CH, "F"); foto(p, x + 2.8, y + 1.75, 11);
+      const tx = x + 15.4, tw = CW - 16.4;
+      doc.setFont("helvetica", "bold"); doc.setFontSize(6.9); doc.setTextColor(20, 20, 26); doc.text(corta(p.nome, tw), tx, y + 4.8);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(5.8); doc.setTextColor(90, 90, 100); doc.text(corta(p.funcao, tw), tx, y + 8.2);
+      doc.setFont("helvetica", "bold"); doc.setTextColor(...cor); doc.text(corta(p.local, tw), tx, y + 11.5);
+    };
+    const bloco = (b, x, y, largura) => {
+      const cor = rgb(cores[b.lider.local]);
+      doc.setFillColor(...cor); doc.roundedRect(x, y, largura, HB, 2, 2, "F");
+      foto(b.lider, x + 1.5, y + 1.2, HB - 2.4);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(8.6); doc.setTextColor(255, 255, 255);
+      doc.text(corta(`Equipe de ${b.lider.nome}`, largura - 50), x + HB + 1.5, y + 4.8);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(6.6); doc.text(corta(`${b.lider.funcao || ""}${b.lider.local ? " · " + b.lider.local : ""}`, largura - 50), x + HB + 1.5, y + 8.6);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.text(`${b.membros.length} pessoa(s)`, x + largura - 3, y + 6.6, { align:"right" });
+      b.membros.forEach((p, k)=>cartao(p, x + (k % b.cols)*(CW + GX), y + HB + 3 + Math.floor(k / b.cols)*(CH + GY)));
+    };
+    const larguraCheia = 6*CW + 5*GX, meiaL = 3*CW + 2*GX, xc = M + (AW - larguraCheia)/2;
+    folhasEq.forEach((f, i)=>{
+      if(!f.length && i >= 3) return;
+      doc.addPage();
+      const quem = [...new Set(f.flat().map(b=>b.lider.nome))];
+      cabecalho(i + 2, f.length ? `Equipes: ${quem.join(" · ")}` : "Equipes");
+      let y = Y0 + 2;
+      f.forEach(s=>{ if(s.length === 2){ bloco(s[0], xc, y, meiaL); bloco(s[1], xc + larguraCheia - meiaL, y, meiaL); }
+        else bloco(s[0], xc, y, s[0].meia ? meiaL : larguraCheia);
+        y += s.h; });
     });
     const url = doc.output("bloburl");
     if(aba) aba.location.href = url; else doc.save(`Organograma_Avance_${orgHoje()}.pdf`);
@@ -9284,7 +9319,7 @@ renderers.organograma = () => {
       <div class="og-barra">
         <input id="og-busca" value="${osEsc(ORG_BUSCA)}" placeholder="🔎 Buscar por nome ou função" oninput="orgBuscar(this.value)">
         <div class="tabs" style="margin:0;">${aba("arvore","🌳 Organograma")}${aba("locais","🧩 Por local")}${aba("lista","📋 Lista")}${aba("desligados",`🗂️ Desligados (${deslig.length})`)}</div>
-        <button class="os-btn" onclick="orgPDF()" title="Organograma em PDF para imprimir em A4 (uma folha por equipe)">🖨️ Visualizar / imprimir PDF</button>
+        <button class="os-btn" onclick="orgPDF()" title="Organograma em PDF para imprimir em A4 (4 folhas)">🖨️ Visualizar / imprimir PDF</button>
         <button class="entry-submit" style="margin:0;" onclick="orgNovo()">+ Novo colaborador</button>
       </div>
       <div class="og-chips"><button class="og-chip ${!ORG_LOCAL?"on":""}" style="--c:#17181C" onclick="orgSetLocal(null)">Todos <b>${ativos.length}</b></button>
