@@ -6735,7 +6735,9 @@ function frotaCadastro(){
    Controle dos caminhões que estão na oficina: a oficina registra placa, data da parada, observação,
    peças necessárias e valor prévio → a Diretoria aprova (ou reprova) a compra e a execução → a oficina
    inicia e conclui o serviço. Tabela frota_oficina; a aprovação só pode ser dada pelo Diretor (trava no banco). */
-let FOF = { lista:[], carregado:false, carregando:false, erro:null };
+let FOF = { lista:[], carregado:false, carregando:false, erro:null, problemas:[], pecas:[], erroCat:null };
+const FOF_CATEGORIAS = ["Motor","Elétrica","Freio","Suspensão","Pneus","Ar-condicionado","Cabine / carroceria","Câmbio / embreagem","Outros"];
+const FOF_UNIDADES = ["un","par","jogo","kit","litro","metro"];
 let FOF_FORM = null;          // registro em edição/criação
 let FOF_FILTRO = "abertos";   // abertos | aguardando | aprovado | execucao | concluido | reprovado | todos
 const FOF_LOCAL = "avance_frota_oficina_v1";
@@ -6759,18 +6761,25 @@ function fofParadaSugerida(vid){
 }
 async function fofCarregar(){
   FOF.carregando = true;
-  if(!sb){ try{ FOF.lista = JSON.parse(localStorage.getItem(FOF_LOCAL)||"[]"); }catch(e){ FOF.lista = []; } }
+  if(!sb){ try{ FOF.lista = JSON.parse(localStorage.getItem(FOF_LOCAL)||"[]"); const c = JSON.parse(localStorage.getItem(FOF_LOCAL+"_cat")||"{}"); FOF.problemas = c.problemas||[]; FOF.pecas = c.pecas||[]; }catch(e){ FOF.lista = []; } }
   else {
-    const { data, error } = await sb.from("frota_oficina").select("*").order("data_parada", { ascending:false });
+    const [{ data, error }, pr, pc] = await Promise.all([ sb.from("frota_oficina").select("*").order("data_parada", { ascending:false }),
+      sb.from("frota_problemas").select("*").order("descricao"), sb.from("frota_pecas").select("*").order("nome") ]);
+    FOF.erroCat = pr.error ? pr.error.message : pc.error ? pc.error.message : null;
+    if(!pr.error) FOF.problemas = pr.data.map(x=>({ id:x.id, descricao:x.descricao||"", categoria:x.categoria||"" }));
+    if(!pc.error) FOF.pecas = pc.data.map(x=>({ id:x.id, nome:x.nome||"", unidade:x.unidade||"un", custo:x.custo_medio!=null ? Number(x.custo_medio) : null, atualizadoEm:x.atualizado_em||"" }));
     if(error) FOF.erro = error.message;
-    else { FOF.erro = null; FOF.lista = data.map(r=>({ id:r.id, veiculoId:r.veiculo_id, placa:r.placa||"", dataParada:r.data_parada||"", obs:r.observacao||"", pecas:r.pecas||"",
+    else { FOF.erro = null; FOF.lista = data.map(r=>({ id:r.id, veiculoId:r.veiculo_id, placa:r.placa||"", dataParada:r.data_parada||"", obs:r.observacao||"", pecas:r.pecas||"", itens:Array.isArray(r.pecas_itens) ? r.pecas_itens : [],
       valor:r.valor_previo!=null ? Number(r.valor_previo) : null, aprovacao:r.aprovacao||"", aprovadoPor:(r.aprovado_por||"").split("@")[0], aprovadoEm:r.aprovado_em||"", obsDiretoria:r.obs_diretoria||"",
       inicio:r.inicio_execucao||"", conclusao:r.conclusao||"", valorFinal:r.valor_final!=null ? Number(r.valor_final) : null, por:(r.criado_por||"").split("@")[0] })); }
   }
   FOF.carregando = false; FOF.carregado = true; frotaRerenderSeguro();
 }
 function fofGarantirCarga(){ if(!FOF.carregado && !FOF.carregando){ FOF.carregando = true; setTimeout(()=>fofCarregar(), 0); } }
-function fofSalvarLocal(){ if(!sb) try{ localStorage.setItem(FOF_LOCAL, JSON.stringify(FOF.lista)); }catch(e){} }
+function fofSalvarLocal(){ if(!sb) try{ localStorage.setItem(FOF_LOCAL, JSON.stringify(FOF.lista)); localStorage.setItem(FOF_LOCAL+"_cat", JSON.stringify({ problemas:FOF.problemas, pecas:FOF.pecas })); }catch(e){} }
+// Peças do registro: lista do cadastro (com quantidade e custo) + texto livre
+const fofTotalItens = (itens) => sumArr((itens||[]).map(i=>(Number(i.qtd)||0)*(Number(i.custo)||0)));
+function fofPecasTexto(r){ return [...(r.itens||[]).map(i=>`${String(i.qtd).replace(".", ",")} ${i.un||"un"} · ${i.nome}`), ...(r.pecas ? [r.pecas] : [])].join("\n"); }
 async function fofGravar(r, campos){
   if(sb){ const { error } = await sb.from("frota_oficina").update({ ...campos, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", r.id);
     if(error){ toast(/diretoria/i.test(error.message) ? "⚠ A aprovação é feita pela Diretoria." : /frota_oficina/i.test(error.message) ? "⚠ Falta rodar o SQL da Oficina no Supabase." : "⚠ Não salvou: " + error.message); return false; } }
@@ -6779,29 +6788,51 @@ async function fofGravar(r, campos){
 
 window.fofNovo = (vid) => {
   const v = vid ? frotaCarregar().veiculos.find(x=>x.id===vid) : null, reg = v ? frotaRegistro(v, FROTA_DATA) : null;
-  FOF_FORM = { id:null, veiculoId:v ? v.id : "", placa:v ? v.placa : "", dataParada:v ? fofParadaSugerida(v.id) : FROTA_DATA, obs:reg ? reg.obs||"" : "", pecas:"", valor:null };
+  FOF_FORM = { id:null, veiculoId:v ? v.id : "", placa:v ? v.placa : "", dataParada:v ? fofParadaSugerida(v.id) : FROTA_DATA, obs:reg ? reg.obs||"" : "", pecas:"", valor:null, itens:[], valorManual:false };
   frotaRerender(); setTimeout(()=>document.getElementById("fof-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60);
 };
-window.fofEditar = (id) => { const r = FOF.lista.find(x=>x.id===id); if(!r) return; FOF_FORM = { ...r }; frotaRerender(); setTimeout(()=>document.getElementById("fof-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); };
+// guarda no estado o que já foi digitado (o formulário é redesenhado ao incluir/tirar peças)
+function fofLerForm(){ const f = FOF_FORM; if(!f) return; const g = (id) => document.getElementById(id);
+  if(g("fof-veic")) f.veiculoId = g("fof-veic").value; if(g("fof-data")) f.dataParada = g("fof-data").value; if(g("fof-obs")) f.obs = g("fof-obs").value;
+  if(g("fof-pecas")) f.pecas = g("fof-pecas").value; if(g("fof-valor")) f.valor = osNum("fof-valor") || null; }
+function fofRecalcular(){ const f = FOF_FORM; if(f && !f.valorManual && f.itens.length) f.valor = Math.round(fofTotalItens(f.itens)*100)/100; }
+window.fofAddItem = () => {
+  fofLerForm(); const f = FOF_FORM; if(!f) return;
+  const txt = (document.getElementById("fof-it-peca")?.value || "").trim(); if(!txt){ toast("Escolha a peça."); return; }
+  const nome = txt.split(" — ")[0].trim(), cat = FOF.pecas.find(x=>x.nome.toUpperCase()===nome.toUpperCase());
+  const qtd = parseFloat(String(document.getElementById("fof-it-qtd")?.value||"1").replace(",", ".")) || 1;
+  if(!cat && !confirm(`"${nome}" não está no cadastro de peças. Incluir mesmo assim, sem custo médio?`)) return;
+  const ja = cat && f.itens.find(i=>i.pecaId===cat.id);
+  if(ja) ja.qtd = (Number(ja.qtd)||0) + qtd; else f.itens.push({ pecaId:cat ? cat.id : null, nome:cat ? cat.nome : nome.toUpperCase(), un:cat ? cat.unidade : "un", qtd, custo:cat ? cat.custo : null });
+  fofRecalcular(); frotaRerender(); setTimeout(()=>document.getElementById("fof-it-peca")?.focus(), 30);
+};
+window.fofQtdItem = (i, v) => { fofLerForm(); const n = parseFloat(String(v).replace(",", ".")); if(n > 0 && FOF_FORM){ FOF_FORM.itens[i].qtd = n; fofRecalcular(); frotaRerender(); } };
+window.fofTirarItem = (i) => { fofLerForm(); if(!FOF_FORM) return; FOF_FORM.itens.splice(i, 1); fofRecalcular(); frotaRerender(); };
+window.fofValorManual = () => { if(FOF_FORM) FOF_FORM.valorManual = true; };
+window.fofUsarTotal = () => { fofLerForm(); if(!FOF_FORM) return; FOF_FORM.valorManual = false; FOF_FORM.valor = Math.round(fofTotalItens(FOF_FORM.itens)*100)/100; frotaRerender(); };
+window.fofEditar = (id) => { const r = FOF.lista.find(x=>x.id===id); if(!r) return; FOF_FORM = { ...r, itens:(r.itens||[]).map(i=>({ ...i })), valorManual:true }; frotaRerender(); setTimeout(()=>document.getElementById("fof-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); };
 window.fofCancelar = () => { FOF_FORM = null; frotaRerender(); };
 window.fofSalvar = async () => {
   const f = FOF_FORM; if(!f) return;
   const g = (id) => document.getElementById(id)?.value || "";
   const vid = g("fof-veic"), v = frotaCarregar().veiculos.find(x=>x.id===vid);
-  const reg = { veiculo_id:v ? v.id : null, placa:v ? v.placa : f.placa, data_parada:g("fof-data") || null, observacao:g("fof-obs").trim() || null, pecas:g("fof-pecas").trim() || null, valor_previo:osNum("fof-valor") || null };
+  const itens = (f.itens||[]).map(i=>({ pecaId:i.pecaId||null, nome:i.nome, un:i.un||"un", qtd:Number(i.qtd)||0, custo:i.custo!=null ? Number(i.custo) : null }));
+  const reg = { veiculo_id:v ? v.id : null, placa:v ? v.placa : f.placa, data_parada:g("fof-data") || null, observacao:g("fof-obs").trim() || null, pecas:g("fof-pecas").trim() || null,
+    pecas_itens:itens, valor_previo:osNum("fof-valor") || null };
   if(!reg.placa){ toast("Escolha o caminhão."); return; }
   if(!reg.data_parada){ toast("Informe a data da parada."); return; }
-  if(!reg.pecas && !reg.observacao){ toast("Descreva o serviço (observação) ou as peças."); return; }
-  const mudouOrcamento = f.id && (f.pecas!==(reg.pecas||"") || (f.valor||null)!==(reg.valor_previo||null));
+  if(!reg.pecas && !reg.observacao && !itens.length){ toast("Descreva o problema ou as peças."); return; }
+  const antigo = f.id ? FOF.lista.find(x=>x.id===f.id) || f : f;
+  const mudouOrcamento = f.id && (antigo.pecas!==(reg.pecas||"") || JSON.stringify(antigo.itens||[])!==JSON.stringify(itens) || (antigo.valor||null)!==(reg.valor_previo||null));
   const voltarAprovacao = f.id && f.aprovacao && !f.inicio && mudouOrcamento;   // mudou peças/valor depois de decidido → volta para a Diretoria
   if(voltarAprovacao && !confirm("Peças ou valor mudaram. O registro volta para a aprovação da Diretoria. Continuar?")) return;
   const banco = { ...reg, ...(voltarAprovacao ? { aprovacao:null, aprovado_por:null, aprovado_em:null } : {}), atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
   let id = f.id;
   if(sb){ const q = id ? sb.from("frota_oficina").update(banco).eq("id", id).select("id").single() : sb.from("frota_oficina").insert({ ...banco, criado_por:MEU_EMAIL }).select("id").single();
-    const { data, error } = await q; if(error){ toast(/frota_oficina/i.test(error.message) ? "⚠ Falta rodar o SQL da Oficina no Supabase." : "⚠ Não salvou: " + error.message); return; } id = data.id; }
+    const { data, error } = await q; if(error){ toast(/frota_oficina|pecas_itens/i.test(error.message) ? "⚠ Falta rodar o SQL da Oficina (cadastros) no Supabase." : "⚠ Não salvou: " + error.message); return; } id = data.id; }
   else if(!id) id = osNovoId();
   const local = { ...(FOF.lista.find(x=>x.id===id) || { aprovacao:"", inicio:"", conclusao:"", por:(MEU_EMAIL||"").split("@")[0] }), id, veiculoId:reg.veiculo_id, placa:reg.placa, dataParada:reg.data_parada,
-    obs:reg.observacao||"", pecas:reg.pecas||"", valor:reg.valor_previo, ...(voltarAprovacao ? { aprovacao:"", aprovadoPor:"", aprovadoEm:"" } : {}) };
+    obs:reg.observacao||"", pecas:reg.pecas||"", itens, valor:reg.valor_previo, ...(voltarAprovacao ? { aprovacao:"", aprovadoPor:"", aprovadoEm:"" } : {}) };
   const k = FOF.lista.findIndex(x=>x.id===id); if(k>=0) FOF.lista[k] = local; else FOF.lista.unshift(local);
   fofSalvarLocal(); FOF_FORM = null; toast(f.id ? "Registro atualizado ✓" : `${local.placa} registrado ✓ — aguardando aprovação da Diretoria`); frotaRerender();
 };
@@ -6846,6 +6877,82 @@ window.fofExcluir = async (id) => {
   if(sb){ const { error } = await sb.from("frota_oficina").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
   FOF.lista = FOF.lista.filter(x=>x.id!==id); fofSalvarLocal(); frotaRerender();
 };
+/* ---------- Cadastro de problemas e de peças (custo médio) ---------- */
+async function fofCatGravar(tabela, op, campos, id){
+  if(!sb) return { id: id || osNovoId() };
+  const agora = { atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
+  const r = op==="insert" ? await sb.from(tabela).insert({ ...campos, ...agora, criado_por:MEU_EMAIL }).select("id").single()
+    : op==="update" ? await sb.from(tabela).update({ ...campos, ...agora }).eq("id", id).select("id").single() : await sb.from(tabela).delete().eq("id", id);
+  if(r.error){ toast(new RegExp(tabela).test(r.error.message) ? "⚠ Falta rodar o SQL dos cadastros da Oficina no Supabase." : /duplicate|unique/i.test(r.error.message) ? "⚠ Já existe esse item no cadastro." : "⚠ Não salvou: " + r.error.message); return null; }
+  return r.data || { id };
+}
+window.fofProbAdd = async () => {
+  const d = (document.getElementById("fof-prob-desc")?.value || "").trim().toUpperCase(), c = document.getElementById("fof-prob-cat")?.value || "Outros";
+  if(!d){ toast("Descreva o problema."); return; }
+  if(FOF.problemas.some(x=>x.descricao===d)){ toast("Esse problema já está cadastrado."); return; }
+  const r = await fofCatGravar("frota_problemas", "insert", { descricao:d, categoria:c }); if(!r) return;
+  FOF.problemas.push({ id:r.id, descricao:d, categoria:c }); FOF.problemas.sort((a,b)=>a.descricao.localeCompare(b.descricao, "pt-BR")); fofSalvarLocal(); toast("Problema cadastrado ✓"); frotaRerender();
+};
+window.fofProbEditar = async (id, campo, v) => { const x = FOF.problemas.find(p=>p.id===id); if(!x) return; const val = campo==="descricao" ? v.trim().toUpperCase() : v; if(!val) return;
+  if(await fofCatGravar("frota_problemas", "update", { [campo]:val }, id)){ x[campo] = val; fofSalvarLocal(); toast("Cadastro atualizado ✓"); } };
+window.fofProbExcluir = async (id) => { const x = FOF.problemas.find(p=>p.id===id); if(!x || !confirm(`Excluir o problema "${x.descricao}" do cadastro?`)) return;
+  if(await fofCatGravar("frota_problemas", "delete", null, id)){ FOF.problemas = FOF.problemas.filter(p=>p.id!==id); fofSalvarLocal(); frotaRerender(); } };
+window.fofPecaAdd = async () => {
+  const n = (document.getElementById("fof-peca-nome")?.value || "").trim().toUpperCase(), u = document.getElementById("fof-peca-un")?.value || "un", c = osNum("fof-peca-custo") || null;
+  if(!n){ toast("Informe o nome da peça."); return; }
+  if(FOF.pecas.some(x=>x.nome===n)){ toast("Essa peça já está cadastrada."); return; }
+  const r = await fofCatGravar("frota_pecas", "insert", { nome:n, unidade:u, custo_medio:c }); if(!r) return;
+  FOF.pecas.push({ id:r.id, nome:n, unidade:u, custo:c, atualizadoEm:new Date().toISOString() }); FOF.pecas.sort((a,b)=>a.nome.localeCompare(b.nome, "pt-BR")); fofSalvarLocal(); toast("Peça cadastrada ✓"); frotaRerender();
+};
+window.fofPecaEditar = async (id, campo, el) => { const x = FOF.pecas.find(p=>p.id===id); if(!x) return;
+  const val = campo==="custo_medio" ? (()=>{ const t = el.value.replace(/[R$\s]/g,""); const n = parseFloat(t.includes(",") ? t.replace(/\./g,"").replace(",",".") : t); return isNaN(n) ? null : n; })() : campo==="nome" ? el.value.trim().toUpperCase() : el.value;
+  if(campo==="nome" && !val) return;
+  if(await fofCatGravar("frota_pecas", "update", { [campo]:val }, id)){ if(campo==="custo_medio"){ x.custo = val; x.atualizadoEm = new Date().toISOString(); } else if(campo==="nome") x.nome = val; else x.unidade = val; fofSalvarLocal(); toast("Peça atualizada ✓"); } };
+window.fofPecaExcluir = async (id) => { const x = FOF.pecas.find(p=>p.id===id); if(!x || !confirm(`Excluir a peça "${x.nome}" do cadastro?`)) return;
+  if(await fofCatGravar("frota_pecas", "delete", null, id)){ FOF.pecas = FOF.pecas.filter(p=>p.id!==id); fofSalvarLocal(); frotaRerender(); } };
+function fofCadastrosHTML(){
+  const usosProb = (d) => FOF.lista.filter(r=>(r.obs||"").toUpperCase().includes(d)).length;
+  const usosPeca = (id) => FOF.lista.filter(r=>(r.itens||[]).some(i=>i.pecaId===id)).length;
+  const brl = (v) => v!=null ? "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }) : "";
+  return `${FOF.erroCat ? `<div class="os-alerta amber" style="margin-bottom:16px;">⚠️ Cadastros indisponíveis: ${osEsc(FOF.erroCat)}. Rode o SQL dos cadastros da Oficina no Supabase.</div>` : ""}
+  <div class="grid-2 fof-cads">
+    <div class="panel">
+      <h3 style="margin:0;">🧩 Cadastro de problemas (${FOF.problemas.length})</h3>
+      <div class="hint">Os problemas cadastrados aparecem na lista da Observação ao registrar um caminhão.</div>
+      <div class="fof-cad-add os-form">
+        <input id="fof-prob-desc" placeholder="ex: VAZAMENTO DE ÓLEO NO MOTOR" style="text-transform:uppercase; flex:2; min-width:180px;" onkeydown="if(event.key==='Enter') fofProbAdd()">
+        <select id="fof-prob-cat" style="flex:1; min-width:140px;">${FOF_CATEGORIAS.map(c=>`<option>${c}</option>`).join("")}</select>
+        <button class="entry-submit" style="margin:0;" onclick="fofProbAdd()">+ Cadastrar</button>
+      </div>
+      ${FOF.problemas.length ? `<div style="overflow-x:auto; max-height:420px; overflow-y:auto; margin-top:10px;"><table class="nf-tab">
+        <thead><tr><th>Problema</th><th>Categoria</th><th class="num">Usos</th><th></th></tr></thead>
+        <tbody>${FOF.problemas.map(x=>`<tr>
+          <td><input class="fof-cad-in" value="${osEsc(x.descricao)}" onchange="fofProbEditar('${x.id}','descricao',this.value)"></td>
+          <td><select class="fof-cad-in" onchange="fofProbEditar('${x.id}','categoria',this.value)">${FOF_CATEGORIAS.map(c=>`<option ${c===x.categoria?"selected":""}>${c}</option>`).join("")}</select></td>
+          <td class="num">${usosProb(x.descricao)}</td><td><button class="os-link" onclick="fofProbExcluir('${x.id}')" title="Excluir">🗑️</button></td></tr>`).join("")}</tbody>
+      </table></div>` : `<div class="empty-state" style="padding:14px;"><p>Nenhum problema cadastrado ainda.</p></div>`}
+    </div>
+    <div class="panel">
+      <h3 style="margin:0;">🔩 Cadastro de peças — custo médio (${FOF.pecas.length})</h3>
+      <div class="hint">Ao registrar um caminhão, escolha as peças e a quantidade: o valor prévio sai do custo médio.</div>
+      <div class="fof-cad-add os-form">
+        <input id="fof-peca-nome" placeholder="ex: KIT EMBREAGEM" style="text-transform:uppercase; flex:2; min-width:160px;" onkeydown="if(event.key==='Enter') fofPecaAdd()">
+        <select id="fof-peca-un" style="width:90px;">${FOF_UNIDADES.map(u=>`<option>${u}</option>`).join("")}</select>
+        <input id="fof-peca-custo" placeholder="R$ custo médio" inputmode="numeric" style="width:140px;" oninput="osMascaraBRL(this)" onkeydown="if(event.key==='Enter') fofPecaAdd()">
+        <button class="entry-submit" style="margin:0;" onclick="fofPecaAdd()">+ Cadastrar</button>
+      </div>
+      ${FOF.pecas.length ? `<div style="overflow-x:auto; max-height:420px; overflow-y:auto; margin-top:10px;"><table class="nf-tab">
+        <thead><tr><th>Peça</th><th>Un.</th><th class="num">Custo médio</th><th class="num">Usos</th><th></th></tr></thead>
+        <tbody>${FOF.pecas.map(x=>`<tr>
+          <td><input class="fof-cad-in" value="${osEsc(x.nome)}" onchange="fofPecaEditar('${x.id}','nome',this)"></td>
+          <td><select class="fof-cad-in" style="width:76px;" onchange="fofPecaEditar('${x.id}','unidade',this)">${FOF_UNIDADES.map(u=>`<option ${u===x.unidade?"selected":""}>${u}</option>`).join("")}</select></td>
+          <td class="num"><input class="fof-cad-in" style="width:120px; text-align:right;" value="${brl(x.custo)}" placeholder="R$ —" inputmode="numeric" oninput="osMascaraBRL(this)" onchange="fofPecaEditar('${x.id}','custo_medio',this)">
+            ${x.atualizadoEm ? `<div class="hint" style="margin:0;">atual. ${fmtDataBR(x.atualizadoEm.slice(0,10))}</div>` : ""}</td>
+          <td class="num">${usosPeca(x.id)}</td><td><button class="os-link" onclick="fofPecaExcluir('${x.id}')" title="Excluir">🗑️</button></td></tr>`).join("")}</tbody>
+      </table></div>` : `<div class="empty-state" style="padding:14px;"><p>Nenhuma peça cadastrada ainda.</p></div>`}
+    </div>
+  </div>`;
+}
 window.fofFiltro = (f) => { FOF_FILTRO = FOF_FILTRO===f ? "abertos" : f; frotaRerender(); };
 
 function frotaOficina(itens){
@@ -6885,10 +6992,27 @@ function frotaOficina(itens){
       <div class="nf-grid" style="grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); margin-top:10px;">
         <label>Placa<select id="fof-veic"><option value="">Selecione</option>${veics.map(v=>`<option value="${v.id}" ${v.id===f.veiculoId || (!f.veiculoId && v.placa===f.placa) ? "selected" : ""}>${String(v.ordem).padStart(2,"0")} · ${osEsc(v.placa)}</option>`).join("")}</select></label>
         <label>Data da parada do caminhão<input type="date" id="fof-data" value="${f.dataParada||""}"></label>
-        <label>Valor prévio<input id="fof-valor" inputmode="numeric" placeholder="R$ 0,00" value="${f.valor ? "R$ " + f.valor.toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }) : ""}" oninput="osMascaraBRL(this)"></label>
+        <label>Valor prévio ${(f.itens||[]).length && !f.valorManual ? "<small>(soma das peças)</small>" : ""}<input id="fof-valor" inputmode="numeric" placeholder="R$ 0,00" value="${f.valor ? "R$ " + f.valor.toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }) : ""}" oninput="osMascaraBRL(this); fofValorManual()"></label>
       </div>
-      <label>Observação (o problema)<input id="fof-obs" value="${osEsc(f.obs||"")}" placeholder="ex: problema no motor, ar-condicionado..."></label>
-      <label>Peças (o que precisa comprar)<textarea id="fof-pecas" rows="3" placeholder="uma peça por linha, ex: 2 pneus 295/80, kit embreagem...">${osEsc(f.pecas||"")}</textarea></label>
+      <label>Observação (o problema)<input id="fof-obs" list="fof-probs" value="${osEsc(f.obs||"")}" placeholder="escolha um problema cadastrado ou descreva"></label>
+      <datalist id="fof-probs">${FOF.problemas.map(x=>`<option value="${osEsc(x.descricao)}">${osEsc(x.categoria)}</option>`).join("")}</datalist>
+      <div class="fof-itens">
+        <div class="fof-cad-add os-form" style="margin-top:0;">
+          <label style="flex:2; min-width:200px; margin:0;">Peça do cadastro<input id="fof-it-peca" list="fof-pecs" placeholder="${FOF.pecas.length ? "comece a digitar o nome da peça" : "cadastre as peças no quadro abaixo"}" onkeydown="if(event.key==='Enter') fofAddItem()"></label>
+          <label style="width:90px; margin:0;">Qtd<input id="fof-it-qtd" value="1" inputmode="decimal" onkeydown="if(event.key==='Enter') fofAddItem()"></label>
+          <button class="entry-submit" style="margin:0;" onclick="fofAddItem()">+ Peça</button>
+        </div>
+        <datalist id="fof-pecs">${FOF.pecas.map(x=>`<option value="${osEsc(x.nome)} — ${x.custo!=null ? fmtBRL2(x.custo) : "sem custo"} / ${x.unidade}">`).join("")}</datalist>
+        ${(f.itens||[]).length ? `<table class="nf-tab" style="margin-top:8px;">
+          <thead><tr><th>Peça</th><th class="num">Qtd</th><th class="num">Custo médio</th><th class="num">Subtotal</th><th></th></tr></thead>
+          <tbody>${f.itens.map((i,k)=>`<tr><td><b>${osEsc(i.nome)}</b></td>
+            <td class="num"><input class="bal-num" style="width:64px; text-align:right;" value="${String(i.qtd).replace(".", ",")}" inputmode="decimal" onchange="fofQtdItem(${k}, this.value)"> ${osEsc(i.un||"un")}</td>
+            <td class="num">${i.custo!=null ? fmtBRL2(i.custo) : "—"}</td><td class="num"><b>${fmtBRL2((Number(i.qtd)||0)*(Number(i.custo)||0))}</b></td>
+            <td><button class="os-link" onclick="fofTirarItem(${k})" title="Tirar">🗑️</button></td></tr>`).join("")}</tbody>
+          <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="3">Total das peças (custo médio)</td><td class="num">${fmtBRL2(fofTotalItens(f.itens))}</td><td>${f.valorManual ? `<button class="os-link" onclick="fofUsarTotal()" title="Usar este total como valor prévio">usar</button>` : ""}</td></tr></tfoot>
+        </table>` : ""}
+      </div>
+      <label>Outras peças / detalhes (opcional)<textarea id="fof-pecas" rows="2" placeholder="o que não está no cadastro, ex: mão de obra terceirizada...">${osEsc(f.pecas||"")}</textarea></label>
       <button class="entry-submit" onclick="fofSalvar()">${f.id ? "💾 Salvar alterações" : "💾 Registrar e enviar para aprovação"}</button>
     </div>` : ""}
 
@@ -6915,7 +7039,7 @@ function frotaOficina(itens){
             <td><b>${osEsc(r.placa)}</b>${v ? `<div class="hint" style="margin:0;">nº ${String(v.ordem).padStart(2,"0")}</div>` : ""}</td>
             <td style="white-space:nowrap;">${r.dataParada ? fmtDataBR(r.dataParada) : "—"}${dias!=null ? `<div class="hint" style="margin:0; ${dias>7 && st!=="concluido" ? "color:var(--red); font-weight:700;" : ""}">${st==="concluido" ? `ficou ${dias} dia(s)` : `há ${dias} dia(s)`}</div>` : ""}</td>
             <td style="max-width:220px;">${osEsc(r.obs)||"—"}</td>
-            <td style="max-width:260px; white-space:pre-line; font-size:12.5px;">${osEsc(r.pecas)||"—"}</td>
+            <td style="max-width:260px; white-space:pre-line; font-size:12.5px;">${osEsc(fofPecasTexto(r))||"—"}</td>
             <td class="num"><b>${r.valor!=null ? fmtBRL2(r.valor) : "—"}</b></td>
             <td><span class="badge ${s.badge}">${s.icone} ${s.curto}</span>
               ${r.aprovacao ? `<div class="hint" style="margin:2px 0 0;">${r.aprovacao==="aprovado" ? "aprovado" : "reprovado"} por ${osEsc(r.aprovadoPor||"—")}${r.aprovadoEm ? ` · ${fmtDataBR(r.aprovadoEm.slice(0,10))}` : ""}${fofPodeAprovar() && !r.inicio ? ` <button class="os-link" onclick="fofDesfazerAprovacao('${r.id}')">desfazer</button>` : ""}</div>` : ""}
@@ -6926,7 +7050,8 @@ function frotaOficina(itens){
           </tr>`; }).join("")}</tbody>
         <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="4">Total (${lista.length})</td><td class="num">${fmtBRL2(sumArr(lista.map(x=>x.r.valor||0)))}</td><td colspan="3"></td></tr></tfoot>
       </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nenhum caminhão neste filtro.</p></div>`}
-    </div>`;
+    </div>
+    ${fofCadastrosHTML()}`;
 }
 
 renderers.frota = () => {
