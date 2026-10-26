@@ -444,7 +444,7 @@ const PAGINAS_SO_DIRETOR = ["gerencial","faturamento","emissaonf","contaspagar",
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"] };
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
@@ -484,9 +484,10 @@ function mkChart(id, config){
 function navigate(page){
   // Reforço além de esconder os botões no menu: mesmo se alguém forçar a navegação (ex: console do
   // navegador), quem não é Diretor cai de volta no Painel Executivo.
-  if(PAGINAS_SO_DIRETOR.includes(page) && MEU_PAPEL !== "diretor") page = "overview";
+  // Perfis restritos só abrem as telas deles (que podem ser telas da Diretoria, ex: Organograma)
   const restritas = PAGINAS_RESTRITAS[MEU_PAPEL];
-  if(restritas && !restritas.includes(page)) page = restritas[0];
+  if(restritas){ if(!restritas.includes(page)) page = restritas[0]; }
+  else if(PAGINAS_SO_DIRETOR.includes(page) && MEU_PAPEL !== "diretor") page = "overview";
   document.getElementById("pageTitle").textContent = titles[page][0];
   document.getElementById("pageSub").textContent = titles[page][1];
   document.querySelectorAll("nav.menu button").forEach(b=>{
@@ -8536,6 +8537,7 @@ renderers.gerencial = () => `<div class="page-head nfg-head"><div><h2>Painel Ger
 renderers.emissaonf = () => {
   if(MEU_PAPEL === "manutencao") return `<div class="page-head"><h2>O.S de Manutenção</h2></div>
     <div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">🔧</div><h4>Esta tela foi desativada</h4><p>A O.S de Manutenção foi retirada do sistema. Fale com a diretoria.</p></div></div>`;
+  if(MEU_PAPEL === "administrativo") NF_ABA = "os";   // perfil Administrativo: só a Emissão de O.S
   if(!["nf","nfe","os"].includes(NF_ABA)) NF_ABA = "nf";
   const abas = `
     <div class="tabs" style="margin-bottom:14px;">
@@ -8543,7 +8545,7 @@ renderers.emissaonf = () => {
       <button class="tab-btn ${NF_ABA==="nfe"?"active":""}" onclick="setNfAba('nfe')">📑 NF Emitidas</button>
       <button class="tab-btn ${NF_ABA==="os"?"active":""}" onclick="setNfAba('os')">🛠️ Emissão de O.S</button>
     </div>`;
-  if(NF_ABA === "os") return `<div class="page-head"><h2>Emissão de O.S</h2><p>Pré O.S lançadas pela operação no planejamento do dia → conferência do administrativo → O.S para a Combitrans</p></div>` + abas + osePagina();
+  if(NF_ABA === "os") return `<div class="page-head"><h2>Emissão de O.S</h2><p>Pré O.S lançadas pela operação no planejamento do dia → conferência do administrativo → O.S para a Combitrans</p></div>` + (MEU_PAPEL === "administrativo" ? "" : abas) + osePagina();
   const cab = NF_ABA === "nfe"
     ? `<div class="page-head"><h2>NF Emitidas</h2><p>Notas fiscais emitidas por atividade — número, NF, valor, data de emissão e observação</p></div>`
     : `<div class="page-head"><h2>Emissão de NF</h2><p>Lançamento das notas por contrato — serviço ou balsa, deadline, entrega da minuta e vencimento · mesmos dados da tela Faturamento</p></div>`;
@@ -8895,7 +8897,7 @@ const OSE_CFG_PADRAO = {
   cliente:"COMBITRANS AMAZONAS LTDA", clienteEndereco:"Rua Ponta Grossa, 303 - Col. Oliveira Machado", clienteCnpj:"05.501.594/0002-19",
 };
 const oseVeValores = () => MEU_PAPEL !== "oficina";
-const osePodeEmitir = () => !sb || ["diretor","coordenacao"].includes(MEU_PAPEL);
+const osePodeEmitir = () => !sb || ["diretor","coordenacao","administrativo"].includes(MEU_PAPEL);
 function oseUn(serv){ return /METRO|\(M\)|MTS/i.test(serv||"") ? "m" : "un"; }
 function oseValorItem(it){ const mo = it.cobrar==="mat" ? 0 : (it.mo||0), mat = it.cobrar==="mo" ? 0 : (it.mat||0); return (mo + mat) * (Number(it.qtd)||0); }
 function oseValor(o){ return sumArr((o.itens||[]).map(oseValorItem)); }
@@ -9115,7 +9117,7 @@ async function oseVincularNF(osId, nf){
 // NF já emitida antes: informa o número (liga à NF das NF Emitidas quando encontrar)
 window.oseInformarNF = async (id) => {
   const o = OSE.lista.find(x=>x.id===id); if(!o) return;
-  if(!NFE.carregado && !NFE.carregando) await nfeCarregar();
+  if(MEU_PAPEL !== "administrativo" && !NFE.carregado && !NFE.carregando) await nfeCarregar();
   const num = (prompt(`Nº da NF emitida para a O.S ${oseNum(o.numero)}:`) || "").trim().replace(/^\/|\/$/g,""); if(!num) return;
   const nf = NFE.lista.find(r=>r.nf===num || String(r.nf).split("/").includes(num));
   if(!nf && !confirm(`A NF ${num} não está nas NF Emitidas. Registrar só o número na O.S?`)) return;
@@ -9131,7 +9133,8 @@ function oseSituacaoHTML(o){
   if(st.k==="aguardando") return `${base}<div class="hint" style="margin:2px 0 4px;">${st.lim ? `limite ${fmtDataBR(st.lim)}` : ""}</div>
     <span style="white-space:nowrap;"><input type="date" id="ose-ass-${o.id}" value="${hoje}" class="nfe-pg"> <button class="os-btn sm" onclick="oseAssinada('${o.id}')">✍️ Retorno assinado</button></span>`;
   if(st.k==="assinada") return `${base}<div class="hint" style="margin:2px 0 4px;">assinada em ${fmtDataBR(o.assinadaEm)} <button class="os-link" onclick="oseDesfazerAssinatura('${o.id}')">desfazer</button></div>
-    <span style="white-space:nowrap;"><button class="os-btn sm green" onclick="oseEmitirNF('${o.id}')">🧾 Emitir NF</button> <button class="os-link" onclick="oseInformarNF('${o.id}')">já emiti — informar nº</button></span>`;
+    <span style="white-space:nowrap;">${MEU_PAPEL === "administrativo" ? `<button class="os-btn sm green" onclick="oseInformarNF('${o.id}')">🧾 Informar nº da NF</button>`
+      : `<button class="os-btn sm green" onclick="oseEmitirNF('${o.id}')">🧾 Emitir NF</button> <button class="os-link" onclick="oseInformarNF('${o.id}')">já emiti — informar nº</button>`}</span>`;
   return `${base}<div class="hint" style="margin:2px 0 0;">${o.nfEm ? `em ${fmtDataBR(o.nfEm)} · ` : ""}assinada ${o.assinadaEm ? fmtDataBR(o.assinadaEm) : "—"} <button class="os-link" onclick="oseDesvincularNF('${o.id}')">desfazer</button></div>`;
 }
 
@@ -10058,6 +10061,7 @@ async function carregarGestaoAcessos(){
               <option value="coordenacao" ${u.papel==="coordenacao"?"selected":""}>Coordenação (só Emissão de NF)</option>
 ${u.papel==="manutencao" ? `<option value="manutencao" selected>Manutenção (tela desativada)</option>` : ""}
               <option value="rh" ${u.papel==="rh"?"selected":""}>RH (só Organograma)</option>
+              <option value="administrativo" ${u.papel==="administrativo"?"selected":""}>Administrativo (Emissão de O.S + Organograma)</option>
               <option value="oficina" ${u.papel==="oficina"?"selected":""}>Oficina (só Controle de carretas)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
