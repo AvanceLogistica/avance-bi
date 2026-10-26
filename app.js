@@ -10321,7 +10321,7 @@ window.sinAddAnexos = async (input) => {
   const arqs = [...(input.files||[])]; let n = 0;
   for(const a of arqs){
     try{
-      if(/^image\//.test(a.type)) f.anexos.push(await sinReduzirFoto(a));
+      if(/^image\//.test(a.type)){ if(f.anexos.filter(x=>/^image\//.test(x.tipo)).length >= 2){ toast("Limite de 2 fotos — tire uma para trocar."); continue; } f.anexos.push(await sinReduzirFoto(a)); }
       else if(a.size > SIN_MAX_ARQ){ toast(`⚠ ${a.name} passa de 4 MB — não foi anexado.`); continue; }
       else f.anexos.push(await sinLerArquivo(a));
       n++;
@@ -10404,7 +10404,7 @@ async function sinPDFDoc(r){
     const cw = (W - 2*M - 6) / 2; let col = 0, linhaAlt = 0;
     for(const f of fotos){
       const d = f.w && f.h ? { w:f.w, h:f.h } : await sinDimImg(f.dados);
-      const h = Math.min(cw * d.h / d.w, 95), w = h * d.w / d.h;
+      const h = Math.min(cw * 0.6 * d.h / d.w, 40), w = h * d.w / d.h;   // compactas: até 4 cm de altura
       if(col === 0){ quebra(h + 8); linhaAlt = 0; }
       const x = M + col*(cw+6) + (cw - w)/2;
       try{ doc.addImage(f.dados, "JPEG", x, y, w, h); }catch(e){}
@@ -10416,7 +10416,7 @@ async function sinPDFDoc(r){
     if(outros.length){ quebra(8 + outros.length*5); doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(20, 20, 26); doc.text("Outros arquivos anexados ao registro:", M, y+3); y += 8;
       doc.setFont("helvetica", "normal"); outros.forEach(a=>{ doc.text(`• ${a.nome}`, M+3, y); y += 5; }); }
   }
-  quebra(30); y += 14; doc.setDrawColor(150, 150, 160); doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(80, 80, 90);
+  quebra(22); y += 10; doc.setDrawColor(150, 150, 160); doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(80, 80, 90);
   doc.line(M, y, M+80, y); doc.text("Responsável pelo registro", M, y+4.5); doc.line(W-M-80, y, W-M, y); doc.text("Gestor da frota / Diretoria", W-M-80, y+4.5);
   const np = doc.internal.getNumberOfPages();
   for(let i = 1; i <= np; i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(140, 140, 150); doc.text(`Sinistro nº ${sinNum(r.numero)} · ${r.placa} · gerado em ${fmtDataBR(frotaHojeISO())} às ${frotaHora()}`, M, H-7); doc.text(`Página ${i} de ${np}`, W-M, H-7, { align:"right" }); }
@@ -10471,10 +10471,18 @@ function sinPagina(){
         </div>
       </div>
       <div class="sin-anexos">
-        <label class="sin-q" style="margin:0;"><span>Anexo de evidência (fotos ou arquivos)</span>
-          <input type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt" onchange="sinAddAnexos(this)"></label>
-        ${f.anexos.length ? `<div class="sin-thumbs">${f.anexos.map((a,i)=>`<div class="sin-thumb">${/^image\//.test(a.tipo) ? `<img src="${a.dados}" alt="${osEsc(a.nome)}" onclick="sinVerAnexo(null, ${i})">` : `<div class="sin-arq" onclick="sinVerAnexo(null, ${i})">📎<span>${osEsc(a.nome)}</span></div>`}
-          <button class="os-link" onclick="sinTirarAnexo(${i})" title="Tirar">🗑️</button></div>`).join("")}</div>` : `<div class="hint" style="margin:6px 0 0;">Fotos são reduzidas automaticamente; outros arquivos até 4 MB.</div>`}
+        <span class="sin-plano-tit" style="margin-bottom:6px;">Evidências</span>
+        <div class="sin-ev">
+          ${(()=>{ const fotos = f.anexos.map((a,i)=>({ a, i })).filter(x=>/^image\//.test(x.a.tipo));
+            return [0, 1].map(k=>{ const x = fotos[k];
+              return x ? `<div class="sin-foto"><img src="${x.a.dados}" alt="Foto ${k+1}" onclick="sinVerAnexo(null, ${x.i})"><button class="sin-foto-x" onclick="sinTirarAnexo(${x.i})" title="Tirar foto">✕</button><small>Foto ${k+1}</small></div>`
+                : `<label class="sin-foto vazia"><input type="file" accept="image/*" onchange="sinAddAnexos(this)" style="display:none;">📷<small>Foto ${k+1}</small></label>`; }).join(""); })()}
+          <div class="sin-arqs">
+            <label class="os-btn sm" style="cursor:pointer;">📎 Anexar arquivo<input type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.txt" onchange="sinAddAnexos(this)" style="display:none;"></label>
+            ${f.anexos.map((a,i)=>({ a, i })).filter(x=>!/^image\//.test(x.a.tipo)).map(x=>`<span class="sin-arq-chip"><button class="os-link" onclick="sinVerAnexo(null, ${x.i})">📄 ${osEsc(x.a.nome)}</button> <button class="os-link" onclick="sinTirarAnexo(${x.i})" title="Tirar">✕</button></span>`).join("")}
+            <div class="hint" style="margin:2px 0 0;">Até 2 fotos (saem no PDF) · arquivos até 4 MB</div>
+          </div>
+        </div>
       </div>
       <button class="entry-submit" onclick="sinSalvar()">💾 Salvar sinistro</button>
     </div>` : ""}
