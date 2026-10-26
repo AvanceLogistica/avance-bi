@@ -9123,27 +9123,28 @@ window.oseProtGerar = async () => {
   const aba = window.open("", "_blank");
   try{
     await nfgCarregarPDF();
-    const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 14, cfg = oseCfg();
+    const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12, cfg = oseCfg();
     const total = sumArr(ls.map(oseValor)), de = oseNum(ls[0].numero), ate = oseNum(ls[ls.length-1].numero);
     const diaEm = OSE_PROT.data, nProt = `${diaEm.replace(/-/g,"")}-${de}`;
-    doc.setFillColor(214, 40, 30); doc.rect(0, 0, W, 4, "F");
-    doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(20, 20, 26); doc.text(cfg.empresa || "AVANCE LOGÍSTICA INTEGRADA LTDA", M, 16);
-    doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(90, 90, 100);
-    doc.text([`CNPJ: ${cfg.cnpj||"-"}`, `${cfg.endereco||""}${cfg.cep ? " · CEP " + cfg.cep : ""}`], M, 22);
-    doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); doc.setTextColor(214, 40, 30); doc.text("PROTOCOLO Nº", W-M, 14, { align:"right" });
-    doc.setFontSize(13); doc.setTextColor(20, 20, 26); doc.text(nProt, W-M, 21, { align:"right" });
-    doc.setFillColor(20, 20, 26); doc.rect(M, 32, W-2*M, 12, "F");
-    doc.setFontSize(14); doc.setTextColor(255, 255, 255); doc.text("PROTOCOLO DE ENTREGA DE ORDENS DE SERVIÇO", W/2, 40, { align:"center" });
+    oseCabecalhoPDF(doc, 12);
+    const X = 12+108, QW = W-12-X;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(20, 20, 26); doc.text(`PROTOCOLO Nº ${nProt}`, X + QW/2, 41.5, { align:"center" });
+    doc.setFillColor(235, 235, 238); doc.rect(X, 43.5, QW, 5, "F"); doc.setFont("helvetica", "normal"); doc.setFontSize(8);
+    doc.text(`Emissão das O.S: ${fmtDataBR(diaEm)}`, X + QW/2, 47, { align:"center" });
+    doc.setDrawColor(40, 40, 46); doc.setLineWidth(0.4); doc.rect(X, 48.5, QW, 10); doc.setFont("helvetica", "bold"); doc.setFontSize(9);
+    doc.text(ls.length === 1 ? `O.S nº ${de}` : `O.S nº ${de} a ${ate}`, X + QW/2, 55, { align:"center" });
+    doc.setFillColor(20, 20, 26); doc.rect(M, 62, W-2*M, 12, "F");
+    doc.setFontSize(14); doc.setTextColor(255, 255, 255); doc.text("PROTOCOLO DE ENTREGA DE ORDENS DE SERVIÇO", W/2, 70, { align:"center" });
     // resumo em destaque
     const caixas = [["Faixa de O.S", ls.length === 1 ? `Nº ${de}` : `Nº ${de} a ${ate}`], ["Dia da emissão", fmtDataBR(diaEm)], ["Quantidade", `${ls.length} O.S`], ["Valor total", oseBRL(total)]];
     const bw = (W - 2*M - 9) / 4;
-    caixas.forEach(([l, v], i)=>{ const x = M + i*(bw+3); doc.setFillColor(i===3 ? 255 : 245, i===3 ? 214 : 245, i===3 ? 0 : 247); doc.roundedRect(x, 48, bw, 18, 2, 2, "F");
-      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(90, 90, 100); doc.text(l.toUpperCase(), x+3, 54);
-      doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(20, 20, 26); doc.text(v, x+3, 62); });
+    caixas.forEach(([l, v], i)=>{ const x = M + i*(bw+3); doc.setFillColor(i===3 ? 255 : 245, i===3 ? 214 : 245, i===3 ? 0 : 247); doc.roundedRect(x, 78, bw, 18, 2, 2, "F");
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(90, 90, 100); doc.text(l.toUpperCase(), x+3, 84);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(20, 20, 26); doc.text(v, x+3, 92); });
     doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(20, 20, 26);
     const txt = `Entregamos à ${cfg.cliente || "Combitrans"}${cfg.clienteCnpj ? ` (CNPJ ${cfg.clienteCnpj})` : ""} as ordens de serviço de manutenção de carretas relacionadas abaixo, emitidas em ${fmtDataBR(diaEm)}, para análise e assinatura no prazo de até ${OSE_PRAZO_ASSINATURA} dias. A assinatura deste protocolo confirma o recebimento de todas as O.S listadas.`;
-    doc.text(doc.splitTextToSize(txt, W-2*M), M, 74);
-    doc.autoTable({ startY:86, margin:{ left:M, right:M }, theme:"grid",
+    doc.text(doc.splitTextToSize(txt, W-2*M), M, 104);
+    doc.autoTable({ startY:116, margin:{ left:M, right:M }, theme:"grid",
       head:[["Nº O.S", "Frota", "Placa", "Início", "Saída", "Serviços", "Valor"]],
       body:ls.map(o=>[oseNum(o.numero), o.frota||"-", o.placa||"-", o.entrada ? fmtDataBR(o.entrada) : "-", o.saida ? fmtDataBR(o.saida) : "-", String((o.itens||[]).length), oseBRL(oseValor(o))]),
       foot:[[{ content:`Total — ${ls.length} O.S (nº ${de} a ${ate})`, colSpan:6 }, oseBRL(total)]], showFoot:"lastPage",
@@ -9438,11 +9439,9 @@ function osePlanoHTML(diaFixo){
 }
 
 /* ---------- PDF da O.S — modelo da Avance para a Combitrans ---------- */
-async function osePDFDoc(o){
-  await nfgCarregarPDF();
-  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), cfg = oseCfg();
-  const total = oseValor(o), M = 12;
-  const br = (iso) => iso ? `${iso.slice(8,10)}-${iso.slice(5,7)}-${iso.slice(0,4)}` : "";
+// Cabeçalho do modelo da O.S (logo AVANCE + dados da Avance + dados do cliente) — O.S e protocolo de entrega
+function oseCabecalhoPDF(doc, M){
+  const W = doc.internal.pageSize.getWidth(), cfg = oseCfg();
   // logotipo: seta vermelha + AVANCE
   doc.setDrawColor(40, 40, 46); doc.setLineWidth(0.4); doc.rect(M, 10, 112, 26);
   doc.setFillColor(214, 40, 30); doc.triangle(M+6, 15, M+19, 23, M+6, 31, "F"); doc.setFillColor(255, 255, 255); doc.triangle(M+6, 18, M+12, 23, M+6, 28, "F");
@@ -9457,6 +9456,13 @@ async function osePDFDoc(o){
   // cliente (esquerda) e quadro da O.S (direita)
   doc.setFontSize(8.5); doc.setTextColor(20, 20, 26);
   [["Cliente", cfg.cliente], ["Endereço", cfg.clienteEndereco], ["CNPJ", cfg.clienteCnpj]].forEach(([l, v], i)=>{ doc.setFont("helvetica", "bold"); doc.text(`${l}:`, M, 47 + i*5); const lw = doc.getTextWidth(`${l}: `) + 0.8; doc.setFont("helvetica", "normal"); doc.text(String(v||""), M + lw, 47 + i*5); });
+}
+async function osePDFDoc(o){
+  await nfgCarregarPDF();
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), cfg = oseCfg();
+  const total = oseValor(o), M = 12;
+  const br = (iso) => iso ? `${iso.slice(8,10)}-${iso.slice(5,7)}-${iso.slice(0,4)}` : "";
+  oseCabecalhoPDF(doc, M);
   const X = M+108, QW = W-M-X;
   doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.text(`ORDEM DE SERVIÇO Nº ${oseNum(o.numero)}`, X + QW/2, 41.5, { align:"center" });
   doc.setFillColor(235, 235, 238); doc.rect(X, 43.5, QW, 5, "F"); doc.setFont("helvetica", "normal"); doc.setFontSize(8);
