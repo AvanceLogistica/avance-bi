@@ -6731,6 +6731,204 @@ function frotaCadastro(){
     </div>`;
 }
 
+/* -------------------- STATUS DA FROTA › OFICINA (caminhões parados em manutenção) --------------------
+   Controle dos caminhões que estão na oficina: a oficina registra placa, data da parada, observação,
+   peças necessárias e valor prévio → a Diretoria aprova (ou reprova) a compra e a execução → a oficina
+   inicia e conclui o serviço. Tabela frota_oficina; a aprovação só pode ser dada pelo Diretor (trava no banco). */
+let FOF = { lista:[], carregado:false, carregando:false, erro:null };
+let FOF_FORM = null;          // registro em edição/criação
+let FOF_FILTRO = "abertos";   // abertos | aguardando | aprovado | execucao | concluido | reprovado | todos
+const FOF_LOCAL = "avance_frota_oficina_v1";
+const FOF_ST = {
+  aguardando: { label:"Aguardando aprovação da Diretoria", curto:"Aguardando aprovação", badge:"amber", icone:"⏳" },
+  aprovado:   { label:"Aprovado — aguardando execução",   curto:"Aprovado",             badge:"green",  icone:"👍" },
+  execucao:   { label:"Em execução",                       curto:"Em execução",          badge:"amber", icone:"🔧" },
+  concluido:  { label:"Concluído",                         curto:"Concluído",            badge:"green", icone:"✅" },
+  reprovado:  { label:"Reprovado pela Diretoria",          curto:"Reprovado",            badge:"red",   icone:"✖" },
+};
+function fofStatus(r){ return r.conclusao ? "concluido" : r.inicio ? "execucao" : r.aprovacao==="aprovado" ? "aprovado" : r.aprovacao==="reprovado" ? "reprovado" : "aguardando"; }
+const fofAberto = (r) => !["concluido","reprovado"].includes(fofStatus(r));
+const fofPodeAprovar = () => !sb || MEU_PAPEL === "diretor";
+function fofDiasParado(r){ return r.dataParada ? nfeDias(r.dataParada, r.conclusao || frotaHojeISO()) : null; }
+// Data da parada sugerida: primeiro dia seguido (até hoje) em que o caminhão está em manutenção / oficina
+function fofParadaSugerida(vid){
+  const F = frotaCarregar(); let d = FROTA_DATA, ini = null;
+  for(let i = 0; i < 60; i++){ const r = F.dias[d] && F.dias[d][vid]; if(!r) { if(i===0){ d = nfeAddDias(d, -1); continue; } break; }
+    if(r.status==="manutencao" || r.atividade==="oficina"){ ini = d; d = nfeAddDias(d, -1); } else break; }
+  return ini || FROTA_DATA;
+}
+async function fofCarregar(){
+  FOF.carregando = true;
+  if(!sb){ try{ FOF.lista = JSON.parse(localStorage.getItem(FOF_LOCAL)||"[]"); }catch(e){ FOF.lista = []; } }
+  else {
+    const { data, error } = await sb.from("frota_oficina").select("*").order("data_parada", { ascending:false });
+    if(error) FOF.erro = error.message;
+    else { FOF.erro = null; FOF.lista = data.map(r=>({ id:r.id, veiculoId:r.veiculo_id, placa:r.placa||"", dataParada:r.data_parada||"", obs:r.observacao||"", pecas:r.pecas||"",
+      valor:r.valor_previo!=null ? Number(r.valor_previo) : null, aprovacao:r.aprovacao||"", aprovadoPor:(r.aprovado_por||"").split("@")[0], aprovadoEm:r.aprovado_em||"", obsDiretoria:r.obs_diretoria||"",
+      inicio:r.inicio_execucao||"", conclusao:r.conclusao||"", valorFinal:r.valor_final!=null ? Number(r.valor_final) : null, por:(r.criado_por||"").split("@")[0] })); }
+  }
+  FOF.carregando = false; FOF.carregado = true; frotaRerenderSeguro();
+}
+function fofGarantirCarga(){ if(!FOF.carregado && !FOF.carregando){ FOF.carregando = true; setTimeout(()=>fofCarregar(), 0); } }
+function fofSalvarLocal(){ if(!sb) try{ localStorage.setItem(FOF_LOCAL, JSON.stringify(FOF.lista)); }catch(e){} }
+async function fofGravar(r, campos){
+  if(sb){ const { error } = await sb.from("frota_oficina").update({ ...campos, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", r.id);
+    if(error){ toast(/diretoria/i.test(error.message) ? "⚠ A aprovação é feita pela Diretoria." : /frota_oficina/i.test(error.message) ? "⚠ Falta rodar o SQL da Oficina no Supabase." : "⚠ Não salvou: " + error.message); return false; } }
+  fofSalvarLocal(); return true;
+}
+
+window.fofNovo = (vid) => {
+  const v = vid ? frotaCarregar().veiculos.find(x=>x.id===vid) : null, reg = v ? frotaRegistro(v, FROTA_DATA) : null;
+  FOF_FORM = { id:null, veiculoId:v ? v.id : "", placa:v ? v.placa : "", dataParada:v ? fofParadaSugerida(v.id) : FROTA_DATA, obs:reg ? reg.obs||"" : "", pecas:"", valor:null };
+  frotaRerender(); setTimeout(()=>document.getElementById("fof-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60);
+};
+window.fofEditar = (id) => { const r = FOF.lista.find(x=>x.id===id); if(!r) return; FOF_FORM = { ...r }; frotaRerender(); setTimeout(()=>document.getElementById("fof-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); };
+window.fofCancelar = () => { FOF_FORM = null; frotaRerender(); };
+window.fofSalvar = async () => {
+  const f = FOF_FORM; if(!f) return;
+  const g = (id) => document.getElementById(id)?.value || "";
+  const vid = g("fof-veic"), v = frotaCarregar().veiculos.find(x=>x.id===vid);
+  const reg = { veiculo_id:v ? v.id : null, placa:v ? v.placa : f.placa, data_parada:g("fof-data") || null, observacao:g("fof-obs").trim() || null, pecas:g("fof-pecas").trim() || null, valor_previo:osNum("fof-valor") || null };
+  if(!reg.placa){ toast("Escolha o caminhão."); return; }
+  if(!reg.data_parada){ toast("Informe a data da parada."); return; }
+  if(!reg.pecas && !reg.observacao){ toast("Descreva o serviço (observação) ou as peças."); return; }
+  const mudouOrcamento = f.id && (f.pecas!==(reg.pecas||"") || (f.valor||null)!==(reg.valor_previo||null));
+  const voltarAprovacao = f.id && f.aprovacao && !f.inicio && mudouOrcamento;   // mudou peças/valor depois de decidido → volta para a Diretoria
+  if(voltarAprovacao && !confirm("Peças ou valor mudaram. O registro volta para a aprovação da Diretoria. Continuar?")) return;
+  const banco = { ...reg, ...(voltarAprovacao ? { aprovacao:null, aprovado_por:null, aprovado_em:null } : {}), atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
+  let id = f.id;
+  if(sb){ const q = id ? sb.from("frota_oficina").update(banco).eq("id", id).select("id").single() : sb.from("frota_oficina").insert({ ...banco, criado_por:MEU_EMAIL }).select("id").single();
+    const { data, error } = await q; if(error){ toast(/frota_oficina/i.test(error.message) ? "⚠ Falta rodar o SQL da Oficina no Supabase." : "⚠ Não salvou: " + error.message); return; } id = data.id; }
+  else if(!id) id = osNovoId();
+  const local = { ...(FOF.lista.find(x=>x.id===id) || { aprovacao:"", inicio:"", conclusao:"", por:(MEU_EMAIL||"").split("@")[0] }), id, veiculoId:reg.veiculo_id, placa:reg.placa, dataParada:reg.data_parada,
+    obs:reg.observacao||"", pecas:reg.pecas||"", valor:reg.valor_previo, ...(voltarAprovacao ? { aprovacao:"", aprovadoPor:"", aprovadoEm:"" } : {}) };
+  const k = FOF.lista.findIndex(x=>x.id===id); if(k>=0) FOF.lista[k] = local; else FOF.lista.unshift(local);
+  fofSalvarLocal(); FOF_FORM = null; toast(f.id ? "Registro atualizado ✓" : `${local.placa} registrado ✓ — aguardando aprovação da Diretoria`); frotaRerender();
+};
+window.fofAprovar = async (id, ok) => {
+  const r = FOF.lista.find(x=>x.id===id); if(!r) return;
+  if(!fofPodeAprovar()){ toast("A aprovação é feita pela Diretoria."); return; }
+  let motivo = "";
+  if(ok){ if(!confirm(`Aprovar a compra e a execução do serviço do ${r.placa}${r.valor ? ` (valor prévio ${fmtBRL2(r.valor)})` : ""}?`)) return; }
+  else { motivo = (prompt(`Motivo da reprovação do ${r.placa}:`) || "").trim(); if(!motivo){ toast("Informe o motivo para reprovar."); return; } }
+  const agora = new Date().toISOString();
+  if(await fofGravar(r, { aprovacao: ok ? "aprovado" : "reprovado", aprovado_por:MEU_EMAIL, aprovado_em:agora, obs_diretoria: motivo || null })){
+    Object.assign(r, { aprovacao: ok ? "aprovado" : "reprovado", aprovadoPor:(MEU_EMAIL||"").split("@")[0], aprovadoEm:agora, obsDiretoria:motivo });
+    toast(ok ? `${r.placa} aprovado ✓ — a oficina já pode executar` : `${r.placa} reprovado`); }
+  frotaRerender();
+};
+window.fofDesfazerAprovacao = async (id) => {
+  const r = FOF.lista.find(x=>x.id===id); if(!r || !fofPodeAprovar() || !confirm(`Desfazer a decisão da Diretoria sobre o ${r.placa}?`)) return;
+  if(await fofGravar(r, { aprovacao:null, aprovado_por:null, aprovado_em:null, obs_diretoria:null })) Object.assign(r, { aprovacao:"", aprovadoPor:"", aprovadoEm:"", obsDiretoria:"" });
+  frotaRerender();
+};
+window.fofIniciar = async (id) => {
+  const r = FOF.lista.find(x=>x.id===id); if(!r) return;
+  const d = document.getElementById(`fof-dt-${id}`)?.value || frotaHojeISO();
+  if(await fofGravar(r, { inicio_execucao:d })){ r.inicio = d; toast(`${r.placa}: execução iniciada ✓`); }
+  frotaRerender();
+};
+window.fofConcluir = async (id) => {
+  const r = FOF.lista.find(x=>x.id===id); if(!r) return;
+  const d = document.getElementById(`fof-dt-${id}`)?.value || frotaHojeISO(), vf = osNum(`fof-vf-${id}`) || null;
+  if(r.inicio && d < r.inicio){ toast("A conclusão está antes do início da execução."); return; }
+  if(await fofGravar(r, { conclusao:d, valor_final:vf })){ r.conclusao = d; r.valorFinal = vf; toast(`${r.placa}: serviço concluído ✓ — lembre de voltar o caminhão para a operação no lançamento do dia`); }
+  frotaRerender();
+};
+window.fofVoltarEtapa = async (id) => {
+  const r = FOF.lista.find(x=>x.id===id); if(!r) return; const st = fofStatus(r);
+  const campos = st==="concluido" ? { conclusao:null, valor_final:null } : st==="execucao" ? { inicio_execucao:null } : null; if(!campos || !confirm("Voltar uma etapa?")) return;
+  if(await fofGravar(r, campos)){ if(st==="concluido"){ r.conclusao = ""; r.valorFinal = null; } else r.inicio = ""; }
+  frotaRerender();
+};
+window.fofExcluir = async (id) => {
+  const r = FOF.lista.find(x=>x.id===id); if(!r || !confirm(`Excluir o registro de oficina do ${r.placa}?`)) return;
+  if(sb){ const { error } = await sb.from("frota_oficina").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  FOF.lista = FOF.lista.filter(x=>x.id!==id); fofSalvarLocal(); frotaRerender();
+};
+window.fofFiltro = (f) => { FOF_FILTRO = FOF_FILTRO===f ? "abertos" : f; frotaRerender(); };
+
+function frotaOficina(itens){
+  fofGarantirCarga();
+  if(FOF.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar a Oficina</h4><p>${osEsc(FOF.erro)}</p><p>Se falar em tabela inexistente ("frota_oficina"), rode o SQL da Oficina no Supabase.</p></div></div>`;
+  if(!FOF.carregado) return `<div class="panel"><div class="empty-state" style="padding:24px;"><p>Carregando...</p></div></div>`;
+  const hoje = frotaHojeISO(), mes = hoje.slice(0,7), veics = frotaVeiculosOrdenados();
+  const comSt = FOF.lista.map(r=>({ r, st:fofStatus(r) }));
+  const cont = {}; Object.keys(FOF_ST).forEach(k=>cont[k] = comSt.filter(x=>x.st===k).length);
+  const valorDe = (k) => sumArr(comSt.filter(x=>x.st===k).map(x=>x.r.valor||0));
+  const abertos = comSt.filter(x=>fofAberto(x.r)), conclMes = comSt.filter(x=>x.st==="concluido" && x.r.conclusao.startsWith(mes));
+  const mediaDias = abertos.length ? Math.round(sumArr(abertos.map(x=>fofDiasParado(x.r)||0))/abertos.length) : 0;
+  // caminhões que estão em manutenção hoje e ainda não têm registro aberto
+  const semRegistro = itens.filter(({v,r})=>(r.status==="manutencao" || r.atividade==="oficina") && !FOF.lista.some(x=>fofAberto(x) && (x.veiculoId===v.id || x.placa===v.placa)));
+  const lista = comSt.filter(x=>FOF_FILTRO==="todos" || (FOF_FILTRO==="abertos" ? fofAberto(x.r) : x.st===FOF_FILTRO))
+    .sort((a,b)=>Object.keys(FOF_ST).indexOf(a.st)-Object.keys(FOF_ST).indexOf(b.st) || (a.r.dataParada||"").localeCompare(b.r.dataParada||""));
+  const f = FOF_FORM;
+  return `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">⏳ Aguardando aprovação</div><div class="val" style="color:var(--amber);">${cont.aguardando}</div><div class="delta flat">${fmtBRL(valorDe("aguardando"))} em peças/serviços</div></div>
+      <div class="kpi"><div class="lbl">👍 Aprovados p/ executar</div><div class="val">${cont.aprovado}</div><div class="delta flat">${fmtBRL(valorDe("aprovado"))}</div></div>
+      <div class="kpi"><div class="lbl">🔧 Em execução</div><div class="val">${cont.execucao}</div><div class="delta flat">${fmtBRL(valorDe("execucao"))}</div></div>
+      <div class="kpi"><div class="lbl">✅ Concluídos no mês</div><div class="val" style="color:var(--green);">${conclMes.length}</div><div class="delta flat">${fmtBRL(sumArr(conclMes.map(x=>x.r.valorFinal ?? x.r.valor ?? 0)))}</div></div>
+      <div class="kpi"><div class="lbl">📅 Dias parados (média)</div><div class="val" style="color:var(--${mediaDias>7?"red":"ink"});">${mediaDias}</div><div class="delta flat">${abertos.length} caminhão(ões) parado(s)</div></div>
+    </div>
+
+    ${semRegistro.length ? `<div class="panel fof-sem" style="margin-bottom:16px;">
+      <h3 style="margin:0;">🚛 Em manutenção hoje sem registro na Oficina (${semRegistro.length})</h3>
+      <div class="hint">Caminhões marcados em manutenção / oficina no lançamento do dia. Clique para registrar peças e valor.</div>
+      <div class="fof-chips">${semRegistro.map(({v,r})=>`<button class="fof-chip" onclick="fofNovo('${v.id}')"><b>${osEsc(v.placa)}</b><span>${osEsc(r.obs||"sem observação")}</span><em>+ registrar</em></button>`).join("")}</div>
+    </div>` : ""}
+
+    ${f ? `<div class="panel os-form fof-form" id="fof-form" style="margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+        <h3 style="margin:0;">${f.id ? `✏️ Editar — ${osEsc(f.placa)}` : "🔧 Registrar caminhão na oficina"}</h3><button class="os-btn" onclick="fofCancelar()">Fechar</button>
+      </div>
+      <div class="nf-grid" style="grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); margin-top:10px;">
+        <label>Placa<select id="fof-veic"><option value="">Selecione</option>${veics.map(v=>`<option value="${v.id}" ${v.id===f.veiculoId || (!f.veiculoId && v.placa===f.placa) ? "selected" : ""}>${String(v.ordem).padStart(2,"0")} · ${osEsc(v.placa)}</option>`).join("")}</select></label>
+        <label>Data da parada do caminhão<input type="date" id="fof-data" value="${f.dataParada||""}"></label>
+        <label>Valor prévio<input id="fof-valor" inputmode="numeric" placeholder="R$ 0,00" value="${f.valor ? "R$ " + f.valor.toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }) : ""}" oninput="osMascaraBRL(this)"></label>
+      </div>
+      <label>Observação (o problema)<input id="fof-obs" value="${osEsc(f.obs||"")}" placeholder="ex: problema no motor, ar-condicionado..."></label>
+      <label>Peças (o que precisa comprar)<textarea id="fof-pecas" rows="3" placeholder="uma peça por linha, ex: 2 pneus 295/80, kit embreagem...">${osEsc(f.pecas||"")}</textarea></label>
+      <button class="entry-submit" onclick="fofSalvar()">${f.id ? "💾 Salvar alterações" : "💾 Registrar e enviar para aprovação"}</button>
+    </div>` : ""}
+
+    <div class="panel" style="margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">🔧 Oficina — caminhões parados</h3>
+          <div class="hint">Oficina registra → Diretoria aprova a compra e a execução → oficina executa e conclui.</div></div>
+        <button class="entry-submit" style="margin:0;" onclick="fofNovo()">+ Registrar caminhão</button>
+      </div>
+      <div class="prog-chips" style="margin:10px 0 0;">
+        <button class="sub-tab-btn ${FOF_FILTRO==="abertos"?"active":""}" onclick="fofFiltro('abertos')">Em aberto (${abertos.length})</button>
+        ${Object.entries(FOF_ST).map(([k,s])=>`<button class="sub-tab-btn ${FOF_FILTRO===k?"active":""}" onclick="fofFiltro('${k}')">${s.icone} ${s.curto} (${cont[k]})</button>`).join("")}
+        <button class="sub-tab-btn ${FOF_FILTRO==="todos"?"active":""}" onclick="fofFiltro('todos')">Todos (${FOF.lista.length})</button>
+      </div>
+      ${lista.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab fof-tab">
+        <thead><tr><th>Placa</th><th>Parada</th><th>Observação</th><th>Peças</th><th class="num">Valor prévio</th><th>Situação</th><th>Próxima ação</th><th></th></tr></thead>
+        <tbody>${lista.map(({r, st})=>{ const s = FOF_ST[st], dias = fofDiasParado(r), v = veics.find(x=>x.id===r.veiculoId);
+          const dt = `<input type="date" id="fof-dt-${r.id}" value="${hoje}" class="nfe-pg">`;
+          const acao = st==="aguardando" ? (fofPodeAprovar() ? `<button class="os-btn sm green" onclick="fofAprovar('${r.id}', true)">✅ Aprovar</button> <button class="os-btn sm" onclick="fofAprovar('${r.id}', false)">✖ Reprovar</button>` : `<span class="hint" style="margin:0;">aguardando a Diretoria</span>`)
+            : st==="aprovado" ? `${dt} <button class="os-btn sm" onclick="fofIniciar('${r.id}')">▶ Iniciar execução</button>`
+            : st==="execucao" ? `${dt} <input id="fof-vf-${r.id}" class="bal-num" style="width:110px;" placeholder="R$ valor final" inputmode="numeric" oninput="osMascaraBRL(this)"> <button class="os-btn sm green" onclick="fofConcluir('${r.id}')">✅ Concluir</button>`
+            : st==="reprovado" ? `<span class="hint" style="margin:0;">ajuste e salve para reenviar</span>` : `<span class="hint" style="margin:0;">${r.valorFinal!=null ? `valor final ${fmtBRL2(r.valorFinal)}` : ""}</span>`;
+          return `<tr>
+            <td><b>${osEsc(r.placa)}</b>${v ? `<div class="hint" style="margin:0;">nº ${String(v.ordem).padStart(2,"0")}</div>` : ""}</td>
+            <td style="white-space:nowrap;">${r.dataParada ? fmtDataBR(r.dataParada) : "—"}${dias!=null ? `<div class="hint" style="margin:0; ${dias>7 && st!=="concluido" ? "color:var(--red); font-weight:700;" : ""}">${st==="concluido" ? `ficou ${dias} dia(s)` : `há ${dias} dia(s)`}</div>` : ""}</td>
+            <td style="max-width:220px;">${osEsc(r.obs)||"—"}</td>
+            <td style="max-width:260px; white-space:pre-line; font-size:12.5px;">${osEsc(r.pecas)||"—"}</td>
+            <td class="num"><b>${r.valor!=null ? fmtBRL2(r.valor) : "—"}</b></td>
+            <td><span class="badge ${s.badge}">${s.icone} ${s.curto}</span>
+              ${r.aprovacao ? `<div class="hint" style="margin:2px 0 0;">${r.aprovacao==="aprovado" ? "aprovado" : "reprovado"} por ${osEsc(r.aprovadoPor||"—")}${r.aprovadoEm ? ` · ${fmtDataBR(r.aprovadoEm.slice(0,10))}` : ""}${fofPodeAprovar() && !r.inicio ? ` <button class="os-link" onclick="fofDesfazerAprovacao('${r.id}')">desfazer</button>` : ""}</div>` : ""}
+              ${r.obsDiretoria ? `<div class="hint" style="margin:0; color:var(--red);">motivo: ${osEsc(r.obsDiretoria)}</div>` : ""}
+              ${r.inicio ? `<div class="hint" style="margin:0;">execução desde ${fmtDataBR(r.inicio)}${r.conclusao ? ` · concluído ${fmtDataBR(r.conclusao)}` : ""}</div>` : ""}</td>
+            <td style="white-space:nowrap;">${acao}</td>
+            <td style="white-space:nowrap;">${["execucao","concluido"].includes(st) ? `<button class="os-link" onclick="fofVoltarEtapa('${r.id}')" title="Voltar uma etapa">↩</button> ` : ""}<button class="os-link" onclick="fofEditar('${r.id}')" title="Editar">✏️</button> <button class="os-link" onclick="fofExcluir('${r.id}')" title="Excluir">🗑️</button></td>
+          </tr>`; }).join("")}</tbody>
+        <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="4">Total (${lista.length})</td><td class="num">${fmtBRL2(sumArr(lista.map(x=>x.r.valor||0)))}</td><td colspan="3"></td></tr></tfoot>
+      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nenhum caminhão neste filtro.</p></div>`}
+    </div>`;
+}
+
 renderers.frota = () => {
   const F = frotaCarregar();
   if(!frotaPodeCadastrar() && FROTA_ABA==="cadastro") FROTA_ABA = "painel";
@@ -6745,7 +6943,7 @@ renderers.frota = () => {
   else if(!F.veiculos.length) corpo = `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">🚛</div><h4>Nenhum caminhão cadastrado</h4>
       ${frotaPodeCadastrar() ? `<p>Cadastre um por um na aba Caminhões, ou carregue a lista inicial de 42 caminhões.</p>
       <button class="entry-submit" onclick="frotaCarregarListaInicial()">Carregar os 42 caminhões da lista inicial</button>` : `<p>Peça ao diretor para cadastrar os caminhões.</p>`}</div></div>`;
-  else corpo = FROTA_ABA==="lider" ? frotaLider(itens) : FROTA_ABA==="cadastro" ? frotaCadastro() : frotaPainel(itens);
+  else corpo = FROTA_ABA==="lider" ? frotaLider(itens) : FROTA_ABA==="cadastro" ? frotaCadastro() : FROTA_ABA==="oficina" ? frotaOficina(itens) : frotaPainel(itens);
   // A recuperação do teste local só aparece com o cadastro do banco VAZIO — com caminhões já
   // cadastrados, enviar os dados antigos deste navegador sobrescreveria a lista atual.
   const teste = FROTA_DB && !F.carregando && !F.erro && MEU_PAPEL==="diretor" && !F.veiculos.length ? frotaTesteLocal() : null;
@@ -6767,7 +6965,7 @@ renderers.frota = () => {
     <div class="os-proto"><div><b>🧪 Modo local.</b> Sem banco de dados configurado — os dados ficam só neste navegador.</div></div>`}
     <div class="frota-topo">
       <div class="tabs" style="margin:0;">
-        ${aba("painel","📊 Painel do dia")}${aba("lider","📝 Lançamento do líder")}${frotaPodeCadastrar() ? aba("cadastro","🚛 Caminhões") : ""}
+        ${aba("painel","📊 Painel do dia")}${aba("lider","📝 Lançamento do líder")}${aba("oficina", `🔧 Oficina${(()=>{ fofGarantirCarga(); const n = FOF.lista.filter(r=>fofStatus(r)==="aguardando").length; return n ? ` <span class="fof-n">${n}</span>` : ""; })()}`)}${frotaPodeCadastrar() ? aba("cadastro","🚛 Caminhões") : ""}
       </div>
       <label class="frota-data">Dia <input type="date" value="${FROTA_DATA}" onchange="frotaSetData(this.value)"></label>
     </div>
