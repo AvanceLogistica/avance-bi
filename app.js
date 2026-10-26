@@ -2638,7 +2638,7 @@ initCharts.atestados = () => {
 };
 
 /* -------------------- INFRAÇÕES -------------------- */
-renderers.infracoes = () => {
+function infracoesPagina(){
   const filtro = FILTRO_ANO.infracoes;
   const inf = infracoesView = (filtro === "todos" || DATA.infracoes.lancamentos.length === 0)
     ? DATA.infracoes
@@ -2688,7 +2688,7 @@ renderers.infracoes = () => {
     </div>
   `;
 };
-initCharts.infracoes = () => {
+function infracoesChartsBase(){
   const inf = infracoesView || DATA.infracoes;
   mkChart("ch-inf-mensal", {
     type:"line",
@@ -10243,6 +10243,234 @@ renderers.manutencao = () => {
   return abas + manutencaoCustos();
 };
 initCharts.manutencao = () => { if(MAN_ABA === "diario") carGrafico(); else manutencaoCustosCharts(); };
+/* -------------------- INFRAÇÕES › SINISTRO --------------------
+   Registro de sinistros por placa (lista do Status da Frota): Quem? Como? Quando? Aonde? Análise da
+   ocorrência, com evidências (fotos reduzidas no navegador e arquivos) e relatório em PDF para enviar pelo
+   WhatsApp. Tabela sinistros (os anexos só são baixados quando abre o registro ou gera o PDF). */
+let INF_ABA = "infracoes";      // infracoes | sinistro
+window.setInfAba = (a) => { INF_ABA = a; navigate("infracoes"); };
+let SIN = { lista:[], veiculos:[], carregado:false, carregando:false, erro:null };
+let SIN_FORM = null;
+const SIN_LOCAL = "avance_sinistros_v1";
+const SIN_MAX_ARQ = 4 * 1024 * 1024;   // arquivos que não são foto: até 4 MB cada
+const sinNum = (n) => n ? String(n).padStart(4, "0") : "—";
+async function sinCarregar(){
+  SIN.carregando = true;
+  if(!sb){ try{ SIN.lista = JSON.parse(localStorage.getItem(SIN_LOCAL)||"[]"); }catch(e){ SIN.lista = []; }
+    SIN.veiculos = (typeof frotaVeiculosOrdenados==="function" ? frotaVeiculosOrdenados() : []).map(v=>({ id:v.id, placa:v.placa, ordem:v.ordem, motorista:v.motorista||"" })); }
+  else {
+    const [l, v] = await Promise.all([
+      sb.from("sinistros").select("id,numero,veiculo_id,placa,data,hora,quem,como,quando,aonde,analise,anexos_qtd,criado_por,created_at").order("data", { ascending:false }),
+      sb.from("frota_veiculos").select("id,placa,ordem,motorista").order("ordem") ]);
+    if(l.error) SIN.erro = l.error.message;
+    else { SIN.erro = null; SIN.lista = l.data.map(r=>({ id:r.id, numero:r.numero, veiculoId:r.veiculo_id, placa:r.placa||"", data:r.data||"", hora:r.hora||"", quem:r.quem||"", como:r.como||"", quando:r.quando||"",
+      aonde:r.aonde||"", analise:r.analise||"", anexosQtd:r.anexos_qtd||0, anexos:null, por:(r.criado_por||"").split("@")[0] })); }
+    if(!v.error) SIN.veiculos = v.data.map(x=>({ id:x.id, placa:x.placa, ordem:x.ordem, motorista:x.motorista||"" }));
+  }
+  SIN.carregando = false; SIN.carregado = true; sinRedesenhar(true);
+}
+function sinGarantirCarga(){ if(!SIN.carregado && !SIN.carregando){ SIN.carregando = true; setTimeout(()=>sinCarregar(), 0); } }
+function sinSalvarLocal(){ if(!sb) try{ localStorage.setItem(SIN_LOCAL, JSON.stringify(SIN.lista)); }catch(e){ toast("⚠ Sem espaço no navegador para os anexos (modo local)."); } }
+function sinRedesenhar(seguro){
+  if(document.querySelector('nav.menu button.active')?.dataset.page !== "infracoes" || INF_ABA !== "sinistro") return;
+  if(seguro){ const f = document.activeElement; if(f && f.closest && f.closest("#sin-form") && /INPUT|SELECT|TEXTAREA/.test(f.tagName)) return; }
+  const y = window.scrollY; document.getElementById("content").innerHTML = renderers.infracoes(); window.scrollTo(0,y);
+}
+async function sinAnexos(r){
+  if(r.anexos) return r.anexos;
+  if(!sb) return r.anexos || [];
+  const { data, error } = await sb.from("sinistros").select("anexos").eq("id", r.id).single();
+  if(error){ toast("⚠ Não carregou os anexos: " + error.message); return []; }
+  r.anexos = data.anexos || []; return r.anexos;
+}
+// guarda o que já foi digitado (o formulário é redesenhado ao incluir anexos)
+function sinLerForm(){ const f = SIN_FORM; if(!f) return; const g = (id) => document.getElementById(id);
+  ["veiculoId","data","hora","quem","como","quando","aonde","analise"].forEach(k=>{ const el = g(`sin-${k}`); if(el) f[k] = el.value; }); }
+window.sinNovo = () => { const h = new Date(); SIN_FORM = { id:null, veiculoId:"", data:frotaHojeISO(), hora:`${String(h.getHours()).padStart(2,"0")}:${String(h.getMinutes()).padStart(2,"0")}`, quem:"", como:"", quando:"", aonde:"", analise:"", anexos:[] };
+  sinRedesenhar(); setTimeout(()=>document.getElementById("sin-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); };
+window.sinEditar = async (id) => { const r = SIN.lista.find(x=>x.id===id); if(!r) return; const an = await sinAnexos(r);
+  SIN_FORM = { ...r, anexos:an.map(a=>({ ...a })) }; sinRedesenhar(); setTimeout(()=>document.getElementById("sin-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); };
+window.sinCancelar = () => { SIN_FORM = null; sinRedesenhar(); };
+window.sinPlaca = (vid) => { sinLerForm(); const v = SIN.veiculos.find(x=>x.id===vid); if(SIN_FORM && v && !SIN_FORM.quem) SIN_FORM.quem = v.motorista || ""; sinRedesenhar(); };
+function sinReduzirFoto(file){
+  return new Promise((ok, erro)=>{ const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => { const k = Math.min(1, 1280 / Math.max(img.width, img.height)), c = document.createElement("canvas");
+      c.width = Math.round(img.width*k); c.height = Math.round(img.height*k); c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url); ok({ nome:file.name, tipo:"image/jpeg", dados:c.toDataURL("image/jpeg", 0.74), w:c.width, h:c.height }); };
+    img.onerror = () => { URL.revokeObjectURL(url); erro(new Error("imagem ilegível")); }; img.src = url; });
+}
+function sinLerArquivo(file){ return new Promise((ok, erro)=>{ const fr = new FileReader(); fr.onload = () => ok({ nome:file.name, tipo:file.type || "application/octet-stream", dados:fr.result }); fr.onerror = () => erro(fr.error); fr.readAsDataURL(file); }); }
+window.sinAddAnexos = async (input) => {
+  sinLerForm(); const f = SIN_FORM; if(!f) return;
+  const arqs = [...(input.files||[])]; let n = 0;
+  for(const a of arqs){
+    try{
+      if(/^image\//.test(a.type)) f.anexos.push(await sinReduzirFoto(a));
+      else if(a.size > SIN_MAX_ARQ){ toast(`⚠ ${a.name} passa de 4 MB — não foi anexado.`); continue; }
+      else f.anexos.push(await sinLerArquivo(a));
+      n++;
+    }catch(e){ toast(`⚠ Não foi possível ler ${a.name}.`); }
+  }
+  if(n) toast(`${n} anexo(s) incluído(s) ✓`); sinRedesenhar();
+};
+window.sinTirarAnexo = (i) => { sinLerForm(); if(SIN_FORM){ SIN_FORM.anexos.splice(i, 1); sinRedesenhar(); } };
+window.sinVerAnexo = async (id, i) => {
+  const r = id ? SIN.lista.find(x=>x.id===id) : null; const an = r ? await sinAnexos(r) : (SIN_FORM ? SIN_FORM.anexos : []); const a = an[i]; if(!a) return;
+  if(/^image\//.test(a.tipo)){ const d = document.createElement("div"); d.className = "frota-foto-modal"; d.onclick = () => d.remove();
+    d.innerHTML = `<div><img src="${a.dados}" alt="${osEsc(a.nome)}"><p><b>${osEsc(a.nome)}</b><br><small>toque para fechar</small></p></div>`; document.body.appendChild(d); }
+  else { const l = document.createElement("a"); l.href = a.dados; l.download = a.nome; document.body.appendChild(l); l.click(); l.remove(); }
+};
+window.sinSalvar = async () => {
+  sinLerForm(); const f = SIN_FORM; if(!f) return;
+  const v = SIN.veiculos.find(x=>x.id===f.veiculoId);
+  if(!v && !f.placa){ toast("Escolha a placa."); return; }
+  if(!f.data){ toast("Informe a data do sinistro."); return; }
+  if(!f.como.trim()){ toast("Descreva como aconteceu."); return; }
+  const numero = f.numero || (Math.max(0, ...SIN.lista.map(x=>Number(x.numero)||0)) + 1);
+  const reg = { numero, veiculo_id:v ? v.id : null, placa:v ? v.placa : f.placa, data:f.data, hora:f.hora||null, quem:f.quem.trim()||null, como:f.como.trim()||null, quando:f.quando.trim()||null,
+    aonde:f.aonde.trim()||null, analise:f.analise.trim()||null, anexos:f.anexos, anexos_qtd:f.anexos.length, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
+  let id = f.id;
+  if(sb){ const q = id ? sb.from("sinistros").update(reg).eq("id", id).select("id").single() : sb.from("sinistros").insert({ ...reg, criado_por:MEU_EMAIL }).select("id").single();
+    const { data, error } = await q; if(error){ toast(/sinistros/i.test(error.message) ? "⚠ Falta rodar o SQL do Sinistro no Supabase." : /too large|payload/i.test(error.message) ? "⚠ Anexos grandes demais — tire algum arquivo." : "⚠ Não salvou: " + error.message); return; } id = data.id; }
+  else if(!id) id = osNovoId();
+  const local = { id, numero, veiculoId:reg.veiculo_id, placa:reg.placa, data:reg.data, hora:reg.hora||"", quem:reg.quem||"", como:reg.como||"", quando:reg.quando||"", aonde:reg.aonde||"", analise:reg.analise||"",
+    anexosQtd:f.anexos.length, anexos:f.anexos.map(a=>({ ...a })), por:f.por || (MEU_EMAIL||"").split("@")[0] };
+  const k = SIN.lista.findIndex(x=>x.id===id); if(k>=0) SIN.lista[k] = local; else SIN.lista.unshift(local);
+  sinSalvarLocal(); SIN_FORM = null; toast(`Sinistro nº ${sinNum(numero)} salvo ✓`); sinRedesenhar();
+};
+window.sinExcluir = async (id) => {
+  const r = SIN.lista.find(x=>x.id===id); if(!r || !confirm(`Excluir o sinistro nº ${sinNum(r.numero)} (${r.placa})?`)) return;
+  if(sb){ const { error } = await sb.from("sinistros").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  SIN.lista = SIN.lista.filter(x=>x.id!==id); sinSalvarLocal(); sinRedesenhar();
+};
+
+/* ---------- Relatório do sinistro em PDF (para o WhatsApp) ---------- */
+function sinDimImg(dados){ return new Promise(ok=>{ const i = new Image(); i.onload = () => ok({ w:i.width, h:i.height }); i.onerror = () => ok({ w:4, h:3 }); i.src = dados; }); }
+async function sinPDFDoc(r){
+  await nfgCarregarPDF();
+  const an = await sinAnexos(r);
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 14;
+  const v = SIN.veiculos.find(x=>x.id===r.veiculoId);
+  doc.setFillColor(214, 40, 30); doc.rect(0, 0, W, 4, "F");
+  doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(20, 20, 26); doc.text("AVANCE LOGÍSTICA INTEGRADA", M, 16);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(90, 90, 100); doc.text("Gestão de frota · registro de ocorrência", M, 22);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(214, 40, 30); doc.text("RELATÓRIO DE SINISTRO", W-M, 13, { align:"right" });
+  doc.setFontSize(20); doc.setTextColor(20, 20, 26); doc.text(`Nº ${sinNum(r.numero)}`, W-M, 21, { align:"right" });
+  const caixas = [["Placa", r.placa||"-"], ["Frota nº", v ? String(v.ordem).padStart(2,"0") : "-"], ["Data", r.data ? fmtDataBR(r.data) : "-"], ["Hora", r.hora||"-"], ["Registrado por", r.por||"-"]];
+  const bw = (W - 2*M - 12) / 5;
+  caixas.forEach(([l, val], i)=>{ const x = M + i*(bw+3); doc.setFillColor(245, 245, 247); doc.roundedRect(x, 28, bw, 15, 2, 2, "F");
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(110, 110, 120); doc.text(l.toUpperCase(), x+3, 33);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(20, 20, 26); doc.text(String(val), x+3, 40); });
+  let y = 51;
+  const quebra = (alt) => { if(y + alt > H - 16){ doc.addPage(); y = 18; } };
+  [["QUEM?", r.quem], ["COMO?", r.como], ["QUANDO?", r.quando || `${r.data ? fmtDataBR(r.data) : ""}${r.hora ? " às " + r.hora : ""}`], ["AONDE?", r.aonde], ["ANÁLISE DA OCORRÊNCIA", r.analise]].forEach(([t, txt])=>{
+    const linhas = doc.splitTextToSize(String(txt || "—"), W - 2*M - 6);
+    quebra(10 + Math.min(linhas.length, 6) * 5);
+    doc.setFillColor(20, 20, 26); doc.rect(M, y, W-2*M, 7, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(255, 255, 255); doc.text(t, M+3, y+5);
+    y += 11; doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(20, 20, 26);
+    linhas.forEach(l=>{ quebra(5); doc.text(l, M+3, y); y += 5; }); y += 4;
+  });
+  const fotos = an.filter(a=>/^image\//.test(a.tipo)), outros = an.filter(a=>!/^image\//.test(a.tipo));
+  if(an.length){
+    quebra(16); doc.setFillColor(214, 40, 30); doc.rect(M, y, W-2*M, 7, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(255, 255, 255);
+    doc.text(`EVIDÊNCIAS (${an.length})`, M+3, y+5); y += 11;
+    const cw = (W - 2*M - 6) / 2; let col = 0, linhaAlt = 0;
+    for(const f of fotos){
+      const d = f.w && f.h ? { w:f.w, h:f.h } : await sinDimImg(f.dados);
+      const h = Math.min(cw * d.h / d.w, 95), w = h * d.w / d.h;
+      if(col === 0){ quebra(h + 8); linhaAlt = 0; }
+      const x = M + col*(cw+6) + (cw - w)/2;
+      try{ doc.addImage(f.dados, "JPEG", x, y, w, h); }catch(e){}
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(110, 110, 120); doc.text(doc.splitTextToSize(f.nome, cw)[0], M + col*(cw+6), y + h + 4);
+      linhaAlt = Math.max(linhaAlt, h + 8);
+      if(col === 1){ y += linhaAlt; col = 0; } else col = 1;
+    }
+    if(col === 1) y += linhaAlt;
+    if(outros.length){ quebra(8 + outros.length*5); doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(20, 20, 26); doc.text("Outros arquivos anexados ao registro:", M, y+3); y += 8;
+      doc.setFont("helvetica", "normal"); outros.forEach(a=>{ doc.text(`• ${a.nome}`, M+3, y); y += 5; }); }
+  }
+  quebra(30); y += 14; doc.setDrawColor(150, 150, 160); doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(80, 80, 90);
+  doc.line(M, y, M+80, y); doc.text("Responsável pelo registro", M, y+4.5); doc.line(W-M-80, y, W-M, y); doc.text("Gestor da frota / Diretoria", W-M-80, y+4.5);
+  const np = doc.internal.getNumberOfPages();
+  for(let i = 1; i <= np; i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(140, 140, 150); doc.text(`Sinistro nº ${sinNum(r.numero)} · ${r.placa} · gerado em ${fmtDataBR(frotaHojeISO())} às ${frotaHora()}`, M, H-7); doc.text(`Página ${i} de ${np}`, W-M, H-7, { align:"right" }); }
+  return doc;
+}
+const sinNomePDF = (r) => `Sinistro_${sinNum(r.numero)}_${String(r.placa).replace(/[^A-Z0-9]+/gi,"")}.pdf`;
+window.sinPDF = async (id) => { const r = SIN.lista.find(x=>x.id===id); if(!r) return; const aba = window.open("", "_blank");
+  try{ const url = (await sinPDFDoc(r)).output("bloburl"); if(aba) aba.location.href = url; else (await sinPDFDoc(r)).save(sinNomePDF(r)); }catch(e){ if(aba) aba.close(); toast("⚠ Não foi possível gerar o PDF: " + e.message); } };
+window.sinEnviar = async (id) => {
+  const r = SIN.lista.find(x=>x.id===id); if(!r) return;
+  let doc; try{ doc = await sinPDFDoc(r); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); return; }
+  const nome = sinNomePDF(r), texto = `*Avance Logística Integrada*\nRelatório de sinistro nº ${sinNum(r.numero)}\nPlaca ${r.placa} · ${r.data ? fmtDataBR(r.data) : ""}${r.hora ? " às " + r.hora : ""}\nSegue o relatório em PDF.`;
+  const arq = new File([doc.output("blob")], nome, { type:"application/pdf" });
+  if(navigator.canShare && navigator.canShare({ files:[arq] })){ try{ await navigator.share({ files:[arq], title:`Sinistro ${sinNum(r.numero)}`, text:texto.replace(/\*/g,"") }); return; } catch(e){ if(e.name === "AbortError") return; } }
+  doc.save(nome); window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank"); toast("PDF baixado — no WhatsApp, anexe o arquivo " + nome);
+};
+
+function sinPagina(){
+  sinGarantirCarga();
+  if(SIN.erro) return `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar os sinistros</h4><p>${osEsc(SIN.erro)}</p><p>Se falar em tabela inexistente ("sinistros"), rode o SQL do Sinistro no Supabase.</p></div></div>`;
+  if(!SIN.carregado) return `<div class="panel"><div class="empty-state" style="padding:24px;"><p>Carregando...</p></div></div>`;
+  const f = SIN_FORM, ano = frotaHojeISO().slice(0,4), mes = frotaHojeISO().slice(0,7);
+  const campo = (k, rotulo, dica, linhas) => `<label class="sin-q"><span>${rotulo}</span>${linhas ? `<textarea id="sin-${k}" rows="${linhas}" placeholder="${dica}">${osEsc(f[k]||"")}</textarea>` : `<input id="sin-${k}" value="${osEsc(f[k]||"")}" placeholder="${dica}">`}</label>`;
+  return `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Sinistros no ano</div><div class="val">${SIN.lista.filter(r=>(r.data||"").startsWith(ano)).length}</div></div>
+      <div class="kpi"><div class="lbl">No mês</div><div class="val">${SIN.lista.filter(r=>(r.data||"").startsWith(mes)).length}</div></div>
+      <div class="kpi"><div class="lbl">Placas envolvidas</div><div class="val">${new Set(SIN.lista.map(r=>r.placa)).size}</div><div class="delta flat">de ${SIN.veiculos.length} na frota</div></div>
+      <div class="kpi"><div class="lbl">Último registro</div><div class="val" style="font-size:22px;">${SIN.lista[0] ? `${osEsc(SIN.lista[0].placa)}` : "—"}</div><div class="delta flat">${SIN.lista[0] && SIN.lista[0].data ? fmtDataBR(SIN.lista[0].data) : ""}</div></div>
+    </div>
+    ${f ? `<div class="panel os-form sin-form" id="sin-form" style="margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+        <h3 style="margin:0;">${f.id ? `✏️ Sinistro nº ${sinNum(f.numero)}` : "⚠️ Registrar sinistro"}</h3><button class="os-btn" onclick="sinCancelar()">Fechar</button>
+      </div>
+      <div class="nf-grid" style="grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); margin-top:10px;">
+        <label>Placa<select id="sin-veiculoId" onchange="sinPlaca(this.value)"><option value="">Selecione</option>${SIN.veiculos.map(v=>`<option value="${v.id}" ${v.id===f.veiculoId?"selected":""}>${String(v.ordem).padStart(2,"0")} · ${osEsc(v.placa)}${v.motorista ? ` — ${osEsc(v.motorista)}` : ""}</option>`).join("")}</select></label>
+        <label>Data<input type="date" id="sin-data" value="${f.data||""}"></label>
+        <label>Hora<input type="time" id="sin-hora" value="${f.hora||""}"></label>
+      </div>
+      ${campo("quem", "Quem?", "motorista e demais envolvidos (terceiros, testemunhas)")}
+      ${campo("como", "Como?", "o que aconteceu, passo a passo", 3)}
+      ${campo("quando", "Quando?", "momento da ocorrência (ex: durante a manobra no pátio, na saída do turno)")}
+      ${campo("aonde", "Aonde?", "local: endereço, pátio, cliente, rodovia/km")}
+      ${campo("analise", "Análise da ocorrência?", "causa, responsabilidade, danos, medidas tomadas e próximos passos", 4)}
+      <div class="sin-anexos">
+        <label class="sin-q" style="margin:0;"><span>Anexo de evidência (fotos ou arquivos)</span>
+          <input type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt" onchange="sinAddAnexos(this)"></label>
+        ${f.anexos.length ? `<div class="sin-thumbs">${f.anexos.map((a,i)=>`<div class="sin-thumb">${/^image\//.test(a.tipo) ? `<img src="${a.dados}" alt="${osEsc(a.nome)}" onclick="sinVerAnexo(null, ${i})">` : `<div class="sin-arq" onclick="sinVerAnexo(null, ${i})">📎<span>${osEsc(a.nome)}</span></div>`}
+          <button class="os-link" onclick="sinTirarAnexo(${i})" title="Tirar">🗑️</button></div>`).join("")}</div>` : `<div class="hint" style="margin:6px 0 0;">Fotos são reduzidas automaticamente; outros arquivos até 4 MB.</div>`}
+      </div>
+      <button class="entry-submit" onclick="sinSalvar()">💾 Salvar sinistro</button>
+    </div>` : ""}
+    <div class="panel" style="margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">⚠️ Sinistros registrados (${SIN.lista.length})</h3><div class="hint">Gere o relatório em PDF ou envie direto pelo WhatsApp.</div></div>
+        <button class="entry-submit" style="margin:0;" onclick="sinNovo()">+ Registrar sinistro</button>
+      </div>
+      ${SIN.lista.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
+        <thead><tr><th>Nº</th><th>Data</th><th>Placa</th><th>Quem?</th><th>Como?</th><th>Aonde?</th><th>Anexos</th><th></th></tr></thead>
+        <tbody>${SIN.lista.map(r=>`<tr>
+          <td><b>${sinNum(r.numero)}</b></td><td style="white-space:nowrap;">${r.data ? fmtDataBR(r.data) : "—"}${r.hora ? `<div class="hint" style="margin:0;">${r.hora}</div>` : ""}</td>
+          <td><b>${osEsc(r.placa)}</b></td><td style="max-width:160px;">${osEsc(r.quem)||"—"}</td>
+          <td style="max-width:280px; font-size:12.5px;">${osEsc((r.como||"").slice(0,140))}${(r.como||"").length > 140 ? "…" : ""}</td>
+          <td style="max-width:180px; font-size:12.5px;">${osEsc(r.aonde)||"—"}</td>
+          <td>${r.anexosQtd ? `📎 ${r.anexosQtd}` : "—"}</td>
+          <td style="white-space:nowrap;"><button class="os-btn sm" onclick="sinPDF('${r.id}')">📄 PDF</button> <button class="os-btn sm green" onclick="sinEnviar('${r.id}')">📲 WhatsApp</button>
+            <button class="os-link" onclick="sinEditar('${r.id}')" title="Editar">✏️</button> <button class="os-link" onclick="sinExcluir('${r.id}')" title="Excluir">🗑️</button></td>
+        </tr>`).join("")}</tbody></table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nenhum sinistro registrado.</p></div>`}
+    </div>`;
+}
+
+// Infrações: aba SINISTRO no topo + a tela de infrações de sempre
+renderers.infracoes = () => {
+  const abas = `<div class="tabs" style="margin-bottom:14px;">
+      <button class="tab-btn sin-tab ${INF_ABA==="sinistro"?"active":""}" onclick="setInfAba('sinistro')">⚠️ SINISTRO</button>
+      <button class="tab-btn ${INF_ABA==="infracoes"?"active":""}" onclick="setInfAba('infracoes')">📊 Infrações</button>
+    </div>`;
+  if(INF_ABA === "sinistro") return abas + `<div class="page-head"><h2>Sinistro</h2><p>Registro de sinistros por placa — quem, como, quando, aonde e análise, com evidências e relatório em PDF</p></div>` + sinPagina();
+  return abas + infracoesPagina();
+};
+initCharts.infracoes = () => { if(INF_ABA !== "sinistro") infracoesChartsBase(); };
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
 renderers.belem = () => {
   const b = DATA.belem;

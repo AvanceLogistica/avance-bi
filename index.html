@@ -618,6 +618,15 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .frota-st{ font-family:inherit; font-size:12.5px; font-weight:700; padding:10px 6px; border-radius:8px; border:1px solid var(--line); background:var(--paper); color:var(--ink-soft); cursor:pointer; }
 .frota-st.sel.green{ background:var(--green); border-color:var(--green); color:#fff; }
 .frota-st.sel.amber{ background:var(--amber); border-color:var(--amber); color:#fff; }
+.sin-tab{ font-weight:800; letter-spacing:.5px; } .sin-tab.active{ background:var(--red) !important; border-color:var(--red) !important; color:#fff !important; }
+.sin-form{ border:2px solid var(--red); } .sin-q{ display:flex; flex-direction:column; gap:4px; margin-top:12px; }
+.sin-q > span{ font-family:inherit; font-size:13px; font-weight:800; color:var(--ink); }
+.sin-q textarea{ width:100%; box-sizing:border-box; font-family:inherit; font-size:14px; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--paper); }
+.sin-anexos{ margin-top:12px; padding:12px; background:var(--paper); border-radius:10px; } .sin-anexos input[type=file]{ font-size:13px; }
+.sin-thumbs{ display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; } .sin-thumb{ display:flex; flex-direction:column; align-items:center; gap:2px; }
+.sin-thumb img{ width:110px; height:82px; object-fit:cover; border-radius:8px; cursor:pointer; border:1px solid var(--line); }
+.sin-arq{ width:110px; height:82px; border-radius:8px; border:1px solid var(--line); background:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; cursor:pointer; font-size:22px; }
+.sin-arq span{ font-size:10.5px; max-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .fof-n{ display:inline-block; min-width:20px; padding:1px 6px; border-radius:10px; background:var(--amber); color:#fff; font-size:11px; font-weight:800; margin-left:4px; }
 .fof-chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 .fof-chip{ font-family:inherit; display:flex; flex-direction:column; align-items:flex-start; gap:2px; text-align:left; padding:8px 12px; border-radius:10px; border:1px dashed #E1971F; background:#FFF8EA; cursor:pointer; max-width:240px; }
@@ -839,7 +848,7 @@ body.pending #pendingScreen{display:flex;}
   <main class="content" id="content"></main>
 </div>
 
-<script src="data.js?v=20261026g"></script>
-<script src="app.js?v=20261026g"></script>
+<script src="data.js?v=20261026h"></script>
+<script src="app.js?v=20261026h"></script>
 </body>
 </html>
