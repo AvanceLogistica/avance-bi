@@ -9378,6 +9378,8 @@ function oseCfg(){ return { ...OSE_CFG_PADRAO, ...(OSE.cfg||{}) }; }
 const oseBRL = (v) => "R$ " + Number(v||0).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 });
 const oseNum = (n) => n ? String(n).padStart(4, "0") : "—";
 const oseDiaPlano = (o) => o.dataPlano || o.entrada || "";
+// ordem de abertura da carreta: data e hora de entrada (sem hora vai por último no dia), depois a frota
+const oseOrdemAbertura = (a, b) => ((a.entrada||"9999") + " " + (a.entradaHora||"99:99")).localeCompare((b.entrada||"9999") + " " + (b.entradaHora||"99:99")) || (a.frota||"").localeCompare(b.frota||"", undefined, { numeric:true });
 
 async function oseCarregar(){
   OSE.carregando = true;
@@ -9577,6 +9579,20 @@ function oseProtHTML(){
     <div class="hint" style="margin-top:8px;">${ls.length ? `<b>${ls.length}</b> O.S · ${fmtBRL2(sumArr(ls.map(oseValor)))}${faltam.length ? ` · <span style="color:var(--amber);">números sem O.S emitida na faixa: ${faltam.join(", ")}</span>` : ""}` : "Nenhuma O.S emitida nessa faixa."}</div>
   </div>`;
 }
+// Nº do protocolo: sequência própria (começa no 31). A mesma faixa de O.S reimpressa mantém o número.
+async function oseProtNumero(dia, de, ate){
+  let reg = null;
+  if(sb){ const r = await sb.from("app_config").select("valor").eq("chave", "os_protocolos").maybeSingle(); if(r.error) throw new Error(r.error.message); reg = r.data && r.data.valor; }
+  else { try{ reg = JSON.parse(localStorage.getItem("ose_protocolos") || "null"); }catch(e){} }
+  if(!reg || typeof reg !== "object") reg = { proximo:31, lista:[] };
+  if(!Array.isArray(reg.lista)) reg.lista = [];
+  const ja = reg.lista.find(x=>x.de===de && x.ate===ate); if(ja) return ja.n;
+  const n = Math.max(Number(reg.proximo) || 31, ...reg.lista.map(x=>x.n + 1));
+  reg.lista.push({ n, dia, de, ate, por:MEU_EMAIL, em:new Date().toISOString() }); reg.proximo = n + 1;
+  if(sb){ const { error } = await sb.from("app_config").upsert({ chave:"os_protocolos", valor:reg, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }, { onConflict:"chave" }); if(error) throw new Error(error.message); }
+  else { try{ localStorage.setItem("ose_protocolos", JSON.stringify(reg)); }catch(e){} }
+  return n;
+}
 window.oseProtGerar = async () => {
   const ls = oseProtLista(); if(!ls.length){ toast("Nenhuma O.S na faixa."); return; }
   if(!oseConfereCfg()) return;
@@ -9585,7 +9601,7 @@ window.oseProtGerar = async () => {
     await nfgCarregarPDF();
     const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12, cfg = oseCfg();
     const total = sumArr(ls.map(oseValor)), de = oseNum(ls[0].numero), ate = oseNum(ls[ls.length-1].numero);
-    const diaEm = OSE_PROT.data, nProt = `${diaEm.replace(/-/g,"")}-${de}`;
+    const diaEm = OSE_PROT.data, nProt = String(await oseProtNumero(diaEm, de, ate));
     oseCabecalhoPDF(doc, 12);
     const X = 12+108, QW = W-12-X;
     doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(20, 20, 26); doc.text(`PROTOCOLO Nº ${nProt}`, X + QW/2, 41.5, { align:"center" });
@@ -9759,7 +9775,7 @@ window.oseSetPlanoDia = (d) => { if(d){ OSE_PLANO_DIA = d; oseRedesenhar(); } };
 window.osePreImprimir = async (id) => {
   const veV = oseVeValores();
   const ls = id ? OSE.lista.filter(o=>o.id===id)
-    : OSE.lista.filter(o=>o.status===(OSE_FILTRO==="validada" ? "validada" : "pre")).sort((a,b)=>oseDiaPlano(a).localeCompare(oseDiaPlano(b)) || (a.frota||"").localeCompare(b.frota||"", undefined, { numeric:true }));
+    : OSE.lista.filter(o=>o.status===(OSE_FILTRO==="validada" ? "validada" : "pre")).sort(oseOrdemAbertura);
   if(!ls.length){ toast("Nenhuma Pré O.S para imprimir."); return; }
   const aba = window.open("", "_blank");
   try{
@@ -9952,7 +9968,10 @@ async function osePDFDoc(o){
 }
 const oseNomePDF = (o) => `OS_${oseNum(o.numero)}_frota_${String(o.frota).replace(/[^A-Z0-9]+/gi,"")}.pdf`;
 function oseConfereCfg(){ return OSE.cfgSalvo || confirm("Os dados do cabeçalho da O.S (CNPJ, endereço da Avance e do cliente) ainda não foram conferidos e salvos.\n\nGerar o PDF assim mesmo?"); }
-window.osePDF = async (id) => { const o = OSE.lista.find(x=>x.id===id); if(!o || !oseConfereCfg()) return; try{ (await osePDFDoc(o)).save(oseNomePDF(o)); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); } };
+window.osePDF = async (id) => { const o = OSE.lista.find(x=>x.id===id); if(!o || !oseConfereCfg()) return;
+  const aba = window.open("", "_blank");   // abre para visualizar e imprimir, sem baixar
+  try{ const doc = await osePDFDoc(o); if(aba) aba.location.href = doc.output("bloburl"); else doc.save(oseNomePDF(o)); }
+  catch(e){ if(aba) aba.close(); toast("⚠ Não foi possível gerar o PDF: " + e.message); } };
 window.oseEnviar = async (id) => {
   const o = OSE.lista.find(x=>x.id===id); if(!o || !oseConfereCfg()) return;
   let doc; try{ doc = await osePDFDoc(o); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); return; }
@@ -10004,7 +10023,7 @@ function osePagina(){
   const emLanc = OSE.lista.filter(o=>o.status==="plano"), pre = OSE.lista.filter(o=>o.status==="pre"), validadas = OSE.lista.filter(o=>o.status==="validada"), emit = OSE.lista.filter(o=>o.status==="emitida");
   const emitMes = emit.filter(o=>(o.emitidaEm||o.entrada||"").startsWith(mes));
   if(!["pre","validada"].includes(OSE_FILTRO)) OSE_FILTRO = "pre";
-  const listaPre = (OSE_FILTRO==="pre" ? pre : validadas).sort((a,b)=>oseDiaPlano(a).localeCompare(oseDiaPlano(b)));
+  const listaPre = (OSE_FILTRO==="pre" ? pre : validadas).sort(oseOrdemAbertura);
   const contSit = { aguardando:0, assinada:0, nf:0 }; emit.forEach(o=>contSit[oseSituacao(o).k]++);
   const listaOS = emit.filter(o=>OSE_OS_FILTRO==="todas" || oseSituacao(o).k===OSE_OS_FILTRO).sort((a,b)=>(b.numero||0)-(a.numero||0) || (b.entrada||"").localeCompare(a.entrada||""));
   const resumoItens = (o) => (o.itens||[]).map(it=>`<span class="ose-chip" title="${osEsc(it.servico)}"><b>${it.cod}</b> ${String(it.qtd).replace(".", ",")}${it.un==="m" ? "m" : ""}</span>`).join("");
