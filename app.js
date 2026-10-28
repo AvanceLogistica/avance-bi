@@ -10433,11 +10433,11 @@ window.sinEditar = async (id) => { const r = SIN.lista.find(x=>x.id===id); if(!r
   SIN_FORM = { ...r, plano:sinPlanoNorm(r.plano).map(x=>({ ...x })), anexos:an.map(a=>({ ...a })) }; sinRedesenhar(); setTimeout(()=>document.getElementById("sin-form")?.scrollIntoView({ behavior:"smooth", block:"start" }), 60); };
 window.sinCancelar = () => { SIN_FORM = null; sinRedesenhar(); };
 window.sinPlaca = (vid) => { sinLerForm(); const v = SIN.veiculos.find(x=>x.id===vid); if(SIN_FORM && v && !SIN_FORM.quem) SIN_FORM.quem = v.motorista || ""; sinRedesenhar(); };
-function sinReduzirFoto(file){
+function sinReduzirFoto(file, max = 1280, q = 0.74){
   return new Promise((ok, erro)=>{ const url = URL.createObjectURL(file), img = new Image();
-    img.onload = () => { const k = Math.min(1, 1280 / Math.max(img.width, img.height)), c = document.createElement("canvas");
+    img.onload = () => { const k = Math.min(1, max / Math.max(img.width, img.height)), c = document.createElement("canvas");
       c.width = Math.round(img.width*k); c.height = Math.round(img.height*k); c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url); ok({ nome:file.name, tipo:"image/jpeg", dados:c.toDataURL("image/jpeg", 0.74), w:c.width, h:c.height }); };
+      URL.revokeObjectURL(url); ok({ nome:file.name, tipo:"image/jpeg", dados:c.toDataURL("image/jpeg", q), w:c.width, h:c.height }); };
     img.onerror = () => { URL.revokeObjectURL(url); erro(new Error("imagem ilegível")); }; img.src = url; });
 }
 function sinLerArquivo(file){ return new Promise((ok, erro)=>{ const fr = new FileReader(); fr.onload = () => ok({ nome:file.name, tipo:file.type || "application/octet-stream", dados:fr.result }); fr.onerror = () => erro(fr.error); fr.readAsDataURL(file); }); }
@@ -10446,7 +10446,9 @@ window.sinAddAnexos = async (input) => {
   const arqs = [...(input.files||[])]; let n = 0;
   for(const a of arqs){
     try{
-      if(/^image\//.test(a.type)){ if(f.anexos.filter(x=>/^image\//.test(x.tipo)).length >= 2){ toast("Limite de 2 fotos — tire uma para trocar."); continue; } f.anexos.push(await sinReduzirFoto(a)); }
+      if(/^image\//.test(a.type)){ const nf = f.anexos.filter(x=>/^image\//.test(x.tipo)).length;
+        if(nf >= 4){ toast("Limite de 4 fotos — tire uma para trocar."); continue; }
+        f.anexos.push(await (nf < 2 ? sinReduzirFoto(a) : sinReduzirFoto(a, 640, 0.6))); }   // fotos 3 e 4: baixa resolução
       else if(a.size > SIN_MAX_ARQ){ toast(`⚠ ${a.name} passa de 4 MB — não foi anexado.`); continue; }
       else f.anexos.push(await sinLerArquivo(a));
       n++;
@@ -10526,18 +10528,18 @@ async function sinPDFDoc(r){
   if(an.length){
     quebra(16); doc.setFillColor(214, 40, 30); doc.rect(M, y, W-2*M, 7, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(255, 255, 255);
     doc.text(`EVIDÊNCIAS (${an.length})`, M+3, y+5); y += 11;
-    const cw = (W - 2*M - 6) / 2; let col = 0, linhaAlt = 0;
+    const COLS = 4, cw = (W - 2*M - 4*(COLS-1)) / COLS; let col = 0, linhaAlt = 0;
     for(const f of fotos){
       const d = f.w && f.h ? { w:f.w, h:f.h } : await sinDimImg(f.dados);
-      const h = Math.min(cw * 0.6 * d.h / d.w, 40), w = h * d.w / d.h;   // compactas: até 4 cm de altura
+      let h = Math.min(cw * d.h / d.w, 34), w = h * d.w / d.h; if(w > cw){ w = cw; h = w * d.h / d.w; }   // compactas: até 3,4 cm de altura
       if(col === 0){ quebra(h + 8); linhaAlt = 0; }
-      const x = M + col*(cw+6) + (cw - w)/2;
+      const x = M + col*(cw+4) + (cw - w)/2;
       try{ doc.addImage(f.dados, "JPEG", x, y, w, h); }catch(e){}
-      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(110, 110, 120); doc.text(doc.splitTextToSize(f.nome, cw)[0], M + col*(cw+6), y + h + 4);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(110, 110, 120); doc.text(doc.splitTextToSize(f.nome, cw)[0], M + col*(cw+4), y + h + 4);
       linhaAlt = Math.max(linhaAlt, h + 8);
-      if(col === 1){ y += linhaAlt; col = 0; } else col = 1;
+      if(++col === COLS){ y += linhaAlt; col = 0; }
     }
-    if(col === 1) y += linhaAlt;
+    if(col) y += linhaAlt;
     if(outros.length){ quebra(8 + outros.length*5); doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(20, 20, 26); doc.text("Outros arquivos anexados ao registro:", M, y+3); y += 8;
       doc.setFont("helvetica", "normal"); outros.forEach(a=>{ doc.text(`• ${a.nome}`, M+3, y); y += 5; }); }
   }
@@ -10599,13 +10601,13 @@ function sinPagina(){
         <span class="sin-plano-tit" style="margin-bottom:6px;">Evidências</span>
         <div class="sin-ev">
           ${(()=>{ const fotos = f.anexos.map((a,i)=>({ a, i })).filter(x=>/^image\//.test(x.a.tipo));
-            return [0, 1].map(k=>{ const x = fotos[k];
+            return [0, 1, 2, 3].map(k=>{ const x = fotos[k];
               return x ? `<div class="sin-foto"><img src="${x.a.dados}" alt="Foto ${k+1}" onclick="sinVerAnexo(null, ${x.i})"><button class="sin-foto-x" onclick="sinTirarAnexo(${x.i})" title="Tirar foto">✕</button><small>Foto ${k+1}</small></div>`
                 : `<label class="sin-foto vazia"><input type="file" accept="image/*" onchange="sinAddAnexos(this)" style="display:none;">📷<small>Foto ${k+1}</small></label>`; }).join(""); })()}
           <div class="sin-arqs">
             <label class="os-btn sm" style="cursor:pointer;">📎 Anexar arquivo<input type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.txt" onchange="sinAddAnexos(this)" style="display:none;"></label>
             ${f.anexos.map((a,i)=>({ a, i })).filter(x=>!/^image\//.test(x.a.tipo)).map(x=>`<span class="sin-arq-chip"><button class="os-link" onclick="sinVerAnexo(null, ${x.i})">📄 ${osEsc(x.a.nome)}</button> <button class="os-link" onclick="sinTirarAnexo(${x.i})" title="Tirar">✕</button></span>`).join("")}
-            <div class="hint" style="margin:2px 0 0;">Até 2 fotos (saem no PDF) · arquivos até 4 MB</div>
+            <div class="hint" style="margin:2px 0 0;">Até 4 fotos (saem no PDF; 3 e 4 em baixa resolução) · arquivos até 4 MB</div>
           </div>
         </div>
       </div>
