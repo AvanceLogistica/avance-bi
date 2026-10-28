@@ -9645,11 +9645,11 @@ window.oseProtGerar = async () => {
     doc.text(doc.splitTextToSize(txt, W-2*M), M, 104);
     doc.autoTable({ startY:116, margin:{ left:M, right:M }, theme:"grid",
       head:[["Nº O.S", "Frota", "Placa", "Início", "Saída", "Serviços", "Valor"]],
-      body:ls.map(o=>[oseNum(o.numero), o.frota||"-", o.placa||"-", o.entrada ? fmtDataBR(o.entrada) : "-", o.saida ? fmtDataBR(o.saida) : "-", String((o.itens||[]).length), oseBRL(oseValor(o))]),
+      body:[...ls].sort(oseOrdemAbertura).map(o=>[oseNum(o.numero), o.frota||"-", o.placa||"-", o.entrada ? `${fmtDataBR(o.entrada)}${o.entradaHora ? " " + o.entradaHora.slice(0,5) : ""}` : "-", o.saida ? fmtDataBR(o.saida) : "-", String((o.itens||[]).length), oseBRL(oseValor(o))]),
       foot:[[{ content:`Total — ${ls.length} O.S (nº ${de} a ${ate})`, colSpan:6 }, oseBRL(total)]], showFoot:"lastPage",
       styles:{ fontSize:9, cellPadding:2, lineColor:[190,190,198], lineWidth:0.2, textColor:[20,20,26], valign:"middle" },
       headStyles:{ fillColor:[214,40,30], textColor:[255,255,255] }, footStyles:{ fillColor:[255,214,0], textColor:[20,20,26], fontStyle:"bold" },
-      columnStyles:{ 0:{ fontStyle:"bold", cellWidth:20 }, 3:{ cellWidth:24 }, 4:{ cellWidth:24 }, 5:{ halign:"center", cellWidth:20 }, 6:{ halign:"right", cellWidth:30 } },
+      columnStyles:{ 0:{ fontStyle:"bold", cellWidth:20 }, 3:{ cellWidth:30 }, 4:{ cellWidth:24 }, 5:{ halign:"center", cellWidth:20 }, 6:{ halign:"right", cellWidth:30 } },
       didParseCell:(c)=>{ if(c.column.index===6) c.cell.styles.halign = "right"; if(c.column.index===5 && c.section!=="foot") c.cell.styles.halign = "center"; } });
     let y = doc.lastAutoTable.finalY + 16; if(y > H - 70){ doc.addPage(); y = 30; }
     // assinaturas
@@ -10051,7 +10051,7 @@ function osePagina(){
   if(!["pre","validada"].includes(OSE_FILTRO)) OSE_FILTRO = "pre";
   const listaPre = (OSE_FILTRO==="pre" ? pre : validadas).sort(oseOrdemAbertura);
   const contSit = { aguardando:0, assinada:0, nf:0 }; emit.forEach(o=>contSit[oseSituacao(o).k]++);
-  const listaOS = emit.filter(o=>OSE_OS_FILTRO==="todas" || oseSituacao(o).k===OSE_OS_FILTRO).sort((a,b)=>(b.numero||0)-(a.numero||0) || (b.entrada||"").localeCompare(a.entrada||""));
+  const listaOS = emit.filter(o=>OSE_OS_FILTRO==="todas" || oseSituacao(o).k===OSE_OS_FILTRO).sort((a,b)=>(b.entrada||"").localeCompare(a.entrada||"") || oseOrdemAbertura(a, b) || (a.numero||0)-(b.numero||0));
   const resumoItens = (o) => (o.itens||[]).map(it=>`<span class="ose-chip" title="${osEsc(it.servico)}"><b>${it.cod}</b> ${String(it.qtd).replace(".", ",")}${it.un==="m" ? "m" : ""}</span>`).join("");
   const destaque = (o) => OSE_EDIT && (OSE_EDIT.id===o.id || OSE_EDIT.preId===o.id) ? 'style="background:#FCF1DE;"' : "";
   return `
