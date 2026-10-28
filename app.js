@@ -10577,7 +10577,7 @@ function sinPagina(){
         <h3 style="margin:0;">${f.id ? `✏️ Sinistro nº ${sinNum(f.numero)}` : "⚠️ Registrar sinistro"}</h3><button class="os-btn" onclick="sinCancelar()">Fechar</button>
       </div>
       <div class="nf-grid" style="grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); margin-top:10px;">
-        <label>Placa<select id="sin-veiculoId" onchange="sinPlaca(this.value)"><option value="">Selecione</option>${SIN.veiculos.map(v=>`<option value="${v.id}" ${v.id===f.veiculoId?"selected":""}>${String(v.ordem).padStart(2,"0")} · ${osEsc(v.placa)}${v.motorista ? ` — ${osEsc(v.motorista)}` : ""}</option>`).join("")}</select></label>
+        <label>Placa<select id="sin-veiculoId" onchange="sinPlaca(this.value)"><option value="">Selecione</option>${SIN.veiculos.map(v=>`<option value="${v.id}" ${v.id===f.veiculoId?"selected":""}>${String(v.ordem).padStart(2,"0")} · ${osEsc(v.placa)}</option>`).join("")}</select></label>
         <label>Data<input type="date" id="sin-data" value="${f.data||""}"></label>
         <label>Hora<input type="time" id="sin-hora" value="${f.hora||""}"></label>
       </div>
