@@ -8664,6 +8664,29 @@ function nfgCarregarPDF(){
   NFG_PDF_LIB = carregar("jspdf.umd.min.js").then(()=>carregar("jspdf.plugin.autotable.min.js")).catch(e=>{ NFG_PDF_LIB = null; throw e; });
   return NFG_PDF_LIB;
 }
+// Imprimir um PDF sem depender do leitor de PDF do navegador (que em alguns computadores só baixa o arquivo):
+// cada página vira imagem (pdf.js) e vai para a janela de impressão.
+let PDF_IMPRESSAO_LIB = null;
+function pdfImpCarregar(){
+  if(window.pdfjsLib) return Promise.resolve();
+  if(!PDF_IMPRESSAO_LIB) PDF_IMPRESSAO_LIB = new Promise((ok, erro)=>{ const el = document.createElement("script"); el.src = "pdf.min.js"; el.onload = ok; el.onerror = () => { PDF_IMPRESSAO_LIB = null; erro(new Error("não carregou pdf.min.js")); }; document.head.appendChild(el); });
+  return PDF_IMPRESSAO_LIB;
+}
+async function imprimirPDF(doc){
+  await pdfImpCarregar(); window.pdfjsLib.GlobalWorkerOptions.workerSrc = "pdf.worker.min.js";
+  const pdf = await window.pdfjsLib.getDocument({ data:doc.output("arraybuffer") }).promise, imgs = []; let deitado = false;
+  for(let i = 1; i <= pdf.numPages; i++){
+    const pg = await pdf.getPage(i), vp = pg.getViewport({ scale:2.2 }), c = document.createElement("canvas");
+    c.width = vp.width; c.height = vp.height; if(i === 1) deitado = vp.width > vp.height;
+    await pg.render({ canvasContext:c.getContext("2d"), viewport:vp }).promise; imgs.push(c.toDataURL("image/jpeg", 0.92));
+  }
+  const fr = document.createElement("iframe"); fr.style.cssText = "position:fixed; right:0; bottom:0; width:0; height:0; border:0;"; document.body.appendChild(fr);
+  const d = fr.contentWindow.document;
+  d.open(); d.write(`<!doctype html><html><head><meta charset="utf-8"><title>Imprimir</title><style>@page{ size:A4 ${deitado ? "landscape" : "portrait"}; margin:0; } html,body{ margin:0; } img{ display:block; width:100%; page-break-after:always; } img:last-child{ page-break-after:auto; }</style></head><body>${imgs.map(u=>`<img src="${u}">`).join("")}</body></html>`); d.close();
+  await Promise.all([...d.images].map(im=>im.complete ? 0 : new Promise(r=>{ im.onload = im.onerror = r; })));
+  fr.contentWindow.focus(); fr.contentWindow.print();
+  setTimeout(()=>fr.remove(), 60000);
+}
 const nfgBRL = (v) => "R$ " + Number(v||0).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 });
 function nfgCobNomeArquivo(){ const h = frotaHojeISO(); return `Avance_NFs_em_aberto_${NFG_COB_ATIV==="todas" ? "" : nfSemAcento(nfeAtiv(NFG_COB_ATIV).label).replace(/[^A-Z0-9]+/g,"_") + "_"}${h.slice(8,10)}-${h.slice(5,7)}-${h.slice(0,4)}.pdf`; }
 function nfgCobTexto(ls){
@@ -9968,6 +9991,9 @@ async function osePDFDoc(o){
 }
 const oseNomePDF = (o) => `OS_${oseNum(o.numero)}_frota_${String(o.frota).replace(/[^A-Z0-9]+/gi,"")}.pdf`;
 function oseConfereCfg(){ return OSE.cfgSalvo || confirm("Os dados do cabeçalho da O.S (CNPJ, endereço da Avance e do cliente) ainda não foram conferidos e salvos.\n\nGerar o PDF assim mesmo?"); }
+window.oseImprimir = async (id) => { const o = OSE.lista.find(x=>x.id===id); if(!o || !oseConfereCfg()) return;
+  toast("Preparando a impressão...");
+  try{ await imprimirPDF(await osePDFDoc(o)); }catch(e){ toast("⚠ Não foi possível imprimir: " + e.message); } };
 window.osePDF = async (id) => { const o = OSE.lista.find(x=>x.id===id); if(!o || !oseConfereCfg()) return;
   const aba = window.open("", "_blank");   // abre para visualizar e imprimir, sem baixar
   try{ const doc = await osePDFDoc(o); if(aba) aba.location.href = doc.output("bloburl"); else doc.save(oseNomePDF(o)); }
@@ -10092,7 +10118,7 @@ function osePagina(){
           <td class="num"><b>${fmtBRL2(oseValor(o))}</b>${pr && Math.abs(oseValor(pr) - oseValor(o)) > 0.005 ? `<div class="hint" style="margin:0;">Pré O.S: ${fmtBRL2(oseValor(pr))}</div>` : ""}</td>
           <td>${oseSituacaoHTML(o)}</td>
           <td style="font-size:12px;">${pr ? `📝 Pré O.S de ${osEsc(pr.por||"operação")}` : "avulsa"}${o.emitidaPor ? `<div class="hint" style="margin:0;">emitida por ${osEsc(o.emitidaPor)}${o.emitidaEm ? ` · ${fmtDataBR(o.emitidaEm.slice(0,10))}` : ""}</div>` : ""}</td>
-          <td style="white-space:nowrap;"><button class="os-btn sm" onclick="osePDF('${o.id}')">📄 PDF</button> <button class="os-btn sm green" onclick="oseEnviar('${o.id}')">📲 Enviar</button>
+          <td style="white-space:nowrap;"><button class="os-btn sm" onclick="osePDF('${o.id}')">📄 PDF</button> <button class="os-btn sm" onclick="oseImprimir('${o.id}')">🖨️ Imprimir</button> <button class="os-btn sm green" onclick="oseEnviar('${o.id}')">📲 Enviar</button>
             <button class="os-link" onclick="oseConferir('${o.id}')" title="Editar O.S">✏️</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir O.S">🗑️</button></td>
         </tr>`; }).join("")}</tbody>
         <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="5">Total (${listaOS.length})</td><td class="num">${fmtBRL2(sumArr(listaOS.map(oseValor)))}</td><td colspan="3"></td></tr></tfoot>
