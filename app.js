@@ -1745,9 +1745,90 @@ function manutencaoCustos(){
         </tbody>
       </table>
     </div>`}
+    ${mosHTML()}
   `;
 };
+/* ---------- Carretas e valor das O.S emitidas (Emissão de O.S), por dia e por mês, a partir de 26/10/2026 ----------
+   Data de referência: Início (entrada) da O.S. Cada O.S emitida = uma carreta. */
+const MOS_INICIO = "2026-10-26";
+let MOS_MES = Number(frotaHojeISO().slice(5,7)), MOS_ANO = Number(frotaHojeISO().slice(0,4));
+const MOS_MESES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+const mosK = (v) => { v = Number(v)||0; return v >= 1000 ? (v/1000).toFixed(1).replace(/\.0$/, "") + "k" : String(Math.round(v)); };
+function mosEmitidas(){ return OSE.lista.filter(o=>o.status==="emitida" && (o.entrada||"") >= MOS_INICIO); }
+function mosDados(){
+  const ls = mosEmitidas(), pad = (n) => String(n).padStart(2,"0");
+  const ult = new Date(MOS_ANO, MOS_MES, 0).getDate(), pref = `${MOS_ANO}-${pad(MOS_MES)}-`;
+  const dias = [], dCarr = [], dVal = [];
+  for(let d = 1; d <= ult; d++){ const dia = pref + pad(d); if(dia < MOS_INICIO) continue;
+    const doDia = ls.filter(o=>o.entrada===dia); dias.push(pad(d)); dCarr.push(doDia.length); dVal.push(sumArr(doDia.map(oseValor))); }
+  const meses = [], mCarr = [], mVal = [];
+  for(let m = 1; m <= 12; m++){ const mm = `${MOS_ANO}-${pad(m)}`; if(mm < MOS_INICIO.slice(0,7)) continue;
+    const doMes = ls.filter(o=>(o.entrada||"").startsWith(mm)); meses.push(`${MOS_MESES[m-1]}/${String(MOS_ANO).slice(2)}`); mCarr.push(doMes.length); mVal.push(sumArr(doMes.map(oseValor))); }
+  return { dias, dCarr, dVal, meses, mCarr, mVal };
+}
+window.mosFiltro = (k, v) => { if(k==="mes") MOS_MES = Number(v); else MOS_ANO = Number(v);
+  const y = window.scrollY; document.getElementById("content").innerHTML = renderers.manutencao(); window.scrollTo(0,y); manutencaoCustosCharts(); };
+function mosHTML(){
+  oseGarantirCarga();
+  const cab = `<h3 style="margin:0;">🛠️ Manutenção de carretas — O.S emitidas</h3><div class="hint">Base: Emissão de O.S, pela data de Início da carreta, a partir de ${fmtDataBR(MOS_INICIO)}</div>`;
+  if(OSE.erro) return `<div class="panel">${cab}<div class="empty-state" style="padding:18px;"><p>${osEsc(OSE.erro)}</p></div></div>`;
+  if(!OSE.carregado) return `<div class="panel">${cab}<div class="empty-state" style="padding:18px;"><p>Carregando as O.S...</p></div></div>`;
+  const anoIni = Number(MOS_INICIO.slice(0,4)), anoFim = Math.max(anoIni, Number(frotaHojeISO().slice(0,4)));
+  const anos = []; for(let a = anoIni; a <= anoFim; a++) anos.push(a);
+  const d = mosDados(), totC = sumArr(d.dCarr), totV = sumArr(d.dVal), totCA = sumArr(d.mCarr), totVA = sumArr(d.mVal);
+  const semDia = !d.dias.length;
+  return `<div class="panel">
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+      <div>${cab}</div>
+      <div class="nf-grid os-form" style="grid-template-columns:repeat(2, 120px); margin:0;">
+        <label>Mês<select onchange="mosFiltro('mes', this.value)">${MOS_MESES.map((n,i)=>`<option value="${i+1}" ${i+1===MOS_MES?"selected":""}>${n}</option>`).join("")}</select></label>
+        <label>Ano<select onchange="mosFiltro('ano', this.value)">${anos.map(a=>`<option value="${a}" ${a===MOS_ANO?"selected":""}>${a}</option>`).join("")}</select></label>
+      </div>
+    </div>
+  </div>
+  <div class="grid-2">
+    <div class="panel">
+      <h3>Carretas por dia</h3>
+      <div class="hint">${MOS_MESES[MOS_MES-1]}/${MOS_ANO} · <b>${totC}</b> carreta(s) no mês</div>
+      ${semDia ? `<div class="empty-state" style="padding:18px;"><p>Sem dados antes de ${fmtDataBR(MOS_INICIO)}.</p></div>` : `<div class="chart-wrap" style="height:260px;"><canvas id="ch-mos-dia-qtd"></canvas></div>`}
+    </div>
+    <div class="panel">
+      <h3>Valor por dia</h3>
+      <div class="hint">${MOS_MESES[MOS_MES-1]}/${MOS_ANO} · <b>${fmtBRL2(totV)}</b> no mês</div>
+      ${semDia ? `<div class="empty-state" style="padding:18px;"><p>Sem dados antes de ${fmtDataBR(MOS_INICIO)}.</p></div>` : `<div class="chart-wrap" style="height:260px;"><canvas id="ch-mos-dia-val"></canvas></div>`}
+    </div>
+  </div>
+  <div class="grid-2">
+    <div class="panel">
+      <h3>Carretas por mês</h3>
+      <div class="hint">${MOS_ANO} · <b>${totCA}</b> carreta(s) no ano</div>
+      ${d.meses.length ? `<div class="chart-wrap" style="height:260px;"><canvas id="ch-mos-mes-qtd"></canvas></div>` : `<div class="empty-state" style="padding:18px;"><p>Sem dados neste ano.</p></div>`}
+    </div>
+    <div class="panel">
+      <h3>Valor por mês</h3>
+      <div class="hint">${MOS_ANO} · <b>${fmtBRL2(totVA)}</b> no ano</div>
+      ${d.meses.length ? `<div class="chart-wrap" style="height:260px;"><canvas id="ch-mos-mes-val"></canvas></div>` : `<div class="empty-state" style="padding:18px;"><p>Sem dados neste ano.</p></div>`}
+    </div>
+  </div>`;
+}
+function mosCharts(){
+  if(!OSE.carregado || !document.getElementById("ch-mos-mes-qtd") && !document.getElementById("ch-mos-dia-qtd")) return;
+  const d = mosDados();
+  const barra = (id, labels, data, cor, fmt, titulo) => mkChart(id, {
+    type:"bar", data:{ labels, datasets:[{ label:titulo, data, backgroundColor:cor, borderRadius:4, maxBarThickness:38 }] },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:18 } },
+      plugins:{ legend:{ display:false },
+        tooltip:{ callbacks:{ label:(it)=>` ${titulo}: ${fmt === mosK ? fmtBRL2(it.raw) : it.raw}` } },
+        datalabels:{ display:(c)=>c.dataset.data[c.dataIndex] > 0, anchor:"end", align:"end", offset:0, color:COLORS.ink, font:{ weight:"700", size:11 }, formatter:(v)=>fmt(v) } },
+      scales:{ x:{ grid:{ display:false }, border:{ display:false } },
+               y:{ beginAtZero:true, grid:{ color:COLORS.grid }, border:{ display:false }, ticks:{ color:COLORS.inkSoft, precision:0, callback:(v)=>fmt(v) } } } } });
+  barra("ch-mos-dia-qtd", d.dias, d.dCarr, COLORS.ink, (v)=>String(v), "Carretas");
+  barra("ch-mos-dia-val", d.dias, d.dVal, COLORS.red, mosK, "Valor");
+  barra("ch-mos-mes-qtd", d.meses, d.mCarr, COLORS.ink, (v)=>String(v), "Carretas");
+  barra("ch-mos-mes-val", d.meses, d.mVal, COLORS.red, mosK, "Valor");
+}
 function manutencaoCustosCharts(){
+  mosCharts();
   const m = manutencaoView || DATA.manutencao;
   // Total do mês escrito em preto acima de cada coluna, sem "R$" (ex: 146,5K)
   const totMes = m.labels.map((_,i)=>(m.manutencaoGeral[i]||0)+(m.pinturaTeto[i]||0)+(m.outrosServicos[i]||0));
@@ -9431,6 +9512,7 @@ function oseSalvarLocal(){ if(!sb) try{ localStorage.setItem(OSE_LOCAL, JSON.str
 function oseRedesenhar(seguro){
   const pg = document.querySelector('nav.menu button.active')?.dataset.page;
   const naCar = pg==="manutencao" && MAN_ABA==="diario", naEmissao = pg==="emissaonf" && NF_ABA==="os";
+  if(pg==="manutencao" && MAN_ABA==="custos"){ const y = window.scrollY; document.getElementById("content").innerHTML = renderers.manutencao(); window.scrollTo(0,y); requestAnimationFrame(manutencaoCustosCharts); return; }
   if(!naCar && !naEmissao) return;
   if(seguro){ const f = document.activeElement; if(f && f.closest && (f.closest("#ose-form") || f.closest("#ose-cfg")) && /INPUT|SELECT|TEXTAREA/.test(f.tagName)) return; }
   const y = window.scrollY; document.getElementById("content").innerHTML = renderers[pg](); window.scrollTo(0,y);
