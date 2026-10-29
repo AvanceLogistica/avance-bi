@@ -9714,40 +9714,60 @@ async function oseAtualizarOS(o, campos, local){
   Object.assign(o, local); oseSalvarLocal(); return true;
 }
 /* ---------- Protocolo de entrega (folha de rosto): faixa de O.S de um dia para a Combitrans assinar ---------- */
-let OSE_PROT = null;   // { data, de, ate } enquanto o painel do protocolo está aberto
+// { base:"emissao"|"inicio", data, de, ate, num } enquanto o painel do protocolo está aberto.
+// base "inicio": o protocolo junta as O.S cujas carretas abriram (Início) no dia escolhido — mesmo emitidas noutro dia.
+let OSE_PROT = null, OSE_PROT_REG = null;
 const oseDiaEmissao = (o) => (o.emitidaEm || "").slice(0,10) || o.entrada || "";
-function oseProtFaixa(dia){ const ns = OSE.lista.filter(o=>o.status==="emitida" && oseDiaEmissao(o)===dia).map(o=>Number(o.numero)||0).filter(Boolean).sort((a,b)=>a-b); return ns.length ? { de:ns[0], ate:ns[ns.length-1] } : { de:"", ate:"" }; }
+const oseProtDiaDe = (o, base) => base === "inicio" ? (o.entrada || "") : oseDiaEmissao(o);
+function oseProtFaixa(dia, base){ const ns = OSE.lista.filter(o=>o.status==="emitida" && oseProtDiaDe(o, base)===dia).map(o=>Number(o.numero)||0).filter(Boolean).sort((a,b)=>a-b); return ns.length ? { de:ns[0], ate:ns[ns.length-1] } : { de:"", ate:"" }; }
 function oseProtLista(){ if(!OSE_PROT) return []; const de = Number(OSE_PROT.de)||0, ate = Number(OSE_PROT.ate)||0;
-  return OSE.lista.filter(o=>o.status==="emitida" && Number(o.numero)>=de && Number(o.numero)<=ate).sort((a,b)=>(a.numero||0)-(b.numero||0)); }
+  return OSE.lista.filter(o=>o.status==="emitida" && Number(o.numero)>=de && Number(o.numero)<=ate && (OSE_PROT.base!=="inicio" || o.entrada===OSE_PROT.data)).sort((a,b)=>(a.numero||0)-(b.numero||0)); }
+async function oseProtLerReg(){
+  let reg = null;
+  if(sb){ const r = await sb.from("app_config").select("valor").eq("chave", "os_protocolos").maybeSingle(); if(r.error) throw new Error(r.error.message); reg = r.data && r.data.valor; }
+  else { try{ reg = JSON.parse(localStorage.getItem("ose_protocolos") || "null"); }catch(e){} }
+  if(!reg || typeof reg !== "object") reg = { proximo:31, lista:[] };
+  if(!Array.isArray(reg.lista)) reg.lista = [];
+  return reg;
+}
+const oseProtProximo = (reg) => Math.max(Number(reg.proximo) || 31, ...reg.lista.map(x=>x.n + 1));
 window.oseProtAbrir = () => { if(OSE_PROT){ OSE_PROT = null; oseRedesenhar(); return; }
-  const d = frotaHojeISO(); OSE_PROT = { data:d, ...oseProtFaixa(d) }; oseRedesenhar(); };
-window.oseProtCampo = (k, v) => { if(!OSE_PROT) return; OSE_PROT[k] = v; if(k==="data") Object.assign(OSE_PROT, oseProtFaixa(v)); oseRedesenhar(); };
+  const d = frotaHojeISO(); OSE_PROT = { base:"emissao", data:d, num:"", ...oseProtFaixa(d, "emissao") }; oseRedesenhar();
+  oseProtLerReg().then(r=>{ OSE_PROT_REG = r; oseRedesenhar(); }).catch(()=>{}); };
+window.oseProtCampo = (k, v) => { if(!OSE_PROT) return; OSE_PROT[k] = v;
+  if(k==="data" || k==="base") Object.assign(OSE_PROT, oseProtFaixa(OSE_PROT.data, OSE_PROT.base)); oseRedesenhar(); };
 function oseProtHTML(){
   if(!OSE_PROT) return "";
   const ls = oseProtLista(), faltam = [];
   for(let n = Number(OSE_PROT.de)||0; n && n <= (Number(OSE_PROT.ate)||0) && faltam.length < 30; n++) if(!ls.some(o=>Number(o.numero)===n)) faltam.push(oseNum(n));
   return `<div class="ose-prot">
     <h3 style="margin:0;">📋 Protocolo de entrega — folha de rosto para a Combitrans assinar</h3>
-    <div class="hint">Escolha o dia da emissão (a faixa de O.S daquele dia vem sozinha) ou ajuste a faixa de números.</div>
+    <div class="hint">Escolha o dia (a faixa de O.S daquele dia vem sozinha) ou ajuste a faixa de números. O nº do protocolo é automático, mas pode ser digitado.</div>
+    <div class="prog-chips" style="margin-top:8px;">
+      <span class="hint" style="margin:0;">Separar por:</span>
+      <button class="sub-tab-btn ${OSE_PROT.base!=="inicio"?"active":""}" onclick="oseProtCampo('base','emissao')">Dia da emissão da O.S</button>
+      <button class="sub-tab-btn ${OSE_PROT.base==="inicio"?"active":""}" onclick="oseProtCampo('base','inicio')">Dia de início da carreta</button>
+    </div>
     <div class="nf-grid os-form" style="grid-template-columns:repeat(auto-fit, minmax(160px, 220px)); align-items:end; margin-top:8px;">
-      <label>Dia da emissão<input type="date" value="${OSE_PROT.data}" onchange="oseProtCampo('data', this.value)"></label>
+      <label>${OSE_PROT.base==="inicio" ? "Dia de início" : "Dia da emissão"}<input type="date" value="${OSE_PROT.data}" onchange="oseProtCampo('data', this.value)"></label>
       <label>Da O.S nº<input type="number" min="1" value="${OSE_PROT.de}" onchange="oseProtCampo('de', this.value)"></label>
       <label>Até a O.S nº<input type="number" min="1" value="${OSE_PROT.ate}" onchange="oseProtCampo('ate', this.value)"></label>
+      <label>Nº do protocolo<input type="number" min="1" value="${OSE_PROT.num||""}" placeholder="${OSE_PROT_REG ? `automático (próx. ${oseProtProximo(OSE_PROT_REG)})` : "automático"}" onchange="oseProtCampo('num', this.value)"></label>
       <button class="entry-submit" style="margin:0;" onclick="oseProtGerar()" ${ls.length ? "" : "disabled"}>🖨️ Gerar protocolo (PDF)</button>
     </div>
     <div class="hint" style="margin-top:8px;">${ls.length ? `<b>${ls.length}</b> O.S · ${fmtBRL2(sumArr(ls.map(oseValor)))}${faltam.length ? ` · <span style="color:var(--amber);">números sem O.S emitida na faixa: ${faltam.join(", ")}</span>` : ""}` : "Nenhuma O.S emitida nessa faixa."}</div>
   </div>`;
 }
 // Nº do protocolo: sequência própria (começa no 31). A mesma faixa de O.S reimpressa mantém o número.
-async function oseProtNumero(dia, de, ate){
-  let reg = null;
-  if(sb){ const r = await sb.from("app_config").select("valor").eq("chave", "os_protocolos").maybeSingle(); if(r.error) throw new Error(r.error.message); reg = r.data && r.data.valor; }
-  else { try{ reg = JSON.parse(localStorage.getItem("ose_protocolos") || "null"); }catch(e){} }
-  if(!reg || typeof reg !== "object") reg = { proximo:31, lista:[] };
-  if(!Array.isArray(reg.lista)) reg.lista = [];
-  const ja = reg.lista.find(x=>x.de===de && x.ate===ate); if(ja) return ja.n;
-  const n = Math.max(Number(reg.proximo) || 31, ...reg.lista.map(x=>x.n + 1));
-  reg.lista.push({ n, dia, de, ate, por:MEU_EMAIL, em:new Date().toISOString() }); reg.proximo = n + 1;
+// Nº digitado: usa esse número (substitui o registro que tinha esse nº) e a sequência continua depois dele.
+async function oseProtNumero(dia, de, ate, base, forcado){
+  const reg = await oseProtLerReg();
+  const mesma = (x) => x.de===de && x.ate===ate && (x.base||"emissao")===base && (base!=="inicio" || x.dia===dia);
+  let n = Number(forcado) || 0;
+  if(!n){ const ja = reg.lista.find(mesma); if(ja) return ja.n; n = oseProtProximo(reg); }
+  else { const ja = reg.lista.find(x=>x.n===n); if(ja && mesma(ja)) return n; reg.lista = reg.lista.filter(x=>x.n!==n && !mesma(x)); }
+  reg.lista.push({ n, dia, de, ate, base, por:MEU_EMAIL, em:new Date().toISOString() }); reg.proximo = Math.max(oseProtProximo(reg), n + 1);
+  OSE_PROT_REG = reg;
   if(sb){ const { error } = await sb.from("app_config").upsert({ chave:"os_protocolos", valor:reg, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }, { onConflict:"chave" }); if(error) throw new Error(error.message); }
   else { try{ localStorage.setItem("ose_protocolos", JSON.stringify(reg)); }catch(e){} }
   return n;
@@ -9760,24 +9780,25 @@ window.oseProtGerar = async () => {
     await nfgCarregarPDF();
     const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 12, cfg = oseCfg();
     const total = sumArr(ls.map(oseValor)), de = oseNum(ls[0].numero), ate = oseNum(ls[ls.length-1].numero);
-    const diaEm = OSE_PROT.data, nProt = String(await oseProtNumero(diaEm, de, ate));
+    const diaEm = OSE_PROT.data, porInicio = OSE_PROT.base === "inicio", nProt = String(await oseProtNumero(diaEm, de, ate, porInicio ? "inicio" : "emissao", OSE_PROT.num));
+    const emissoes = [...new Set(ls.map(o=>oseDiaEmissao(o)).filter(Boolean))].sort().map(fmtDataBR).join(", ");
     oseCabecalhoPDF(doc, 12);
     const X = 12+108, QW = W-12-X;
     doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(20, 20, 26); doc.text(`PROTOCOLO Nº ${nProt}`, X + QW/2, 41.5, { align:"center" });
     doc.setFillColor(235, 235, 238); doc.rect(X, 43.5, QW, 5, "F"); doc.setFont("helvetica", "normal"); doc.setFontSize(8);
-    doc.text(`Emissão das O.S: ${fmtDataBR(diaEm)}`, X + QW/2, 47, { align:"center" });
+    doc.text(porInicio ? `Início das carretas: ${fmtDataBR(diaEm)}` : `Emissão das O.S: ${fmtDataBR(diaEm)}`, X + QW/2, 47, { align:"center" });
     doc.setDrawColor(40, 40, 46); doc.setLineWidth(0.4); doc.rect(X, 48.5, QW, 10); doc.setFont("helvetica", "bold"); doc.setFontSize(9);
     doc.text(ls.length === 1 ? `O.S nº ${de}` : `O.S nº ${de} a ${ate}`, X + QW/2, 55, { align:"center" });
     doc.setFillColor(20, 20, 26); doc.rect(M, 62, W-2*M, 12, "F");
     doc.setFontSize(14); doc.setTextColor(255, 255, 255); doc.text("PROTOCOLO DE ENTREGA DE ORDENS DE SERVIÇO", W/2, 70, { align:"center" });
     // resumo em destaque
-    const caixas = [["Faixa de O.S", ls.length === 1 ? `Nº ${de}` : `Nº ${de} a ${ate}`], ["Dia da emissão", fmtDataBR(diaEm)], ["Quantidade", `${ls.length} O.S`], ["Valor total", oseBRL(total)]];
+    const caixas = [["Faixa de O.S", ls.length === 1 ? `Nº ${de}` : `Nº ${de} a ${ate}`], [porInicio ? "Dia de início" : "Dia da emissão", fmtDataBR(diaEm)], ["Quantidade", `${ls.length} O.S`], ["Valor total", oseBRL(total)]];
     const bw = (W - 2*M - 9) / 4;
     caixas.forEach(([l, v], i)=>{ const x = M + i*(bw+3); doc.setFillColor(i===3 ? 255 : 245, i===3 ? 214 : 245, i===3 ? 0 : 247); doc.roundedRect(x, 78, bw, 18, 2, 2, "F");
       doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(90, 90, 100); doc.text(l.toUpperCase(), x+3, 84);
       doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(20, 20, 26); doc.text(v, x+3, 92); });
     doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(20, 20, 26);
-    const txt = `Entregamos à ${cfg.cliente || "Combitrans"}${cfg.clienteCnpj ? ` (CNPJ ${cfg.clienteCnpj})` : ""} as ordens de serviço de manutenção de carretas relacionadas abaixo, emitidas em ${fmtDataBR(diaEm)}, para análise e assinatura no prazo de até ${OSE_PRAZO_ASSINATURA} dias. A assinatura deste protocolo confirma o recebimento de todas as O.S listadas.`;
+    const txt = `Entregamos à ${cfg.cliente || "Combitrans"}${cfg.clienteCnpj ? ` (CNPJ ${cfg.clienteCnpj})` : ""} as ordens de serviço de manutenção de carretas relacionadas abaixo, ${porInicio ? `referentes às carretas com início em ${fmtDataBR(diaEm)}${emissoes ? ` (emitidas em ${emissoes})` : ""}` : `emitidas em ${fmtDataBR(diaEm)}`}, para análise e assinatura no prazo de até ${OSE_PRAZO_ASSINATURA} dias. A assinatura deste protocolo confirma o recebimento de todas as O.S listadas.`;
     doc.text(doc.splitTextToSize(txt, W-2*M), M, 104);
     doc.autoTable({ startY:116, margin:{ left:M, right:M }, theme:"grid",
       head:[["Nº O.S", "Frota", "Placa", "Início", "Saída", "Serviços", "Valor"]],
