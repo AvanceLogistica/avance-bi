@@ -241,6 +241,7 @@ async function loadFromSupabase(){
     deriveManutencao();
     deriveDiesel();
     deriveInfracoes();
+    await entCarregarProgReceita();
     deriveEntregas();
     return true;
   }catch(e){
@@ -976,7 +977,27 @@ function computarEntregasStats(lancamentos){
 function deriveEntregas(){
   const e = DATA.entregas;
   if(!Array.isArray(e.lancamentos)) e.lancamentos = [];
-  Object.assign(e, computarEntregasStats(e.lancamentos));
+  const { lancamentos, ...st } = computarEntregasStats(entLancTodos());   // e.lancamentos continua sendo só a planilha
+  Object.assign(e, st);
+}
+// A partir de 01/11/2026 a receita e as viagens vêm da Programação diária (entregas realizadas, com qnt, valor
+// e valor adicional); a planilha importada só vale para os dias anteriores — assim nada é contado duas vezes.
+const ENT_PROG_INICIO = "2026-11-01";
+let ENT_PROG_REC = [];
+function entLancTodos(){
+  return [...(DATA.entregas.lancamentos||[]).filter(r=>r.d < ENT_PROG_INICIO), ...ENT_PROG_REC];
+}
+async function entCarregarProgReceita(){
+  if(!sb) return;
+  const out = []; let from = 0;
+  while(true){
+    const { data, error } = await sb.from("entregas_programacao").select("id,data,servico,transportadora,cliente,motorista,frota,qnt,valor,valor_adicional")
+      .gte("data", ENT_PROG_INICIO).eq("situacao", "realizada").order("data").range(from, from + 999);
+    if(error){ console.warn("Programação → receita:", error.message); return; }
+    out.push(...data); if(data.length < 1000) break; from += 1000;
+  }
+  ENT_PROG_REC = out.map(r=>({ id:"prog-"+r.id, d:r.data, servico:r.servico||"", transportadora:r.transportadora||"", cliente:r.cliente||"", motorista:r.motorista||"",
+    carro:String(r.frota||"").split(" ").pop(), qnt:Number(r.qnt)||1, v:(Number(r.valor)||0) + (Number(r.valor_adicional)||0), observacao:"Programação diária", prog:true }));
 }
 
 /* ============================================================================
@@ -2811,15 +2832,16 @@ function infracoesChartsBase(){
 // Aba "Receita e viagens" (planilha importada) — a tela Entregas em si é montada mais abaixo, junto com a Programação diária
 function entregasReceita(){
   const filtro = FILTRO_ANO.entregas;
-  const e = entregasView = (filtro === "todos" || DATA.entregas.lancamentos.length === 0)
+  const todos = entLancTodos();
+  const e = entregasView = (filtro === "todos" || todos.length === 0)
     ? DATA.entregas
-    : computarEntregasStats(DATA.entregas.lancamentos.filter(r=>r.d.startsWith(filtro)));
-  const vazio = DATA.entregas.lancamentos.length === 0;
+    : computarEntregasStats(todos.filter(r=>r.d.startsWith(filtro)));
+  const vazio = todos.length === 0;
   return `
     <div class="page-head">
       <h2>Entregas</h2>
       <p>Coletas e entregas — receita, viagens e ranking por motorista, cliente e transportadora${e.mensalLabels.length ? ` — ${e.mensalLabels[0]} a ${e.mensalLabels[e.mensalLabels.length-1]}` : ""}</p>
-      ${montarFiltroAno("entregas", DATA.entregas.lancamentos)}
+      ${montarFiltroAno("entregas", todos)}
     </div>
     ${vazio ? `
     <div class="panel">
@@ -2902,7 +2924,7 @@ const ENT_Q_CORES = { "ENTREGA":"#8C0011", "COLETA":"#D0021B", "RETIRADA":"#E197
 window.setFiltroEntQ = (campo, v) => { FILTRO_ENT_Q[campo] = v; navigate("entregas"); };
 function entQuinzenaDados(){
   const e = entregasView || DATA.entregas;
-  const lanc = (e.lancamentos || DATA.entregas.lancamentos || []);
+  const lanc = e === DATA.entregas ? entLancTodos() : (e.lancamentos || []);
   const servNome = (s) => (s||"").trim().toUpperCase() || "SEM TIPO";
   const servicos = [...new Set(lanc.map(r=>servNome(r.servico)))].sort((a,b)=>(ENT_Q_CORES[a]?0:1)-(ENT_Q_CORES[b]?0:1) || a.localeCompare(b));
   const meses = [...new Set(lanc.map(r=>r.d.slice(0,7)))].sort();
@@ -7249,6 +7271,7 @@ async function progCarregar(silencioso){
   PROG.erro = null;
   PROG.linhas = lin.data.map(r=>({ id:r.id, data:r.data, veiculoId:r.veiculo_id, frota:r.frota||"", motorista:r.motorista||"", cliente:r.cliente||"",
     transportadora:r.transportadora||"", servico:r.servico||"ENTREGA", horario:r.horario||"", nf:r.nf||"", planejado:r.planejado!==false,
+    qnt:Number(r.qnt)||1, valor:r.valor!=null ? Number(r.valor) : null, valorAdic:r.valor_adicional!=null ? Number(r.valor_adicional) : null,
     situacao:r.situacao||"pendente", horaReal:r.hora_real||"", motivo:r.motivo||"", motivoObs:r.motivo_obs||"", _tinhaMotivo:!!(r.motivo||r.motivo_obs), por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
   if(!vei.error) PROG.veiculos = vei.data.map(v=>({ id:v.id, ordem:v.ordem, placa:v.placa, motorista:v.motorista||"" }));
   PROG.motoristaDoDia = {};
@@ -7272,9 +7295,24 @@ window.progSetDia = (d) => { if(!d) return; PROG_DIA = d; const m = d.slice(0,7)
 window.progMoverDia = (n) => { const d = new Date(PROG_DIA+"T12:00:00"); d.setDate(d.getDate()+n); progSetDia(d.toISOString().slice(0,10)); };
 window.progSetMes = (m) => { PROG_MES = m; const hoje = frotaHojeISO(); PROG_DIA = hoje.startsWith(m) ? hoje : `${m}-01`; progCarregar(); };
 window.progForm = (campo, valor) => { PROG_FORM[campo] = valor; const y = window.scrollY; const dados = progLerForm(); document.getElementById("content").innerHTML = renderers.entregas(); progPreencherForm(dados); window.scrollTo(0,y); requestAnimationFrame(progGrafico); };
-function progLerForm(){ const g = (id)=>document.getElementById(id)?.value || ""; return { frota:g("pg-frota"), motorista:g("pg-motorista"), cliente:g("pg-cliente"), transportadora:g("pg-transp"), horario:g("pg-horario"), nf:g("pg-nf") }; }
+function progLerForm(){ const g = (id)=>document.getElementById(id)?.value || ""; return { frota:g("pg-frota"), motorista:g("pg-motorista"), cliente:g("pg-cliente"), transportadora:g("pg-transp"), horario:g("pg-horario"), nf:g("pg-nf"),
+  qnt:g("pg-qnt"), valor:g("pg-valor"), valorAdic:g("pg-adic") }; }
 function progPreencherForm(d){ const s = (id,v)=>{ const el = document.getElementById(id); if(el && v!=null) el.value = v; };
-  s("pg-frota", d.frota); s("pg-motorista", d.motorista); s("pg-cliente", d.cliente); s("pg-transp", d.transportadora); s("pg-horario", PROG_FORM.horario || d.horario); s("pg-nf", d.nf); }
+  s("pg-frota", d.frota); s("pg-motorista", d.motorista); s("pg-cliente", d.cliente); s("pg-transp", d.transportadora); s("pg-horario", PROG_FORM.horario || d.horario); s("pg-nf", d.nf);
+  s("pg-qnt", d.qnt); s("pg-valor", d.valor); s("pg-adic", d.valorAdic); }
+// Valores em R$: aceita "1.000,00", "1000,5" ou "1000.50"; vazio = null
+function progNum(v){ const t = String(v??"").trim().replace(/[R$\s]/g,""); if(!t) return null; const n = Number(t.includes(",") ? t.replace(/\./g,"").replace(",", ".") : t); return isFinite(n) ? n : null; }
+const progBRL = (v) => v==null ? "" : Number(v).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 });
+// Sugere o valor pelo último lançamento do mesmo cliente + transportadora + serviço (programação ou planilha)
+window.progSugerirValor = () => {
+  const el = document.getElementById("pg-valor"); if(!el || el.value.trim()) return;
+  const cli = (document.getElementById("pg-cliente")?.value||"").trim().toUpperCase(), tr = (document.getElementById("pg-transp")?.value||"").trim().toUpperCase(); if(!cli) return;
+  const igual = (r) => (r.cliente||"").toUpperCase()===cli && (!tr || (r.transportadora||"").toUpperCase()===tr) && (r.servico||"ENTREGA").toUpperCase()===PROG_FORM.servico;
+  const p = PROG.linhas.filter(l=>igual(l) && l.valor!=null).sort((a,b)=>a.data.localeCompare(b.data)).pop();
+  const pl = p ? null : (DATA.entregas.lancamentos||[]).filter(r=>igual(r) && r.v).sort((a,b)=>a.d.localeCompare(b.d)).pop();
+  const v = p ? p.valor : pl ? pl.v / (pl.qnt||1) : null;
+  if(v!=null){ el.value = progBRL(v); el.title = "Sugerido pelo último lançamento igual — confira"; }
+};
 // Campo Frota: a pessoa escolhe na lista ou digita (número "07", placa "GCV3D62" ou o começo dela "GCV3D")
 function progRotuloFrota(v){ return `${String(v.ordem).padStart(2,"0")} · ${v.placa}`; }
 function progAcharFrota(txt){
@@ -7301,7 +7339,8 @@ async function progGravar(linha){
   if(!PROG_DB){ const i = PROG.linhas.findIndex(l=>l.id===linha.id); if(i>=0) PROG.linhas[i] = linha; else PROG.linhas.push(linha); progSalvarLocal(); return true; }
   const reg = { data:linha.data, veiculo_id:linha.veiculoId||null, frota:linha.frota, motorista:linha.motorista||null, cliente:linha.cliente||null,
     transportadora:linha.transportadora||null, servico:linha.servico, horario:linha.horario||null, nf:linha.nf||null, planejado:linha.planejado,
-    situacao:linha.situacao, hora_real:linha.horaReal||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() };
+    situacao:linha.situacao, hora_real:linha.horaReal||null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString(),
+    ...(PROG.semColunaValor ? {} : { qnt:linha.qnt||1, valor:linha.valor, valor_adicional:linha.valorAdic }) };
   // motivo/detalhe só vão quando existem — assim, se o SQL das colunas novas ainda não foi rodado,
   // os demais lançamentos continuam salvando normalmente
   const temMotivo = linha.situacao==="nao_realizada" && (linha.motivo || linha.motivoObs);
@@ -7311,6 +7350,11 @@ async function progGravar(linha){
     ? sb.from("entregas_programacao").update(campos).eq("id", linha.id).select().single()
     : sb.from("entregas_programacao").insert({ ...campos, criado_por:MEU_EMAIL }).select().single();
   let { data, error } = await enviar(comMotivo);
+  if(error && /qnt|valor_adicional|'valor'|"valor"/i.test(error.message||"")){   // colunas de valor ainda não criadas no banco
+    const tira = (o) => { const { qnt, valor, valor_adicional, ...r } = o; return r; };
+    ({ data, error } = await enviar(tira(comMotivo)));
+    if(!error){ PROG.semColunaValor = true; toast("⚠ Salvo, mas qnt/valor não foram gravados: falta rodar o SQL dos valores no Supabase."); }
+  }
   if(error && /motivo/i.test(error.message||"")){
     ({ data, error } = await enviar(reg));
     if(!error){ PROG.semColunaMotivo = true; toast("⚠ Salvo, mas o motivo não foi gravado: falta rodar o SQL do motivo no Supabase."); }
@@ -7328,11 +7372,12 @@ window.progAdicionar = async () => {
   const linha = { id:"tmp"+osNovoId(), data:PROG_DIA, veiculoId:v.id, frota:`${String(v.ordem).padStart(2,"0")} ${v.placa}`,
     motorista:f.motorista.trim().toUpperCase(), cliente:f.cliente.trim().toUpperCase(), transportadora:f.transportadora.trim().toUpperCase(),
     servico:PROG_FORM.servico, horario:f.horario, nf:progLimparNF(f.nf).replace(/^\/|\/$/g,""), planejado:PROG_FORM.planejado,
+    qnt:Math.max(1, parseInt(f.qnt,10)||1), valor:progNum(f.valor), valorAdic:progNum(f.valorAdic),
     situacao: PROG_FORM.planejado ? "pendente" : "realizada", horaReal: PROG_FORM.planejado ? "" : frotaHora(), por:(MEU_EMAIL||"").split("@")[0] };
   PROG.linhas.push(linha);
   // Mantém cliente, transportadora e horário no formulário (costumam se repetir); limpa frota, motorista e NF
   PROG_FORM.horario = f.horario;
-  const manter = { cliente:f.cliente.toUpperCase(), transportadora:f.transportadora.toUpperCase(), horario:f.horario };
+  const manter = { cliente:f.cliente.toUpperCase(), transportadora:f.transportadora.toUpperCase(), horario:f.horario, qnt:"1", valor:f.valor, valorAdic:"" };
   const y = window.scrollY; document.getElementById("content").innerHTML = renderers.entregas(); progPreencherForm(manter); window.scrollTo(0,y); requestAnimationFrame(progGrafico);
   if(await progGravar(linha)) toast(`${linha.frota} adicionada ✓`);
 };
@@ -7347,7 +7392,8 @@ window.progSituacao = async (id, sit) => {
 };
 window.progEditar = async (id, campo, valor) => {
   const l = PROG.linhas.find(x=>x.id===id); if(!l) return;
-  l[campo] = campo==="nf" ? progLimparNF(valor).replace(/^\/|\/$/g,"") : ["horario","motivo","motivoObs"].includes(campo) ? valor.trim() : valor.toUpperCase();
+  l[campo] = campo==="nf" ? progLimparNF(valor).replace(/^\/|\/$/g,"") : campo==="qnt" ? Math.max(1, parseInt(valor,10)||1) : ["valor","valorAdic"].includes(campo) ? progNum(valor)
+    : ["horario","motivo","motivoObs"].includes(campo) ? valor.trim() : valor.toUpperCase();
   await progGravar(l); progRerender();
 };
 window.progExcluir = async (id) => {
@@ -7362,7 +7408,7 @@ window.progCopiarUltimoDia = async () => {
   const base = progDoDia(ult).filter(l=>l.planejado);
   if(!confirm(`Copiar as ${base.length} entregas programadas de ${frotaDataBR(ult)} (${progDiaSemana(ult)}) para ${frotaDataBR(PROG_DIA)}?\n\nTodas entram como pendentes e sem NF.`)) return;
   for(const b of base){
-    const linha = { ...b, id:"tmp"+osNovoId(), data:PROG_DIA, nf:"", situacao:"pendente", horaReal:"", planejado:true };
+    const linha = { ...b, id:"tmp"+osNovoId(), data:PROG_DIA, nf:"", valorAdic:null, situacao:"pendente", horaReal:"", planejado:true };
     PROG.linhas.push(linha); await progGravar(linha);
   }
   toast(`${base.length} entregas copiadas ✓`); progRerender();
@@ -7458,9 +7504,12 @@ function progPagina(){
         <label>🚛 Frota<input id="pg-frota" list="pg-l-frotas" placeholder="Digite ou escolha (ex: 07 ou GCV3D)" autocomplete="off" style="text-transform:uppercase;" onchange="progEscolherFrota(this)"></label>
         <datalist id="pg-l-frotas">${veics.map(v=>`<option value="${osEsc(progRotuloFrota(v))}">`).join("")}</datalist>
         <label>👤 Motorista<input id="pg-motorista" placeholder="NOME DO MOTORISTA" style="text-transform:uppercase;" oninput="progMaiusc(this)"></label>
-        <label>🏢 Cliente<input id="pg-cliente" list="pg-l-clientes" placeholder="CLIENTE" style="text-transform:uppercase;" oninput="progMaiusc(this)"></label>
-        <label>📦 Transportadora<input id="pg-transp" list="pg-l-transp" placeholder="TRANSPORTADORA" style="text-transform:uppercase;" oninput="progMaiusc(this)"></label>
+        <label>🏢 Cliente<input id="pg-cliente" list="pg-l-clientes" placeholder="CLIENTE" style="text-transform:uppercase;" oninput="progMaiusc(this)" onchange="progSugerirValor()"></label>
+        <label>📦 Transportadora<input id="pg-transp" list="pg-l-transp" placeholder="TRANSPORTADORA" style="text-transform:uppercase;" oninput="progMaiusc(this)" onchange="progSugerirValor()"></label>
         <label>🧾 NF<input id="pg-nf" inputmode="text" placeholder="ex: 12345/98745" oninput="progNF(this)"></label>
+        <label>🔢 Qnt<input id="pg-qnt" inputmode="numeric" value="1" oninput="progSoNumero(this)"></label>
+        <label>💰 Valor do serviço (R$)<input id="pg-valor" inputmode="decimal" placeholder="ex: 1.000,00"></label>
+        <label>➕ Valor adicional (R$)<input id="pg-adic" inputmode="decimal" placeholder="opcional — extra da carreta"></label>
       </div>
       <label>🕐 Horário programado</label>
       <div class="prog-chips">
@@ -7470,20 +7519,25 @@ function progPagina(){
       <datalist id="pg-l-clientes">${historicoNomes("cliente", PROG_SUG_CLIENTES).map(c=>`<option value="${osEsc(c)}">`).join("")}</datalist>
       <datalist id="pg-l-transp">${historicoNomes("transportadora", PROG_SUG_TRANSP).map(c=>`<option value="${osEsc(c)}">`).join("")}</datalist>
       <button class="entry-submit" onclick="progAdicionar()">Adicionar entrega</button>
-      <span class="hint" style="margin-left:10px;">Depois de adicionar, cliente, transportadora e horário continuam preenchidos para agilizar o próximo.</span>
+      <span class="hint" style="margin-left:10px;">Depois de adicionar, cliente, transportadora, horário e valor continuam preenchidos para agilizar o próximo. Os valores não vão para a mensagem do WhatsApp.</span>
     </div>
 
     <div class="panel" style="margin-bottom:16px;">
       <h3>Entregas do dia (${itens.length})</h3>
       <div class="hint">Marque ✅ quando a entrega for realizada ou ❌ se não acontecer. Clique de novo para voltar a pendente. NF e horário podem ser ajustados aqui.</div>
+      ${PROG.semColunaValor ? `<div class="os-alerta red">⛔ <b>Qnt, valor e valor adicional não estão sendo gravados</b>: falta criar as colunas no banco. Peça ao diretor para rodar o SQL dos valores da programação no Supabase.</div>` : ""}
+      ${itens.length ? `<div class="hint" style="margin:0 0 6px;">Valor do dia (realizadas): <b>${fmtBRL2(sumArr(itens.filter(l=>l.situacao==="realizada").map(l=>(l.valor||0)+(l.valorAdic||0))))}</b> · programado: ${fmtBRL2(sumArr(itens.filter(l=>l.situacao!=="nao_realizada").map(l=>(l.valor||0)+(l.valorAdic||0))))}</div>` : ""}
       ${PROG.semColunaMotivo ? `<div class="os-alerta red">⛔ O <b>motivo da não realização não está sendo gravado</b>: falta criar as colunas no banco. Peça ao diretor para rodar o SQL do motivo no Supabase.</div>` : ""}
       ${itens.length ? `<div style="overflow-x:auto;"><table class="os-form prog-tab">
-        <thead><tr><th>Horário</th><th>Frota</th><th>Motorista</th><th>Cliente</th><th>Transportadora</th><th>NF</th><th>Situação</th><th></th></tr></thead>
+        <thead><tr><th>Horário</th><th>Frota</th><th>Motorista</th><th>Cliente</th><th>Transportadora</th><th>NF</th><th>Qnt</th><th>Valor (R$)</th><th>Adicional (R$)</th><th>Situação</th><th></th></tr></thead>
         <tbody>${itens.map(l=>`<tr class="sit-${l.situacao}">
           <td><input type="time" step="900" value="${l.horario}" style="width:96px;" onchange="progEditar('${l.id}','horario',this.value)"></td>
           <td><b>${osEsc(l.frota)}</b><div class="hint" style="margin:0;">${l.servico}${!l.planejado ? ' · <span class="badge amber">extra</span>' : ""}</div></td>
           <td>${osEsc(l.motorista)||"—"}</td><td>${osEsc(l.cliente)}</td><td>${osEsc(l.transportadora)||"—"}</td>
           <td><input value="${osEsc(l.nf)}" style="width:130px;" placeholder="12345/98745" oninput="progNF(this)" onchange="progEditar('${l.id}','nf',this.value)"></td>
+          <td><input value="${l.qnt||1}" inputmode="numeric" style="width:48px;" oninput="progSoNumero(this)" onchange="progEditar('${l.id}','qnt',this.value)"></td>
+          <td><input value="${progBRL(l.valor)}" inputmode="decimal" style="width:100px;${l.valor==null ? " border-color:var(--amber);" : ""}" placeholder="sem valor" onchange="progEditar('${l.id}','valor',this.value)"></td>
+          <td><input value="${progBRL(l.valorAdic)}" inputmode="decimal" style="width:100px;" placeholder="—" onchange="progEditar('${l.id}','valorAdic',this.value)"></td>
           <td style="white-space:nowrap;">
             <button class="prog-sit ${l.situacao==="realizada"?"on ok":""}" onclick="progSituacao('${l.id}','realizada')" title="Realizada">✅</button>
             <button class="prog-sit ${l.situacao==="nao_realizada"?"on no":""}" onclick="progSituacao('${l.id}','nao_realizada')" title="Não realizada">❌</button>
