@@ -1771,28 +1771,28 @@ function manutencaoCustos(){
   `;
 };
 /* ---------- Carretas e valor das O.S emitidas (Emissão de O.S), por dia e por mês, a partir de 26/10/2026 ----------
-   Data de referência: Início (entrada) da O.S. Cada O.S emitida = uma carreta. */
+   Data de referência: Saída da carreta (O.S sem data de saída fica de fora). Cada O.S emitida = uma carreta. */
 const MOS_INICIO = "2026-10-26";
 let MOS_MES = Number(frotaHojeISO().slice(5,7)), MOS_ANO = Number(frotaHojeISO().slice(0,4));
 const MOS_MESES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 const mosK = (v) => { v = Number(v)||0; return v >= 1000 ? (v/1000).toFixed(1).replace(/\.0$/, "") + "k" : String(Math.round(v)); };
-function mosEmitidas(){ return OSE.lista.filter(o=>o.status==="emitida" && (o.entrada||"") >= MOS_INICIO); }
+function mosEmitidas(){ return OSE.lista.filter(o=>o.status==="emitida" && (o.saida||"") >= MOS_INICIO); }
 function mosDados(){
   const ls = mosEmitidas(), pad = (n) => String(n).padStart(2,"0");
   const ult = new Date(MOS_ANO, MOS_MES, 0).getDate(), pref = `${MOS_ANO}-${pad(MOS_MES)}-`;
   const dias = [], dCarr = [], dVal = [];
   for(let d = 1; d <= ult; d++){ const dia = pref + pad(d); if(dia < MOS_INICIO) continue;
-    const doDia = ls.filter(o=>o.entrada===dia); dias.push(pad(d)); dCarr.push(doDia.length); dVal.push(sumArr(doDia.map(oseValor))); }
+    const doDia = ls.filter(o=>o.saida===dia); dias.push(pad(d)); dCarr.push(doDia.length); dVal.push(sumArr(doDia.map(oseValor))); }
   const meses = [], mCarr = [], mVal = [];
   for(let m = 1; m <= 12; m++){ const mm = `${MOS_ANO}-${pad(m)}`; if(mm < MOS_INICIO.slice(0,7)) continue;
-    const doMes = ls.filter(o=>(o.entrada||"").startsWith(mm)); meses.push(`${MOS_MESES[m-1]}/${String(MOS_ANO).slice(2)}`); mCarr.push(doMes.length); mVal.push(sumArr(doMes.map(oseValor))); }
+    const doMes = ls.filter(o=>(o.saida||"").startsWith(mm)); meses.push(`${MOS_MESES[m-1]}/${String(MOS_ANO).slice(2)}`); mCarr.push(doMes.length); mVal.push(sumArr(doMes.map(oseValor))); }
   return { dias, dCarr, dVal, meses, mCarr, mVal };
 }
 window.mosFiltro = (k, v) => { if(k==="mes") MOS_MES = Number(v); else MOS_ANO = Number(v);
   const y = window.scrollY; document.getElementById("content").innerHTML = renderers.manutencao(); window.scrollTo(0,y); manutencaoCustosCharts(); };
 function mosHTML(){
   oseGarantirCarga();
-  const cab = `<h3 style="margin:0;">🛠️ Manutenção de carretas — O.S emitidas</h3><div class="hint">Base: Emissão de O.S, pela data de Início da carreta, a partir de ${fmtDataBR(MOS_INICIO)}</div>`;
+  const cab = `<h3 style="margin:0;">🛠️ Manutenção de carretas — O.S emitidas</h3><div class="hint">Base: Emissão de O.S, pela data de Saída da carreta, a partir de ${fmtDataBR(MOS_INICIO)}</div>`;
   if(OSE.erro) return `<div class="panel">${cab}<div class="empty-state" style="padding:18px;"><p>${osEsc(OSE.erro)}</p></div></div>`;
   if(!OSE.carregado) return `<div class="panel">${cab}<div class="empty-state" style="padding:18px;"><p>Carregando as O.S...</p></div></div>`;
   const anoIni = Number(MOS_INICIO.slice(0,4)), anoFim = Math.max(anoIni, Number(frotaHojeISO().slice(0,4)));
@@ -10137,14 +10137,14 @@ window.oseProtGerar = async () => {
   }catch(e){ if(aba) aba.close(); toast("⚠ Não foi possível gerar o protocolo: " + e.message); }
 };
 window.oseOSFiltro = (f) => { OSE_OS_FILTRO = OSE_OS_FILTRO===f ? "todas" : f; oseRedesenhar(); };
-// Filtro por período da lista de O.S emitidas: Data de início (entrada da carreta) e Data de emissão
-const OSE_OS_DATAS = { iniDe:"", iniAte:"", emDe:"", emAte:"" };
+// Filtro por período da lista de O.S emitidas: Data de saída da carreta e Data de emissão
+const OSE_OS_DATAS = { sdDe:"", sdAte:"", emDe:"", emAte:"" };
 window.oseOSData = (k, v) => { OSE_OS_DATAS[k] = v || ""; oseRedesenhar(); };
 window.oseOSDataLimpar = () => { Object.keys(OSE_OS_DATAS).forEach(k=>OSE_OS_DATAS[k] = ""); oseRedesenhar(); };
 function oseOSNoPeriodo(o){
-  const f = OSE_OS_DATAS, ini = o.entrada || "", em = oseDiaEmissao(o);
-  if(f.iniDe && (!ini || ini < f.iniDe)) return false;
-  if(f.iniAte && (!ini || ini > f.iniAte)) return false;
+  const f = OSE_OS_DATAS, sd = o.saida || "", em = oseDiaEmissao(o);
+  if(f.sdDe && (!sd || sd < f.sdDe)) return false;
+  if(f.sdAte && (!sd || sd > f.sdAte)) return false;
   if(f.emDe && (!em || em < f.emDe)) return false;
   if(f.emAte && (!em || em > f.emAte)) return false;
   return true;
@@ -10592,14 +10592,14 @@ function osePagina(){
         <button class="sub-tab-btn ${OSE_OS_FILTRO==="nf"?"active":""}" onclick="oseOSFiltro('nf')">🧾 NF emitida (${contSit.nf})</button>
       </div>
       <div class="nf-grid os-form" style="grid-template-columns:repeat(auto-fit, minmax(140px, 170px)); align-items:end; margin-top:10px;">
-        <label>Início — de<input type="date" value="${OSE_OS_DATAS.iniDe}" onchange="oseOSData('iniDe', this.value)"></label>
-        <label>Início — até<input type="date" value="${OSE_OS_DATAS.iniAte}" onchange="oseOSData('iniAte', this.value)"></label>
+        <label>Saída — de<input type="date" value="${OSE_OS_DATAS.sdDe}" onchange="oseOSData('sdDe', this.value)"></label>
+        <label>Saída — até<input type="date" value="${OSE_OS_DATAS.sdAte}" onchange="oseOSData('sdAte', this.value)"></label>
         <label>Emissão — de<input type="date" value="${OSE_OS_DATAS.emDe}" onchange="oseOSData('emDe', this.value)"></label>
         <label>Emissão — até<input type="date" value="${OSE_OS_DATAS.emAte}" onchange="oseOSData('emAte', this.value)"></label>
         ${temPeriodo ? `<button class="os-btn" style="margin:0;" onclick="oseOSDataLimpar()">✕ Limpar datas</button>` : ""}
       </div>
       ${(()=>{ const tot = sumArr(listaOS.map(oseValor)), n = listaOS.length;
-        const per = [OSE_OS_DATAS.iniDe||OSE_OS_DATAS.iniAte ? `Início ${OSE_OS_DATAS.iniDe ? fmtDataBR(OSE_OS_DATAS.iniDe) : "…"} a ${OSE_OS_DATAS.iniAte ? fmtDataBR(OSE_OS_DATAS.iniAte) : "…"}` : "",
+        const per = [OSE_OS_DATAS.sdDe||OSE_OS_DATAS.sdAte ? `Saída ${OSE_OS_DATAS.sdDe ? fmtDataBR(OSE_OS_DATAS.sdDe) : "…"} a ${OSE_OS_DATAS.sdAte ? fmtDataBR(OSE_OS_DATAS.sdAte) : "…"}` : "",
                      OSE_OS_DATAS.emDe||OSE_OS_DATAS.emAte ? `Emissão ${OSE_OS_DATAS.emDe ? fmtDataBR(OSE_OS_DATAS.emDe) : "…"} a ${OSE_OS_DATAS.emAte ? fmtDataBR(OSE_OS_DATAS.emAte) : "…"}` : ""].filter(Boolean).join(" · ");
         return `<div class="kpi-grid" style="margin:10px 0 0;">
           <div class="kpi"><div class="lbl">Valor das O.S${per ? "" : " (todas)"}</div><div class="val">${fmtBRL2(tot)}</div><div class="delta flat">${per || "sem filtro de data"}</div></div>
