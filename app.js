@@ -10137,6 +10137,18 @@ window.oseProtGerar = async () => {
   }catch(e){ if(aba) aba.close(); toast("⚠ Não foi possível gerar o protocolo: " + e.message); }
 };
 window.oseOSFiltro = (f) => { OSE_OS_FILTRO = OSE_OS_FILTRO===f ? "todas" : f; oseRedesenhar(); };
+// Filtro por período da lista de O.S emitidas: Data de início (entrada da carreta) e Data de emissão
+const OSE_OS_DATAS = { iniDe:"", iniAte:"", emDe:"", emAte:"" };
+window.oseOSData = (k, v) => { OSE_OS_DATAS[k] = v || ""; oseRedesenhar(); };
+window.oseOSDataLimpar = () => { Object.keys(OSE_OS_DATAS).forEach(k=>OSE_OS_DATAS[k] = ""); oseRedesenhar(); };
+function oseOSNoPeriodo(o){
+  const f = OSE_OS_DATAS, ini = o.entrada || "", em = oseDiaEmissao(o);
+  if(f.iniDe && (!ini || ini < f.iniDe)) return false;
+  if(f.iniAte && (!ini || ini > f.iniAte)) return false;
+  if(f.emDe && (!em || em < f.emDe)) return false;
+  if(f.emAte && (!em || em > f.emAte)) return false;
+  return true;
+}
 window.oseAssinada = async (id) => {
   const o = OSE.lista.find(x=>x.id===id); if(!o) return;
   const d = document.getElementById(`ose-ass-${id}`)?.value || frotaHojeISO();
@@ -10520,8 +10532,10 @@ function osePagina(){
   const emitMes = emit.filter(o=>(o.emitidaEm||o.entrada||"").startsWith(mes));
   if(!["pre","validada"].includes(OSE_FILTRO)) OSE_FILTRO = "pre";
   const listaPre = (OSE_FILTRO==="pre" ? pre : validadas).sort(oseOrdemAbertura);
-  const contSit = { aguardando:0, assinada:0, nf:0 }; emit.forEach(o=>contSit[oseSituacao(o).k]++);
-  const listaOS = emit.filter(o=>OSE_OS_FILTRO==="todas" || oseSituacao(o).k===OSE_OS_FILTRO).sort((a,b)=>(b.entrada||"").localeCompare(a.entrada||"") || oseOrdemAbertura(a, b) || (a.numero||0)-(b.numero||0));
+  const temPeriodo = Object.values(OSE_OS_DATAS).some(Boolean), emitPer = emit.filter(oseOSNoPeriodo);
+  const contSit = { aguardando:0, assinada:0, nf:0 }, valSit = { aguardando:0, assinada:0, nf:0 };
+  emitPer.forEach(o=>{ const k = oseSituacao(o).k; contSit[k]++; valSit[k] += oseValor(o); });
+  const listaOS = emitPer.filter(o=>OSE_OS_FILTRO==="todas" || oseSituacao(o).k===OSE_OS_FILTRO).sort((a,b)=>(b.entrada||"").localeCompare(a.entrada||"") || oseOrdemAbertura(a, b) || (a.numero||0)-(b.numero||0));
   const resumoItens = (o) => (o.itens||[]).map(it=>`<span class="ose-chip" title="${osEsc(it.servico)}"><b>${it.cod}</b> ${String(it.qtd).replace(".", ",")}${it.un==="m" ? "m" : ""}</span>`).join("");
   const destaque = (o) => OSE_EDIT && (OSE_EDIT.id===o.id || OSE_EDIT.preId===o.id) ? 'style="background:#FCF1DE;"' : "";
   return `
@@ -10572,11 +10586,28 @@ function osePagina(){
       </div>
       ${oseProtHTML()}
       <div class="prog-chips" style="margin:10px 0 0;">
-        <button class="sub-tab-btn ${OSE_OS_FILTRO==="todas"?"active":""}" onclick="oseOSFiltro('todas')">Todas (${emit.length})</button>
+        <button class="sub-tab-btn ${OSE_OS_FILTRO==="todas"?"active":""}" onclick="oseOSFiltro('todas')">Todas (${emitPer.length})</button>
         <button class="sub-tab-btn ${OSE_OS_FILTRO==="aguardando"?"active":""}" onclick="oseOSFiltro('aguardando')">⏳ Aguardando assinatura (${contSit.aguardando})</button>
         <button class="sub-tab-btn ${OSE_OS_FILTRO==="assinada"?"active":""}" onclick="oseOSFiltro('assinada')">✍️ Assinadas — pendentes de NF (${contSit.assinada})</button>
         <button class="sub-tab-btn ${OSE_OS_FILTRO==="nf"?"active":""}" onclick="oseOSFiltro('nf')">🧾 NF emitida (${contSit.nf})</button>
       </div>
+      <div class="nf-grid os-form" style="grid-template-columns:repeat(auto-fit, minmax(140px, 170px)); align-items:end; margin-top:10px;">
+        <label>Início — de<input type="date" value="${OSE_OS_DATAS.iniDe}" onchange="oseOSData('iniDe', this.value)"></label>
+        <label>Início — até<input type="date" value="${OSE_OS_DATAS.iniAte}" onchange="oseOSData('iniAte', this.value)"></label>
+        <label>Emissão — de<input type="date" value="${OSE_OS_DATAS.emDe}" onchange="oseOSData('emDe', this.value)"></label>
+        <label>Emissão — até<input type="date" value="${OSE_OS_DATAS.emAte}" onchange="oseOSData('emAte', this.value)"></label>
+        ${temPeriodo ? `<button class="os-btn" style="margin:0;" onclick="oseOSDataLimpar()">✕ Limpar datas</button>` : ""}
+      </div>
+      ${(()=>{ const tot = sumArr(listaOS.map(oseValor)), n = listaOS.length;
+        const per = [OSE_OS_DATAS.iniDe||OSE_OS_DATAS.iniAte ? `Início ${OSE_OS_DATAS.iniDe ? fmtDataBR(OSE_OS_DATAS.iniDe) : "…"} a ${OSE_OS_DATAS.iniAte ? fmtDataBR(OSE_OS_DATAS.iniAte) : "…"}` : "",
+                     OSE_OS_DATAS.emDe||OSE_OS_DATAS.emAte ? `Emissão ${OSE_OS_DATAS.emDe ? fmtDataBR(OSE_OS_DATAS.emDe) : "…"} a ${OSE_OS_DATAS.emAte ? fmtDataBR(OSE_OS_DATAS.emAte) : "…"}` : ""].filter(Boolean).join(" · ");
+        return `<div class="kpi-grid" style="margin:10px 0 0;">
+          <div class="kpi"><div class="lbl">Valor das O.S${per ? "" : " (todas)"}</div><div class="val">${fmtBRL2(tot)}</div><div class="delta flat">${per || "sem filtro de data"}</div></div>
+          <div class="kpi"><div class="lbl">Quantidade de O.S</div><div class="val">${n}</div><div class="delta flat">média ${fmtBRL2(n ? tot/n : 0)} por O.S</div></div>
+          <div class="kpi"><div class="lbl">⏳ Aguardando assinatura</div><div class="val">${fmtBRL2(valSit.aguardando)}</div><div class="delta flat">${contSit.aguardando} O.S</div></div>
+          <div class="kpi"><div class="lbl">✍️ Assinadas — pendentes de NF</div><div class="val">${fmtBRL2(valSit.assinada)}</div><div class="delta flat">${contSit.assinada} O.S</div></div>
+          <div class="kpi"><div class="lbl">🧾 NF emitida</div><div class="val">${fmtBRL2(valSit.nf)}</div><div class="delta flat">${contSit.nf} O.S</div></div>
+        </div>`; })()}
       ${listaOS.length ? `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
         <thead><tr><th>Nº O.S</th><th>Início</th><th>Saída</th><th>Frota · Placa</th><th>Serviços</th><th class="num">Valor p/ NF</th><th>Situação</th><th>Origem</th><th></th></tr></thead>
         <tbody>${listaOS.map(o=>{ const pr = OSE.lista.find(x=>x.id===o.preId); return `<tr ${destaque(o)}>
@@ -10592,7 +10623,7 @@ function osePagina(){
             <button class="os-link" onclick="oseConferir('${o.id}')" title="Editar O.S">✏️</button> <button class="os-link" onclick="oseExcluir('${o.id}')" title="Excluir O.S">🗑️</button></td>
         </tr>`; }).join("")}</tbody>
         <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="5">Total (${listaOS.length})</td><td class="num">${fmtBRL2(sumArr(listaOS.map(oseValor)))}</td><td colspan="3"></td></tr></tfoot>
-      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${emit.length ? "Nenhuma O.S nesta situação." : "Nenhuma O.S emitida ainda."}</p></div>`}
+      </table></div>` : `<div class="empty-state" style="padding:16px;"><p>${emit.length ? (temPeriodo ? "Nenhuma O.S nesse período / situação." : "Nenhuma O.S nesta situação.") : "Nenhuma O.S emitida ainda."}</p></div>`}
     </div>
 
     <details class="panel" id="ose-cfg" style="margin-bottom:16px;" ${OSE.cfgSalvo ? "" : "open"}>
