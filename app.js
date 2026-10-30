@@ -440,8 +440,8 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","acessos","gerencial"];
-const PAGINAS_SO_DIRETOR = ["gerencial","faturamento","emissaonf","contaspagar","belem","ordens","organograma","acessos"];
+const pages = ["overview","custos","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","acessos","gerencial"];
+const PAGINAS_SO_DIRETOR = ["custos","gerencial","faturamento","emissaonf","contaspagar","belem","ordens","organograma","acessos"];
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
@@ -453,6 +453,7 @@ const oseSoOS = () => MEU_PAPEL === "administrativo" || (!!PAGINAS_RESTRITAS[MEU
 function paginasRestritas(){ const b = PAGINAS_RESTRITAS[MEU_PAPEL]; return b ? [...b, ...PAGINAS_EXTRA.filter(p=>!b.includes(p) && pages.includes(p))] : null; }
 const titles = {
   overview: ["Painel Executivo","Consolidado de indicadores · Avance Transporte Logístico"],
+  custos: ["Resumo de Custos","Diesel, peças, folha e benefícios — mensal, trimestral, média do ano, tendência e previsão"],
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
   organograma: ["Organograma","Colaboradores por local, função e liderança"],
@@ -1969,6 +1970,318 @@ initCharts.diesel = () => {
     options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
       scales:{ y:{grid:{color:COLORS.grid}, ticks:{callback:v=>v+"K"}}, x:{grid:{display:false}, ticks:{maxRotation:0, autoSkip:true, maxTicksLimit:12}} } }
   });
+};
+
+/* -------------------- RESUMO DE CUSTOS (Diretoria) -------------------- */
+// Junta Diesel (Manaus), Compras de Peças, Folha (Salário e 40% Adicional) e VT+VR numa série mensal
+// única ("AAAA-MM" → valor). Só entram meses fechados (o mês em andamento fica de fora).
+// A Hora Extra já está dentro do Salário: aparece à parte ("dos quais"), nunca somada no total.
+const RC_CATS = [
+  { k:"diesel",  nome:"Diesel Manaus",          cor:COLORS.red,   page:"diesel" },
+  { k:"pecas",   nome:"Compra de Peças",        cor:COLORS.amber, page:"compras" },
+  { k:"salario", nome:"Folha · Salário",        cor:COLORS.ink,   page:"folha" },
+  { k:"ad40",    nome:"Folha · 40% Adicional",  cor:"#5B5F6B",    page:"folha" },
+  { k:"vtvr",    nome:"VT + VR",                cor:"#E8939E",    page:"folha" },
+];
+let RC_ANO = null;
+const rcPad = (n) => String(n).padStart(2,"0");
+const rcChave = (label) => { const l = String(label||"").replace("*","").trim(), b = l.indexOf("/"), m = MONTH_ABBR.indexOf(l.slice(0,b)); return b < 0 || m < 0 ? null : `20${l.slice(b+1,b+3)}-${rcPad(m+1)}`; };
+const rcLabel = (k) => `${MONTH_ABBR[Number(k.slice(5,7))-1]}/${k.slice(2,4)}`;
+const rcMesSeg = (k) => { const d = new Date(Number(k.slice(0,4)), Number(k.slice(5,7)), 1); return `${d.getFullYear()}-${rcPad(d.getMonth()+1)}`; };
+const rcMesAnt = (k) => { const d = new Date(Number(k.slice(0,4)), Number(k.slice(5,7))-2, 1); return `${d.getFullYear()}-${rcPad(d.getMonth()+1)}`; };
+const rcMed = (a) => a.length ? sumArr(a)/a.length : null;
+function rcSerie(labels, valores){ const m = {}; (labels||[]).forEach((l,i)=>{ const k = rcChave(l), v = valores[i]; if(k && v!=null && v>0) m[k] = (m[k]||0) + v; }); return m; }
+function rcDados(){
+  const f = DATA.folha, s = {
+    diesel: rcSerie(DATA.diesel.mensalLabels, DATA.diesel.mensal),
+    pecas: rcSerie(DATA.compras.mensalLabels, DATA.compras.mensal),
+    salario: rcSerie(f.labels, f.salario), ad40: rcSerie(f.labels, f.ad40), vtvr: rcSerie(f.labels, f.vtVr), he: {}
+  };
+  if(heLanc().length){ const g = heAgrupar(heLanc(), r=>r.mes.slice(0,7)); Object.keys(g).forEach(k=>{ if(g[k]>0) s.he[k] = g[k]; }); }
+  else { const h = DATA.horaExtraCusto; ["2025","2026"].forEach(a=>(h[`y${a}`]||[]).forEach((v,i)=>{ if(v>0) s.he[`${a}-${rcPad(i+1)}`] = v; })); }
+  const mesAtual = frotaHojeISO().slice(0,7);
+  Object.values(s).forEach(m=>Object.keys(m).forEach(k=>{ if(k >= mesAtual) delete m[k]; }));
+  return s;
+}
+// Previsão dos próximos n meses: metade tendência (reta dos últimos 6 meses), metade média dos últimos 3,
+// limitada a ±30% dessa média — conservadora, para um mês atípico não distorcer a projeção.
+function rcPrev(m, n){
+  const ks = Object.keys(m).sort(); if(ks.length < 3) return null;
+  const ys = ks.slice(-6).map(k=>m[k]), N = ys.length, xm = (N-1)/2, ym = rcMed(ys), base = rcMed(ys.slice(-3));
+  let num = 0, den = 0; ys.forEach((y,x)=>{ num += (x-xm)*(y-ym); den += (x-xm)**2; });
+  const b = den ? num/den : 0, prox = []; let k = ks[ks.length-1];
+  for(let h = 1; h <= n; h++){ k = rcMesSeg(k); const reg = ym + b*(N-1-xm+h); prox.push({ k, v: Math.min(base*1.3, Math.max(base*0.7, (reg+base)/2)) }); }
+  return { ult: ks[ks.length-1], prox };
+}
+// Tendência: média dos 3 últimos meses fechados vs os 3 anteriores
+function rcTend(m){ const ys = Object.keys(m).sort().slice(-6).map(k=>m[k]); if(ys.length < 6) return null; const a = rcMed(ys.slice(0,3)); return a ? (rcMed(ys.slice(3))-a)/a*100 : null; }
+function rcCat(m, ano){
+  const ks = Object.keys(m).sort(), doAno = ks.filter(k=>k.startsWith(ano+"-")), anoAnt = String(Number(ano)-1);
+  const total = sumArr(doAno.map(k=>m[k])), meses = doAno.length, ultK = doAno[doAno.length-1] || null, antK = ultK ? rcMesAnt(ultK) : null;
+  const mesmos = doAno.map(k=>anoAnt + k.slice(4)), ytdAnt = meses && mesmos.every(k=>m[k]!=null) ? sumArr(mesmos.map(k=>m[k])) : null;
+  const tri = [1,2,3,4].map(t=>{ const v = [1,2,3].map(j=>m[`${ano}-${rcPad((t-1)*3+j)}`]).filter(x=>x!=null); return v.length ? { total:sumArr(v), media:rcMed(v), meses:v.length } : null; });
+  const triAntT4 = (()=>{ const v = [10,11,12].map(j=>m[`${anoAnt}-${j}`]).filter(x=>x!=null); return v.length ? { total:sumArr(v), media:rcMed(v), meses:v.length } : null; })();
+  const prev = rcPrev(m, 15), restoAno = prev ? prev.prox.filter(p=>p.k.startsWith(ano+"-")) : [];
+  return { total, meses, media: meses ? total/meses : null, ultK, ultV: ultK ? m[ultK] : null, antV: antK && m[antK]!=null ? m[antK] : null,
+    ytdAnt, ytdPct: ytdAnt ? (total-ytdAnt)/ytdAnt*100 : null, totAnt: sumArr(ks.filter(k=>k.startsWith(anoAnt+"-")).map(k=>m[k])),
+    mesesAnt: ks.filter(k=>k.startsWith(anoAnt+"-")).length, tri, triAntT4, prev, tend: rcTend(m),
+    proj: total + sumArr(restoAno.map(p=>p.v)), projEstimado: restoAno.length };
+}
+function rcPct(p, semCor){
+  if(p == null || !isFinite(p)) return `<span class="delta sm flat">—</span>`;
+  if(Math.abs(p) < 0.05) return `<span class="delta sm flat">→ 0%</span>`;
+  return `<span class="delta sm ${semCor ? "flat" : (p > 0 ? "up" : "down")}">${p > 0 ? "▲" : "▼"} ${Math.abs(p).toFixed(1).replace(".",",")}%</span>`;
+}
+function rcTendBadge(p){
+  if(p == null) return `<span class="badge gray">sem histórico</span>`;
+  if(p > 5) return `<span class="badge red">↗ Alta ${p.toFixed(0)}%</span>`;
+  if(p < -5) return `<span class="badge green">↘ Queda ${Math.abs(p).toFixed(0)}%</span>`;
+  return `<span class="badge gray">→ Estável</span>`;
+}
+window.rcFiltroAno = (a) => { RC_ANO = a; navigate("custos"); };
+// Diesel: separa quanto da variação veio do preço do litro e quanto do volume abastecido (últimos 3 meses vs 3 anteriores)
+function rcDieselPrecoVolume(){
+  const lanc = DATA.diesel.lancamentos || [], mesAtual = frotaHojeISO().slice(0,7), m = {};
+  lanc.forEach(r=>{ const k = (r.d||"").slice(0,7); if(!k || k >= mesAtual || !(r.litros > 0)) return; (m[k] = m[k] || { v:0, l:0 }); m[k].v += r.v || 0; m[k].l += r.litros; });
+  const ks = Object.keys(m).sort().slice(-6); if(ks.length < 6) return null;
+  const soma = (arr, c) => sumArr(arr.map(k=>m[k][c])), a = ks.slice(0,3), b = ks.slice(3);
+  const precoA = soma(a,"v")/soma(a,"l"), precoB = soma(b,"v")/soma(b,"l");
+  return { precoA, precoB, precoPct:(precoB-precoA)/precoA*100, litrosA:soma(a,"l")/3, litrosB:soma(b,"l")/3, volPct:(soma(b,"l")-soma(a,"l"))/soma(a,"l")*100 };
+}
+function rcContexto(){
+  const s = rcDados();
+  const anos = [...new Set(RC_CATS.flatMap(c=>Object.keys(s[c.k]).map(k=>k.slice(0,4))))].sort();
+  if(!RC_ANO || !anos.includes(RC_ANO)) RC_ANO = anos[anos.length-1] || frotaHojeISO().slice(0,4);
+  const ano = RC_ANO, anoAnt = String(Number(ano)-1), st = {};
+  RC_CATS.forEach(c=>{ st[c.k] = rcCat(s[c.k], ano); });
+  const he = rcCat(s.he, ano);
+  const heMeses = Object.keys(s.he).filter(k=>k.startsWith(ano+"-") && s.salario[k]!=null);
+  const hePct = heMeses.length ? sumArr(heMeses.map(k=>s.he[k]))/sumArr(heMeses.map(k=>s.salario[k]))*100 : null;
+  // mês "comum": o último do ano em que todas as categorias já fecharam
+  const comuns = Object.keys(s.salario).filter(k=>k.startsWith(ano+"-") && RC_CATS.every(c=>s[c.k][k]!=null)).sort();
+  const totMap = {}; Object.keys(s.salario).forEach(k=>{ if(RC_CATS.every(c=>s[c.k][k]!=null)) totMap[k] = sumArr(RC_CATS.map(c=>s[c.k][k])); });
+  const tot = {
+    total: sumArr(RC_CATS.map(c=>st[c.k].total)), media: sumArr(RC_CATS.map(c=>st[c.k].media||0)),
+    proj: sumArr(RC_CATS.map(c=>st[c.k].proj)), projEstimado: Math.max(...RC_CATS.map(c=>st[c.k].projEstimado)),
+    ytdAnt: RC_CATS.every(c=>st[c.k].ytdAnt!=null) ? sumArr(RC_CATS.map(c=>st[c.k].ytdAnt)) : null,
+    totAnt: RC_CATS.every(c=>st[c.k].mesesAnt===12) ? sumArr(RC_CATS.map(c=>st[c.k].totAnt)) : null,
+    tend: rcTend(totMap), ultK: comuns[comuns.length-1] || null
+  };
+  tot.ytdPct = tot.ytdAnt ? (tot.total - tot.ytdAnt)/tot.ytdAnt*100 : null;
+  tot.ultV = tot.ultK ? totMap[tot.ultK] : null;
+  tot.antV = tot.ultK && totMap[rcMesAnt(tot.ultK)]!=null ? totMap[rcMesAnt(tot.ultK)] : null;
+  // próximos 3 meses depois do último mês em que todas as categorias fecharam: o que já fechou entra
+  // pelo valor real, o resto pela previsão de cada categoria
+  const ultTot = Object.keys(totMap).sort().slice(-1)[0];
+  tot.proxKs = []; if(ultTot){ let k = ultTot; for(let i=0;i<3;i++){ k = rcMesSeg(k); tot.proxKs.push(k); } }
+  const valorEm = (ck, k) => { const real = s[ck][k]; if(real!=null) return real; const pv = st[ck].prev; const f = pv && pv.prox.find(p=>p.k===k); return f ? f.v : null; };
+  tot.prox = tot.proxKs.map(k=>{ const vs = RC_CATS.map(x=>valorEm(x.k, k)); return vs.every(v=>v!=null) ? sumArr(vs) : null; });
+  RC_CATS.forEach(x=>{ st[x.k].prox1 = tot.proxKs[0] ? valorEm(x.k, tot.proxKs[0]) : null; });
+  return { s, anos, ano, anoAnt, st, he, hePct, tot, totMap, ehAnoCorrente: ano === anos[anos.length-1] };
+}
+function rcAnalise(c){
+  const { st, tot, he, hePct, ano, anoAnt, ehAnoCorrente } = c, itens = [];
+  const add = (cor, ic, titulo, texto) => itens.push({ cor, ic, titulo, texto });
+  if(ehAnoCorrente && tot.projEstimado){
+    const vs = tot.totAnt ? (tot.proj - tot.totAnt)/tot.totAnt*100 : null;
+    add(vs == null ? "gray" : vs > 5 ? "red" : vs < -5 ? "green" : "amber", "🔮", `Projeção de fechamento ${ano}: ${fmtBRL(tot.proj)}`,
+      `Realizado até agora ${fmtBRL(tot.total)} + estimativa de ${tot.projEstimado} ${tot.projEstimado===1?"mês":"meses"} restante(s).` +
+      (vs != null ? ` Isso é <b>${vs>=0?"+":""}${vs.toFixed(1).replace(".",",")}%</b> sobre ${anoAnt} (${fmtBRL(tot.totAnt)}).` : "") +
+      ` Use esse número como base do orçamento e acompanhe mês a mês se o realizado está acima ou abaixo.`);
+  }
+  if(tot.prox.length && tot.prox.every(v=>v!=null)){
+    const tri = sumArr(tot.prox);
+    add("gray", "🎯", `Orçamento sugerido para os próximos 3 meses: ${fmtBRL(tri*1.05)}`,
+      `Previsão de ${fmtBRL(tri)} (${tot.proxKs.map(rcLabel).join(", ")}) + 5% de margem de segurança ≈ <b>${fmtBRL(tri*1.05/3)}/mês</b>. Defina esse valor como teto e cobre justificativa de qualquer categoria que passar dele.`);
+  }
+  const maior = [...RC_CATS].sort((a,b)=>st[b.k].total - st[a.k].total)[0];
+  if(maior && tot.total){
+    const pct = st[maior.k].total/tot.total*100, eco = (st[maior.k].media||0)*12*0.05;
+    add("amber", "📌", `Maior peso: ${maior.nome} = ${pct.toFixed(0)}% do custo de ${ano}`,
+      `É onde qualquer melhoria rende mais: <b>cada 5% de redução nessa linha economiza ≈ ${fmtBRL(eco)} por ano</b>. Priorize as ações dela abaixo.`);
+  }
+  const DICAS = {
+    diesel: "Ações: meta de km/l por caminhão (e ranking dos piores), cruzar litros abastecidos com a capacidade do tanque e o km rodado, contrato de preço/volume com o posto, reduzir marcha lenta e viagens vazias, calibragem de pneus.",
+    pecas: `Ações: manutenção preventiva por km (troca planejada sai mais barata que a corretiva na estrada), 3 cotações para compras acima de R$ 1.000, estoque mínimo só dos itens de giro, e avaliar renovar os caminhões que mais consomem peça (os 10 maiores = ${DATA.compras.top10CaminhoesPct || "—"}% das compras).`,
+    salario: "Ações: comparar o quadro com o volume de viagens do mês, revisar escalas e banco de horas antes de novas contratações, e acompanhar a Hora Extra (que está dentro deste valor).",
+    ad40: "O 40% acompanha o salário — se subir mais rápido que o salário, revisar quem recebe o adicional e o enquadramento de cada função.",
+    vtvr: "Ações: conferir a quantidade de cartões x colaboradores ativos (desligado ainda recebendo), VT só para quem realmente usa, e negociar a taxa da operadora do VR."
+  };
+  const altas = RC_CATS.filter(x=>st[x.k].tend > 5), quedas = RC_CATS.filter(x=>st[x.k].tend < -5);
+  altas.forEach(x=>add("red", "📈", `${x.nome} em alta: +${st[x.k].tend.toFixed(0)}% nos últimos 3 meses`,
+    `Média dos 3 últimos meses fechados vs os 3 anteriores. ${DICAS[x.k]}`));
+  const pv = rcDieselPrecoVolume();
+  if(pv) add(Math.abs(pv.precoPct) > Math.abs(pv.volPct) ? "amber" : "gray", "⛽", "Diesel: preço x consumo",
+    `Preço médio do litro foi de ${fmtBRL2(pv.precoA)} para <b>${fmtBRL2(pv.precoB)}</b> (${pv.precoPct>=0?"+":""}${pv.precoPct.toFixed(1).replace(".",",")}%) e o volume de ${fmtNum(Math.round(pv.litrosA))} para <b>${fmtNum(Math.round(pv.litrosB))} litros/mês</b> (${pv.volPct>=0?"+":""}${pv.volPct.toFixed(1).replace(".",",")}%). ` +
+    (Math.abs(pv.precoPct) > Math.abs(pv.volPct) ? "A variação vem mais do <b>preço</b>: o caminho é negociação com o posto (contrato, volume, prazo)." : "A variação vem mais do <b>consumo</b>: o caminho é operação (km/l, rotas, marcha lenta, conferência dos abastecimentos)."));
+  if(hePct != null){
+    add(hePct >= 20 ? "red" : hePct >= 10 ? "amber" : "green", "⏱️", `Hora Extra = ${hePct.toFixed(1).replace(".",",")}% do salário em ${ano}`,
+      `Foram ${fmtBRL(he.total)} em ${he.meses} ${he.meses===1?"mês":"meses"} (média ${fmtBRL(he.media||0)}/mês)${he.tend!=null ? `, tendência ${he.tend>=0?"+":""}${he.tend.toFixed(0)}%` : ""}. ` +
+      (hePct >= 10 ? "Acima de 10% é sinal de equipe subdimensionada ou escala mal distribuída. Uma contratação custa ≈ 1,8× o salário (com encargos) — se a HE mensal já passa disso, contratar sai mais barato e reduz risco trabalhista e de fadiga ao volante. Ações: banco de horas, aprovação prévia da HE pelo líder, escala por turno e acompanhar os 10 que mais fazem." : "Nível controlado. Mantenha a aprovação prévia e acompanhe os 10 colaboradores que mais fazem."));
+  }
+  if(quedas.length) add("green", "✅", `Em queda: ${quedas.map(x=>`${x.nome} (${st[x.k].tend.toFixed(0)}%)`).join(", ")}`,
+    "Bom sinal — registre o que foi feito para manter o resultado e confira se não é só um mês com lançamento faltando.");
+  const estaveis = RC_CATS.filter(x=>st[x.k].tend != null && Math.abs(st[x.k].tend) <= 5);
+  if(estaveis.length) add("gray", "→", `Estáveis: ${estaveis.map(x=>x.nome).join(", ")}`, "Variação de até 5% entre os últimos 3 meses e os 3 anteriores.");
+  add("gray", "🗓️", "Rotina sugerida para a diretoria",
+    "Fechar os lançamentos do mês até o dia 5 · reunião mensal de 30 min com esta tela · meta (orçado) por categoria e cobrança do realizado · acompanhar o custo por viagem (custo total ÷ viagens do mês) para separar aumento de custo de aumento de operação.");
+  return itens;
+}
+renderers.custos = () => {
+  const c = rcContexto(), { st, tot, he, hePct, ano, anoAnt, anos } = c;
+  if(!tot.total) return `<div class="empty-state"><div class="glyph">📊</div><h4>Sem dados de custo</h4><p>Lance Diesel, Compras de Peças e Folha para ver o resumo.</p></div>`;
+  const filtro = anos.length > 1 ? `<div class="tabs" style="margin-top:10px;">${anos.map(a=>`<button class="sub-tab-btn ${a===ano?"active":""}" onclick="rcFiltroAno('${a}')">${a}</button>`).join("")}</div>` : "";
+  const ultLbl = tot.ultK ? rcLabel(tot.ultK) : "—";
+  const proxLbl = tot.proxKs[0] ? rcLabel(tot.proxKs[0]) : "—";
+  const projVs = tot.totAnt ? (tot.proj - tot.totAnt)/tot.totAnt*100 : null;
+  const kpis = `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Custo realizado ${ano}</div><div class="val">${fmtBRL(tot.total)}</div>${tot.ytdPct!=null ? `${rcPct(tot.ytdPct)} <span class="delta sm flat">vs mesmo período ${anoAnt}</span>` : `<div class="delta flat">meses fechados do ano</div>`}</div>
+      <div class="kpi"><div class="lbl">Média mensal ${ano}</div><div class="val">${fmtBRL(tot.media)}</div><div class="delta flat">soma das médias de cada categoria</div></div>
+      <div class="kpi"><div class="lbl">Último mês completo (${ultLbl})</div><div class="val">${fmtBRL(tot.ultV)}</div>${tot.antV ? `${rcPct((tot.ultV-tot.antV)/tot.antV*100)} <span class="delta sm flat">vs mês anterior</span>` : ""}</div>
+      ${c.ehAnoCorrente ? `<div class="kpi"><div class="lbl">Previsão ${proxLbl}</div><div class="val">${tot.prox[0]!=null ? fmtBRL(tot.prox[0]) : "—"}</div><div class="delta flat">próximo mês (tendência + média)</div></div>
+      <div class="kpi"><div class="lbl">Projeção fechamento ${ano}</div><div class="val">${fmtBRL(tot.proj)}</div>${projVs!=null ? `${rcPct(projVs)} <span class="delta sm flat">vs ${anoAnt} (${fmtBRL(tot.totAnt)})</span>` : `<div class="delta flat">realizado + meses restantes</div>`}</div>` : ""}
+      <div class="kpi"><div class="lbl">Hora Extra ${ano} (dentro do salário)</div><div class="val">${fmtBRL(he.total)}</div><div class="delta flat">${hePct!=null ? `${hePct.toFixed(1).replace(".",",")}% do salário` : "sem dados"} · média ${fmtBRL(he.media||0)}/mês</div></div>
+    </div>`;
+  const linha = (nome, cor, x, extra, page) => `<tr${extra||""}>
+      <td><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${cor};margin-right:6px;"></span>${page ? `<a href="#" onclick="navigate('${page}');return false;" style="color:inherit;">${nome}</a>` : nome}</td>
+      <td class="num">${x.ultV!=null ? fmtBRL(x.ultV) : "—"}${x.ultK && x.ultK !== tot.ultK ? `<br><small style="color:var(--ink-soft)">${rcLabel(x.ultK)}</small>` : ""}</td>
+      <td class="num">${x.antV ? rcPct((x.ultV-x.antV)/x.antV*100) : "—"}</td>
+      <td class="num"><b>${x.media!=null ? fmtBRL(x.media) : "—"}</b></td>
+      <td class="num">${fmtBRL(x.total)}${x.meses!=null ? `<br><small style="color:var(--ink-soft)">${x.meses} ${x.meses===1?"mês":"meses"}</small>` : ""}</td>
+      <td class="num">${rcPct(x.ytdPct)}</td>
+      <td class="num">${rcTendBadge(x.tend)}</td>
+      ${c.ehAnoCorrente ? `<td class="num">${x.prox1!=null ? fmtBRL(x.prox1) : "—"}</td><td class="num">${fmtBRL(x.proj)}</td>` : ""}
+    </tr>`;
+  const heRow = { ...he, prox1: he.prev && tot.proxKs[0] ? ((he.prev.prox.find(p=>p.k===tot.proxKs[0])||{}).v ?? null) : null };
+  const tabela = `
+    <div class="panel">
+      <h3>Resumo por categoria — ${ano}</h3>
+      <div class="hint">Só meses fechados. Tendência = média dos 3 últimos meses vs os 3 anteriores. ▲ vermelho = custo subiu · ▼ verde = custo caiu. Clique no nome para abrir o módulo.</div>
+      <div style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>Categoria</th><th class="num">Último mês (${ultLbl})</th><th class="num">vs mês ant.</th><th class="num">Média mensal</th><th class="num">Total ${ano}</th><th class="num">vs ${anoAnt}<br><small>mesmos meses</small></th><th class="num">Tendência</th>${c.ehAnoCorrente ? `<th class="num">Previsão ${proxLbl}</th><th class="num">Projeção ${ano}</th>` : ""}</tr></thead>
+        <tbody>
+          ${RC_CATS.map(x=>linha(x.nome, x.cor, st[x.k], "", x.page)).join("")}
+          ${linha("<b>Total</b>", "transparent", { ...tot, meses:null, prox1: tot.prox[0] }, ` style="font-weight:700;background:var(--paper);"`)}
+          ${linha("<i>dos quais Hora Extra</i> <small style='color:var(--ink-soft)'>(já no salário)</small>", "#B9BBC6", heRow, ` style="color:var(--ink-soft);"`, "horaextra")}
+        </tbody>
+      </table>
+      </div>
+    </div>`;
+  const tris = [["T1","jan–mar"],["T2","abr–jun"],["T3","jul–set"],["T4","out–dez"]];
+  const seta = (a, b) => { if(!a || !b) return `<span class="ftri-p flat">—</span>`; const p = (a.media-b.media)/b.media*100;
+    return Math.abs(p) < 0.05 ? `<span class="ftri-p flat">→ 0%</span>` : `<span class="ftri-p ${p>0?"up":"down"}" title="média mensal vs trimestre anterior">${p>0?"▲":"▼"} ${Math.abs(p).toFixed(1).replace(".",",")}%</span>`; };
+  const triCard = (nome, cor, x) => `<div class="ftri-card" style="--c:${cor};">
+      <div class="ftri-top"><i></i>${nome}</div>
+      <div class="ftri-val">${x.media!=null ? fmtBRL(x.media) : "—"}</div>
+      <div class="ftri-sub">média mensal em ${ano}</div>
+      ${tris.map(([t,meses],i)=>`<div class="ftri-row ${x.tri[i]?"":"vazio"}">
+        <span class="ftri-t"><b>${t}</b> ${meses}</span>
+        <span class="ftri-m">${x.tri[i] ? fmtBRL(x.tri[i].total) : "sem dados"}${x.tri[i] && x.tri[i].meses<3 ? `<small> (${x.tri[i].meses}/3)</small>` : ""}</span>
+        ${x.tri[i] ? seta(x.tri[i], i ? x.tri[i-1] : x.triAntT4) : `<span class="ftri-p flat"></span>`}
+      </div>`).join("")}
+    </div>`;
+  const totTri = { media: tot.media, tri: [0,1,2,3].map(i=>{ const ps = RC_CATS.map(x=>st[x.k].tri[i]); return ps.every(Boolean) ? { total:sumArr(ps.map(q=>q.total)), media:sumArr(ps.map(q=>q.media)), meses:Math.min(...ps.map(q=>q.meses)) } : null; }),
+    triAntT4: RC_CATS.every(x=>st[x.k].triAntT4) ? { media: sumArr(RC_CATS.map(x=>st[x.k].triAntT4.media)) } : null };
+  const trimestral = `
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Visão trimestral — ${ano}</h3>
+      <div class="hint">Total de cada trimestre. Seta: média mensal do trimestre vs o trimestre anterior (▲ aumento · ▼ queda). (x/3) = trimestre ainda incompleto.</div>
+      <div class="ftri-grid">${triCard("Total", "#17181C", totTri)}${RC_CATS.map(x=>triCard(x.nome, x.cor, st[x.k])).join("")}</div>
+    </div>`;
+  const analise = rcAnalise(c);
+  const corBorda = { red:"var(--red)", amber:"var(--amber)", green:"var(--green)", gray:"var(--line)" };
+  return `
+    <div class="page-head"><h2>Resumo de Custos</h2><p>Visão para a diretoria — Diesel Manaus, Compra de Peças, Folha (Salário + 40% Adicional), VT + VR e Hora Extra · mês em andamento (${rcLabel(frotaHojeISO().slice(0,7))}) não entra</p>${filtro}</div>
+    ${kpis}
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Evolução mensal do custo${c.ehAnoCorrente ? " + previsão" : ""}</h3>
+      <div class="hint">Barras empilhadas por categoria; número no topo = total do mês.${c.ehAnoCorrente ? " <b>Barras claras = previsão</b> (meses ainda não fechados)." : ""}</div>
+      <div class="chart-wrap" style="height:320px;"><canvas id="ch-rc-mensal"></canvas></div>
+    </div>
+    ${tabela}
+    ${trimestral}
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Custo por trimestre — ${anoAnt} x ${ano}</h3>
+        <div class="hint">Total do trimestre por categoria · * = trimestre incompleto</div>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ch-rc-tri"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Composição do custo — ${ano}</h3>
+        <div class="hint">Participação de cada categoria no realizado do ano</div>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ch-rc-comp"></canvas></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Hora Extra x Salário — ${ano}</h3>
+      <div class="hint">Barras: custo da HE no mês (já incluído no salário) · linha: % da HE sobre o salário do mês</div>
+      <div class="chart-wrap" style="height:260px;"><canvas id="ch-rc-he"></canvas></div>
+    </div>
+    <div class="panel">
+      <h3>💡 Análise e recomendações</h3>
+      <div class="hint">Gerado automaticamente a partir dos números acima — atualiza a cada novo lançamento</div>
+      <div style="display:grid; gap:10px; margin-top:10px;">
+        ${analise.map(a=>`<div style="border:1px solid var(--line); border-left:4px solid ${corBorda[a.cor]}; border-radius:10px; padding:10px 14px; background:var(--card);">
+          <div style="font-weight:700; font-size:13.5px;">${a.ic} ${a.titulo}</div>
+          <div style="font-size:12.5px; color:var(--ink-soft); margin-top:4px; line-height:1.5;">${a.texto}</div>
+        </div>`).join("")}
+      </div>
+      <div class="chart-insight">Como a previsão é calculada: para cada categoria, metade vem da tendência dos últimos 6 meses fechados e metade da média dos últimos 3, limitada a ±30% dessa média (um mês fora do normal não distorce a conta). Projeção do ano = realizado + previsão dos meses que faltam.</div>
+    </div>`;
+};
+initCharts.custos = () => {
+  const c = rcContexto(), { s, st, ano, anoAnt } = c;
+  // 12 meses até o último mês com dado (no ano escolhido) + 3 de previsão quando é o ano corrente
+  const todos = [...new Set(RC_CATS.flatMap(x=>Object.keys(s[x.k])))].filter(k=>k <= `${ano}-12`).sort();
+  if(!todos.length) return;
+  const ks = []; let k = todos[todos.length-1]; for(let i=0;i<12;i++){ ks.unshift(k); k = rcMesAnt(k); }
+  const ultReal = Object.keys(c.totMap).sort().slice(-1)[0];
+  if(c.ehAnoCorrente){ let p = ks[ks.length-1]; const fim = c.tot.proxKs[c.tot.proxKs.length-1]; while(fim && p < fim){ p = rcMesSeg(p); ks.push(p); } }
+  const est = {};
+  const datasets = RC_CATS.map(x=>{ est[x.k] = []; return { label:x.nome, stack:"c", borderRadius:3,
+    data: ks.map((m,i)=>{ const v = s[x.k][m]; if(v!=null){ est[x.k][i] = false; return Math.round(v); }
+      const pv = c.ehAnoCorrente && st[x.k].prev && st[x.k].prev.prox.find(p=>p.k===m); est[x.k][i] = !!pv; return pv ? Math.round(pv.v) : null; }),
+    backgroundColor: ks.map((_,i)=>est[x.k][i] ? x.cor + "55" : x.cor) }; });
+  datasets.forEach((d,di)=>{ d.datalabels = { display:(ctx)=>di === datasets.length-1, anchor:"end", align:"end", offset:2, color:COLORS.ink, font:{ size:11, weight:700 },
+    formatter:(v,ctx)=>fmtLabelBRL(sumArr(datasets.map(ds=>ds.data[ctx.dataIndex]||0))) }; });
+  mkChart("ch-rc-mensal", { type:"bar", data:{ labels: ks.map((m,i)=>rcLabel(m) + (ultReal && m > ultReal ? "*" : "")), datasets },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:22 } },
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"circle" } },
+        tooltip:{ mode:"index", callbacks:{ label:(it)=>` ${it.dataset.label}: ${fmtBRL(it.raw)}${est[RC_CATS[it.datasetIndex].k][it.dataIndex] ? " (previsão)" : ""}`,
+          footer:(its)=>`Total: ${fmtBRL(sumArr(its.map(i=>i.raw||0)))}` } } },
+      scales:{ x:{ stacked:true, grid:{ display:false } }, y:{ stacked:true, grid:{ color:COLORS.grid }, ticks:{ callback:v=>fmtMil(v) } } } } });
+  // trimestres do ano anterior + ano escolhido
+  const tLabels = [], tKeys = [];
+  [anoAnt, ano].forEach(a=>[1,2,3,4].forEach(t=>{ tLabels.push(`T${t}/${a.slice(2)}`); tKeys.push([a,t]); }));
+  const triDe = (m, a, t) => { const v = [1,2,3].map(j=>m[`${a}-${rcPad((t-1)*3+j)}`]).filter(x=>x!=null); return { v: v.length ? sumArr(v) : null, n: v.length }; };
+  const tDs = RC_CATS.map(x=>({ label:x.nome, stack:"c", backgroundColor:x.cor, borderRadius:3, data: tKeys.map(([a,t])=>{ const r = triDe(s[x.k], a, t).v; return r!=null ? Math.round(r) : null; }) }));
+  const incompleto = tKeys.map(([a,t])=>RC_CATS.some(x=>{ const r = triDe(s[x.k], a, t); return r.n > 0 && r.n < 3; }));
+  tDs.forEach((d,di)=>{ d.datalabels = { display:(ctx)=>di === tDs.length-1 && sumArr(tDs.map(ds=>ds.data[ctx.dataIndex]||0)) > 0, anchor:"end", align:"end", offset:2, color:COLORS.ink, font:{ size:11, weight:700 },
+    formatter:(v,ctx)=>fmtLabelBRL(sumArr(tDs.map(ds=>ds.data[ctx.dataIndex]||0))) }; });
+  mkChart("ch-rc-tri", { type:"bar", data:{ labels: tLabels.map((l,i)=>l + (incompleto[i] ? "*" : "")), datasets:tDs },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:22 } },
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"circle" } },
+        tooltip:{ mode:"index", callbacks:{ label:(it)=>` ${it.dataset.label}: ${fmtBRL(it.raw)}`, footer:(its)=>`Total: ${fmtBRL(sumArr(its.map(i=>i.raw||0)))}` } } },
+      scales:{ x:{ stacked:true, grid:{ display:false } }, y:{ stacked:true, grid:{ color:COLORS.grid }, ticks:{ callback:v=>fmtMil(v) } } } } });
+  const comp = RC_CATS.map(x=>Math.round(st[x.k].total)), totComp = sumArr(comp);
+  mkChart("ch-rc-comp", { type:"doughnut", data:{ labels:RC_CATS.map(x=>x.nome), datasets:[{ data:comp, backgroundColor:RC_CATS.map(x=>x.cor), borderColor:"#fff", borderWidth:2 }] },
+    options:{ responsive:true, maintainAspectRatio:false, cutout:"58%",
+      plugins:{ legend:{ position:"right", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"circle",
+          generateLabels:(chart)=>chart.data.labels.map((l,i)=>({ text:`${l} — ${fmtBRL(comp[i])}`, fillStyle:RC_CATS[i].cor, strokeStyle:"#fff", index:i })) } },
+        datalabels:{ display:(ctx)=>totComp && comp[ctx.dataIndex]/totComp >= 0.04, color:"#fff", font:{ size:11, weight:700 }, formatter:(v)=>totComp ? `${(v/totComp*100).toFixed(0)}%` : "" } } } });
+  const hKs = Object.keys(s.he).filter(m=>m.startsWith(ano+"-")).sort();
+  mkChart("ch-rc-he", { type:"bar", data:{ labels:hKs.map(rcLabel), datasets:[
+      { label:"Hora Extra (R$)", data:hKs.map(m=>Math.round(s.he[m])), backgroundColor:COLORS.red, borderRadius:4, yAxisID:"y",
+        datalabels:{ display:true, anchor:"end", align:"start", offset:4, color:"#fff", font:{ size:11, weight:700 }, formatter:fmtLabelBRL } },
+      { type:"line", label:"% do salário", data:hKs.map(m=>s.salario[m] ? +(s.he[m]/s.salario[m]*100).toFixed(1) : null), borderColor:COLORS.ink, backgroundColor:COLORS.ink, borderWidth:2, pointRadius:3, tension:.3, yAxisID:"y2",
+        datalabels:{ display:true, align:"top", offset:6, color:COLORS.ink, backgroundColor:"rgba(255,255,255,.85)", borderRadius:4, padding:{ top:1, bottom:1, left:4, right:4 }, font:{ size:10.5, weight:700 }, formatter:(v)=>v!=null ? `${String(v).replace(".",",")}%` : "" } } ] },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:22 } },
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true } },
+        tooltip:{ callbacks:{ label:(it)=>it.datasetIndex ? ` % do salário: ${String(it.raw).replace(".",",")}%` : ` Hora Extra: ${fmtBRL(it.raw)}` } } },
+      scales:{ x:{ grid:{ display:false } }, y:{ beginAtZero:true, grid:{ color:COLORS.grid }, ticks:{ callback:v=>fmtMil(v) } },
+        y2:{ position:"right", beginAtZero:true, grid:{ display:false }, ticks:{ callback:v=>v+"%" } } } } });
 };
 
 /* -------------------- FOLHA -------------------- */
