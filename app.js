@@ -2836,6 +2836,57 @@ function deriveHoraExtra(){
 deriveHoraExtra();
 
 /* -------------------- COMPRAS DE PEÇAS -------------------- */
+// Análise por trimestre das Compras de Peças: total, média mensal e comparação com o trimestre anterior,
+// com o mesmo trimestre do ano anterior e com a média do ano. O mês em andamento entra, marcado como parcial.
+function comprasTrimestres(filtro){
+  const lanc = DATA.compras.comprasLancamentos || []; if(!lanc.length) return "";
+  const m = {}; lanc.forEach(r=>{ const k = (r.d||"").slice(0,7); if(k) m[k] = (m[k]||0) + (r.v||0); });
+  const anos = [...new Set(Object.keys(m).map(k=>k.slice(0,4)))].sort();
+  const ano = filtro !== "todos" && anos.includes(filtro) ? filtro : anos[anos.length-1];
+  const mesAtual = frotaHojeISO().slice(0,7), pad = (n) => String(n).padStart(2,"0");
+  const tri = (a, t) => { const ks = [1,2,3].map(j=>`${a}-${pad((t-1)*3+j)}`).filter(k=>m[k]!=null);
+    if(!ks.length) return null; const tot = sumArr(ks.map(k=>m[k]));
+    return { tot, media: tot/ks.length, meses: ks.length, parcial: ks.includes(mesAtual), ks }; };
+  const T = [1,2,3,4].map(t=>tri(ano, t)), A = [1,2,3,4].map(t=>tri(String(Number(ano)-1), t));
+  const antT4 = A[3];
+  const mesesAno = Object.keys(m).filter(k=>k.startsWith(ano+"-")), mediaAno = mesesAno.length ? sumArr(mesesAno.map(k=>m[k]))/mesesAno.length : 0;
+  const pct = (a, b) => a!=null && b ? (a-b)/b*100 : null;
+  const seta = (p, txt) => p==null ? `<span class="ftri-p flat">— ${txt}</span>` : `<span class="ftri-p ${Math.abs(p)<0.05?"flat":p>0?"up":"down"}">${p>0?"▲":p<0?"▼":"→"} ${Math.abs(p).toFixed(1).replace(".",",")}% ${txt}</span>`;
+  const nomes = ["jan–mar","abr–jun","jul–set","out–dez"];
+  const cards = T.map((q,i)=>{
+    if(!q) return `<div class="ftri-card" style="--c:#D8D9E0;"><div class="ftri-top"><i></i>T${i+1} · ${nomes[i]}</div><div class="ftri-val" style="color:var(--ink-soft);">—</div><div class="ftri-sub">sem lançamentos</div></div>`;
+    const ant = i ? T[i-1] : antT4, pAnt = pct(q.media, ant && ant.media), pAno = pct(q.media, A[i] && A[i].media), pMed = pct(q.media, mediaAno);
+    const cor = pMed==null ? COLORS.ink : pMed > 10 ? COLORS.red : pMed < -10 ? COLORS.green : COLORS.amber;
+    return `<div class="ftri-card" style="--c:${cor};">
+      <div class="ftri-top"><i></i>T${i+1} · ${nomes[i]} ${q.parcial ? `<span class="badge amber" style="text-transform:none;">em andamento</span>` : q.meses<3 ? `<span class="badge gray" style="text-transform:none;">${q.meses}/3 meses</span>` : ""}</div>
+      <div class="ftri-val">${fmtBRL(q.media)}<small style="font-size:12px; font-weight:600; color:var(--ink-soft);"> /mês</small></div>
+      <div class="ftri-sub">total ${fmtBRL(q.tot)} · ${q.ks.map(k=>MONTH_ABBR[Number(k.slice(5,7))-1]).join(", ")}</div>
+      <div class="ftri-row"><span class="ftri-t">vs trimestre anterior</span><span></span>${seta(pAnt, "")}</div>
+      <div class="ftri-row"><span class="ftri-t">vs T${i+1}/${String(Number(ano)-1).slice(2)}</span><span></span>${seta(pAno, "")}</div>
+      <div class="ftri-row"><span class="ftri-t">vs média do ano</span><span></span>${seta(pMed, "")}</div>
+    </div>`;
+  }).join("");
+  // Texto de análise
+  const comDado = T.map((q,i)=>q ? { ...q, t:i+1 } : null).filter(Boolean);
+  const fechados = comDado.filter(q=>!q.parcial && q.meses===3);
+  const maior = [...comDado].sort((a,b)=>b.media-a.media)[0], menor = [...comDado].sort((a,b)=>a.media-b.media)[0];
+  const atual = comDado[comDado.length-1], anterior = comDado.length > 1 ? comDado[comDado.length-2] : antT4 ? { ...antT4, t:4 } : null;
+  const frases = [];
+  frases.push(`Média mensal de ${ano}: <b>${fmtBRL(mediaAno)}</b> (${mesesAno.length} ${mesesAno.length===1?"mês":"meses"}).`);
+  if(maior && menor && maior !== menor) frases.push(`Trimestre mais caro: <b>T${maior.t}</b> (${fmtBRL(maior.media)}/mês, ${pct(maior.media, mediaAno)>=0?"+":""}${pct(maior.media, mediaAno).toFixed(0)}% sobre a média); mais barato: <b>T${menor.t}</b> (${fmtBRL(menor.media)}/mês).`);
+  if(atual && anterior){ const p = pct(atual.media, anterior.media);
+    frases.push(`T${atual.t}${atual.parcial ? " (em andamento)" : ""} está ${p>=0 ? `<b style="color:var(--red-dark)">${p.toFixed(1).replace(".",",")}% acima</b>` : `<b style="color:var(--green)">${Math.abs(p).toFixed(1).replace(".",",")}% abaixo</b>`} da média mensal do trimestre anterior.`); }
+  if(atual && atual.meses < 3 && atual.parcial) frases.push(`Se mantiver o ritmo, T${atual.t} fecha em torno de <b>${fmtBRL(atual.media*3)}</b>.`);
+  if(fechados.length >= 2){ const sd = Math.sqrt(rcMed(fechados.map(q=>(q.media-mediaAno)**2))), cv = mediaAno ? sd/mediaAno*100 : 0;
+    frases.push(cv > 20 ? `Os trimestres variam bastante (±${cv.toFixed(0)}%) — sinal de compras concentradas/corretivas; vale programar a preventiva e o estoque mínimo para nivelar.` : `Os trimestres estão regulares (±${cv.toFixed(0)}%) — gasto previsível; use ${fmtBRL(mediaAno)}/mês como referência de orçamento.`); }
+  return `
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Análise por trimestre — ${ano}</h3>
+      <div class="hint">Valor grande = média mensal do trimestre. Cor do cartão: vermelho = mais de 10% acima da média do ano · amarelo = perto da média · verde = mais de 10% abaixo. ▲ subiu · ▼ caiu.</div>
+      <div class="ftri-grid">${cards}</div>
+      <div class="chart-insight" style="font-size:12.5px; color:var(--ink);">📊 ${frases.join(" ")}</div>
+    </div>`;
+}
 renderers.compras = () => {
   const filtro = FILTRO_ANO.compras;
   const c = comprasView = (filtro === "todos" || DATA.compras.comprasLancamentos.length === 0)
@@ -2855,6 +2906,7 @@ renderers.compras = () => {
       <div class="chart-wrap" style="height:280px;"><canvas id="ch-compras-mensal"></canvas></div>
       <div class="chart-insight">${insightSerie(c.mensalLabels, c.mensal, fmtBRL)}</div>
     </div>
+    ${comprasTrimestres(filtro)}
     <div class="grid-2">
       <div class="panel">
         <h3>Custo por categoria</h3>
