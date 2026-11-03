@@ -445,7 +445,7 @@ const PAGINAS_SO_DIRETOR = ["custos","gerencial","faturamento","emissaonf","cont
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"], patio:["manutencao"] };
 // Telas extras liberadas para um usuário específico (tabela user_paginas_extra), somadas às do perfil restrito dele
 let PAGINAS_EXTRA = [];
 // Só a Emissão de O.S: perfil Administrativo ou perfil restrito que recebeu "emissaonf" como tela extra
@@ -11203,7 +11203,8 @@ window.patEnviar = async () => {
 
 renderers.manutencao = () => {
   if(MEU_PAPEL === "oficina" && MAN_ABA === "custos") MAN_ABA = "diario";
-  const abas = `
+  if(MEU_PAPEL === "patio") MAN_ABA = "patio";   // perfil Pátio: só o mapa do dia
+  const abas = MEU_PAPEL === "patio" ? "" : `
     <div class="tabs" style="margin-bottom:14px;">
       ${MEU_PAPEL === "oficina" ? "" : `<button class="tab-btn ${MAN_ABA==="custos"?"active":""}" onclick="setManAba('custos')">💰 Custos</button>`}
       <button class="tab-btn ${MAN_ABA==="diario"?"active":""}" onclick="setManAba('diario')">🚛 Controle diário de carretas</button>
@@ -11716,6 +11717,7 @@ ${u.papel==="manutencao" ? `<option value="manutencao" selected>Manutenção (te
               <option value="preos" ${u.papel==="preos"?"selected":""}>Operação (só Pré O.S / plano do dia)</option>
               <option value="frotaoficina" ${u.papel==="frotaoficina"?"selected":""}>Oficina da frota (só aba Oficina do Status da Frota)</option>
               <option value="oficina" ${u.papel==="oficina"?"selected":""}>Oficina (só Controle de carretas)</option>
+              <option value="patio" ${u.papel==="patio"?"selected":""}>Pátio (só o mapa do pátio da Manutenção)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
           </td>
