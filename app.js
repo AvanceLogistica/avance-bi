@@ -10974,12 +10974,10 @@ const PAT_ST = {
   manutencao: { nome:"Em manutenção",                     bg:"#FFFFFF", fg:"#17181C" },
   liberada:   { nome:"Liberada p/ carregamento",          bg:"#66FF99", fg:"#17181C" },
   rebaixada:  { nome:"Rebaixada / F. padrão / Sider",     bg:"#FF0000", fg:"#FFFFFF" },
-  cintas:     { nome:"Teste de cintas",                   bg:"#00B0F0", fg:"#17181C" },
   pe:         { nome:"Pé quebrado (serviço externo)",     bg:"#FFFF00", fg:"#C00000" },
-  sinistro:   { nome:"Sider sinistro (serviço externo)",  bg:"#FCE4D6", fg:"#C00000" },
   area:       { nome:"Área / aviso (não conta)",          bg:"#808080", fg:"#FFFFFF" }
 };
-const PAT_TOTAL = ["manutencao","liberada","rebaixada","cintas"], PAT_EXTERNO = ["pe","sinistro"];
+const PAT_TOTAL = ["manutencao","liberada","rebaixada"], PAT_EXTERNO = ["pe"];
 const PAT_COLS = 20, PAT_ROWS = 46;
 const PAT = (()=>{ const L = [], fixo = [];
   const pos = (id, x, y, w, h, vert) => L.push({ id, x, y, w, h, vert:!!vert });
@@ -11002,7 +11000,8 @@ let PAT_DIA = frotaHojeISO(), PAT_DADOS = { dia:null, pos:{}, carregado:false, e
 const PAT_LOCAL = "avance_patio_local_v1";
 function patNome(p){ return p ? (p.frota && p.frota !== p.placa ? p.frota : (p.placa || p.frota || "")) : ""; }
 function patTexto(p){ return [patNome(p), p && p.obs].filter(Boolean).join(" "); }
-function patContagem(pos){ const n = {}; Object.keys(PAT_ST).forEach(k=>n[k] = 0); Object.values(pos).forEach(p=>{ if(p && (p.frota || p.placa || p.obs) && n[p.st]!=null) n[p.st]++; }); return n; }
+// situação que saiu da legenda (ex: Teste de cintas) conta como Em manutenção
+function patContagem(pos){ const n = {}; Object.keys(PAT_ST).forEach(k=>n[k] = 0); Object.values(pos).forEach(p=>{ if(p && (p.frota || p.placa || p.obs)) n[PAT_ST[p.st] ? p.st : "manutencao"]++; }); return n; }
 async function patCarregar(){
   const dia = PAT_DIA; PAT_DADOS = { dia, pos:{}, carregado:false, erro:null, anterior:null };
   if(!CAR.carregado && !CAR.carregando){ CAR.carregando = true; carCarregar(true).catch(()=>{}); }
@@ -11125,13 +11124,13 @@ function patPagina(){
   const celula = (c) => { const p = pos[c.id], st = p ? (PAT_ST[p.st] || PAT_ST.manutencao) : null;
     const cls = ["pat-pos", c.vert ? "vert" : "", PAT_SEL===c.id ? "sel" : "", PAT_MOVER===c.id ? "mov" : "", p ? "" : "vazia"].join(" ");
     return `<div class="${cls}" style="grid-column:${c.x+1} / span ${c.w}; grid-row:${c.y+1} / span ${c.h}; ${st ? `background:${st.bg}; color:${st.fg};` : ""}"
-      title="${c.id}${p ? " · " + osEsc(patTexto(p)) + " · " + PAT_ST[p.st].nome : " · vazia"}" onclick="patClicar('${c.id}')"
+      title="${c.id}${p ? " · " + osEsc(patTexto(p)) + " · " + st.nome : " · vazia"}" onclick="patClicar('${c.id}')"
       ${p ? `draggable="true" ondragstart="patArrastar(event,'${c.id}')"` : ""} ondragover="event.preventDefault()" ondrop="patSoltar(event,'${c.id}')"><span>${p ? osEsc(patTexto(p)) : ""}</span></div>`; };
   const fixo = (f) => `<div class="pat-fixo ${f.vert ? "vert" : ""}" style="grid-column:${f.x+1} / span ${f.w}; grid-row:${f.y+1} / span ${f.h}; background:${f.bg}; color:${f.fg};"><span>${f.txt}</span></div>`;
   return topo + `
     <div class="kpi-grid">
       ${PAT_TOTAL.map(k=>`<div class="kpi" style="border-left:6px solid ${PAT_ST[k].bg==="#FFFFFF"?"#BBB":PAT_ST[k].bg};"><div class="lbl">${PAT_ST[k].nome}</div><div class="val">${n[k]}</div></div>`).join("")}
-      <div class="kpi"><div class="lbl">Total no pátio externo</div><div class="val">${sumArr(PAT_TOTAL.map(k=>n[k]))}</div><div class="delta flat">+ ${n.pe + n.sinistro} em serviço externo</div></div>
+      <div class="kpi"><div class="lbl">Total no pátio externo</div><div class="val">${sumArr(PAT_TOTAL.map(k=>n[k]))}</div><div class="delta flat">+ ${n.pe} em serviço externo</div></div>
     </div>
     <div class="panel" style="margin-bottom:12px;">
       <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
@@ -11195,7 +11194,7 @@ window.patPDF = async () => { try{ (await patPDFDoc()).save(patNomePDF()); toast
 window.patEnviar = async () => {
   let doc; try{ doc = await patPDFDoc(); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); return; }
   const n = patContagem(PAT_DADOS.pos), nome = patNomePDF();
-  const texto = `*PÁTIO EXTERNO — ${frotaDataBR(PAT_DIA)}*\n` + PAT_TOTAL.map(k=>`${PAT_ST[k].nome}: *${n[k]}*`).join("\n") + `\n*Total no pátio: ${sumArr(PAT_TOTAL.map(k=>n[k]))}*` + (n.pe + n.sinistro ? `\nServiço externo: ${n.pe + n.sinistro}` : "");
+  const texto = `*PÁTIO EXTERNO — ${frotaDataBR(PAT_DIA)}*\n` + PAT_TOTAL.map(k=>`${PAT_ST[k].nome}: *${n[k]}*`).join("\n") + `\n*Total no pátio: ${sumArr(PAT_TOTAL.map(k=>n[k]))}*` + (n.pe ? `\nServiço externo: ${n.pe}` : "");
   const arq = new File([doc.output("blob")], nome, { type:"application/pdf" });
   if(navigator.canShare && navigator.canShare({ files:[arq] })){ try{ await navigator.share({ files:[arq], title:`Pátio ${frotaDataBR(PAT_DIA)}`, text:texto.replace(/\*/g,"") }); return; } catch(e){ if(e.name === "AbortError") return; } }
   doc.save(nome); window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank"); toast("PDF baixado — no WhatsApp, anexe o arquivo " + nome);
