@@ -10700,7 +10700,7 @@ function osePagina(){
    marcada como concluída no dia. Por dia: Planejado (meta informada pelo líder), Realizado (concluídas),
    Diferença, Recebidas (novas que chegaram) e Fila no pátio ao fim do dia. Lista de carretas = a mesma da
    O.S de Manutenção (tabela os_carretas). Tabelas: carretas_fila e carretas_plano. */
-let MAN_ABA = "custos";               // custos | diario
+let MAN_ABA = "custos";               // custos | diario | patio
 let CAR = { fila:[], plano:{}, carretas:[], carregado:false, carregando:false, erro:null, mesCarregado:null };
 let CAR_DIA = frotaHojeISO();
 const CAR_LOCAL = "avance_carretas_local_v1";
@@ -10731,6 +10731,7 @@ async function carCarregar(silencioso){
 }
 function carSalvarLocal(){ if(!sb) try{ localStorage.setItem(CAR_LOCAL, JSON.stringify({ fila:CAR.fila, plano:CAR.plano })); }catch(e){} }
 function carRerender(){
+  if(MAN_ABA === "patio"){ if(!PAT_SEL) patRerender(); return; }
   if(document.querySelector('nav.menu button.active')?.dataset.page !== "manutencao" || MAN_ABA !== "diario") return;
   const foco = document.activeElement;
   if(foco && foco.closest && (foco.closest("#car-form") || foco.closest("#ose-form")) && /INPUT|SELECT|TEXTAREA/.test(foco.tagName)) return;
@@ -10965,17 +10966,254 @@ function carGrafico(){
   });
 }
 
+/* ---------- Manutenção › Pátio: mapa diário das carretas no pátio externo ----------
+   Layout fixo do pátio (posições numa grade de 20 colunas x 46 linhas, igual ao modelo da planilha). Cada dia
+   tem um registro na tabela patio_layout (data + posicoes jsonb { idPosição: { frota, placa, st, obs } }).
+   As carretas vêm da mesma lista da O.S (os_carretas). O PDF desenha o mesmo layout, para mandar no WhatsApp. */
+const PAT_ST = {
+  manutencao: { nome:"Em manutenção",                     bg:"#FFFFFF", fg:"#17181C" },
+  liberada:   { nome:"Liberada p/ carregamento",          bg:"#66FF99", fg:"#17181C" },
+  rebaixada:  { nome:"Rebaixada / F. padrão / Sider",     bg:"#FF0000", fg:"#FFFFFF" },
+  cintas:     { nome:"Teste de cintas",                   bg:"#00B0F0", fg:"#17181C" },
+  pe:         { nome:"Pé quebrado (serviço externo)",     bg:"#FFFF00", fg:"#C00000" },
+  sinistro:   { nome:"Sider sinistro (serviço externo)",  bg:"#FCE4D6", fg:"#C00000" },
+  area:       { nome:"Área / aviso (não conta)",          bg:"#808080", fg:"#FFFFFF" }
+};
+const PAT_TOTAL = ["manutencao","liberada","rebaixada","cintas"], PAT_EXTERNO = ["pe","sinistro"];
+const PAT_COLS = 20, PAT_ROWS = 46;
+const PAT = (()=>{ const L = [], fixo = [];
+  const pos = (id, x, y, w, h, vert) => L.push({ id, x, y, w, h, vert:!!vert });
+  const rot = (txt, x, y, w, h, bg, vert, fg) => fixo.push({ txt, x, y, w, h, bg, vert:!!vert, fg:fg||"#17181C" });
+  rot("SALAS VAZIAS",0,0,4,1,"#00B0F0"); rot("PORTARIA",4,0,9,1,"#BDE5F8"); rot("WC",13,0,2,1,"#C6EFCE"); rot("ESCRITÓRIO",15,0,2,1,"#C6EFCE"); rot("ALMOXARIFADO",17,0,3,1,"#FCE4D6");
+  for(let i=0;i<4;i++) pos(`S${i+1}`,0,1+i,4,1);
+  rot("BORRACHARIA",4,1,1,4,"#D9D9D9",true);
+  rot("DEPÓSITO",0,5,1,1,"#FFFFFF"); pos("DEP",1,5,3,1);
+  rot("COMPRES.",0,6,1,1,"#FFFFFF"); pos("CMP",1,6,3,1);
+  rot("SALA VAZIA",0,7,1,3,"#FFFFFF",true); for(let i=0;i<3;i++) pos(`SV${i+1}`,1,7+i,3,1);
+  rot("GRAMADO",0,10,1,36,"#3A7D2C",true,"#FFFFFF"); for(let i=0;i<24;i++) pos(`G${i+1}`,1,10+i,3,1);
+  for(let i=0;i<10;i++){ rot(`B${i+1}`,16,1+i,1,1,"#00B0F0"); pos(`B${i+1}`,17,1+i,3,1); }
+  rot("LAVAGEM",16,11,1,5,"#C6EFCE",true); for(let i=0;i<5;i++) pos(`L${i+1}`,17,11+i,3,1);
+  rot("RAMPA 02",12,16,2,1,"#F2F2F2"); rot("RAMPA 01",16,16,4,1,"#F2F2F2");
+  for(let i=0;i<17;i++) pos(`R${i+1}`,16,17+i,4,1);
+  for(let f=0;f<4;f++) for(let c=0;c<19;c++) pos(`F${f+1}-${c+1}`,1+c,34+f*3,1,3,true);
+  return { L, fixo }; })();
+const PAT_LEG = { x:5, y:5, w:8, h:8 };   // caixa da legenda (contagem automática), no meio do pátio
+let PAT_DIA = frotaHojeISO(), PAT_DADOS = { dia:null, pos:{}, carregado:false, erro:null, anterior:null, por:"", em:"" }, PAT_SEL = null, PAT_MOVER = null;
+const PAT_LOCAL = "avance_patio_local_v1";
+function patNome(p){ return p ? (p.frota && p.frota !== p.placa ? p.frota : (p.placa || p.frota || "")) : ""; }
+function patTexto(p){ return [patNome(p), p && p.obs].filter(Boolean).join(" "); }
+function patContagem(pos){ const n = {}; Object.keys(PAT_ST).forEach(k=>n[k] = 0); Object.values(pos).forEach(p=>{ if(p && (p.frota || p.placa || p.obs) && n[p.st]!=null) n[p.st]++; }); return n; }
+async function patCarregar(){
+  const dia = PAT_DIA; PAT_DADOS = { dia, pos:{}, carregado:false, erro:null, anterior:null };
+  if(!CAR.carregado && !CAR.carregando){ CAR.carregando = true; carCarregar(true).catch(()=>{}); }
+  try{
+    if(sb){
+      const [r, a] = await Promise.all([ sb.from("patio_layout").select("*").eq("data", dia).maybeSingle(),
+        sb.from("patio_layout").select("data").lt("data", dia).order("data", { ascending:false }).limit(1) ]);
+      if(r.error) throw new Error(r.error.message);
+      if(dia !== PAT_DIA) return;
+      PAT_DADOS.pos = (r.data && r.data.posicoes) || {}; PAT_DADOS.por = r.data ? (r.data.atualizado_por||"").split("@")[0] : ""; PAT_DADOS.em = r.data ? r.data.atualizado_em : "";
+      PAT_DADOS.anterior = a.data && a.data[0] ? a.data[0].data : null;
+    } else {
+      let d = {}; try{ d = JSON.parse(localStorage.getItem(PAT_LOCAL) || "{}"); }catch(e){}
+      PAT_DADOS.pos = d[dia] || {}; PAT_DADOS.anterior = Object.keys(d).filter(k=>k < dia && Object.keys(d[k]||{}).length).sort().pop() || null;
+    }
+  }catch(e){ PAT_DADOS.erro = e.message; }
+  PAT_DADOS.carregado = true; patRerender();
+}
+async function patGravar(){
+  const dia = PAT_DIA, pos = PAT_DADOS.pos;
+  if(sb){ const { error } = await sb.from("patio_layout").upsert({ data:dia, posicoes:pos, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }, { onConflict:"data" });
+    if(error){ toast("⚠ Não salvou o pátio: " + error.message); return false; } }
+  else { let d = {}; try{ d = JSON.parse(localStorage.getItem(PAT_LOCAL) || "{}"); }catch(e){} d[dia] = pos; try{ localStorage.setItem(PAT_LOCAL, JSON.stringify(d)); }catch(e){} }
+  PAT_DADOS.por = (MEU_EMAIL||"").split("@")[0]; PAT_DADOS.em = new Date().toISOString(); return true;
+}
+function patRerender(){
+  if(document.querySelector('nav.menu button.active')?.dataset.page !== "manutencao" || MAN_ABA !== "patio") return;
+  const y = window.scrollY, g = document.getElementById("pat-grade"), gx = g ? g.scrollLeft : 0;
+  document.getElementById("content").innerHTML = renderers.manutencao(); window.scrollTo(0,y);
+  const g2 = document.getElementById("pat-grade"); if(g2) g2.scrollLeft = gx;
+}
+window.patSetDia = (d) => { if(!d) return; PAT_DIA = d; PAT_SEL = null; PAT_MOVER = null; patCarregar(); patRerender(); };
+window.patMoverDia = (n) => { const d = new Date(PAT_DIA+"T12:00:00"); d.setDate(d.getDate()+n); patSetDia(d.toISOString().slice(0,10)); };
+window.patClicar = async (id) => {
+  if(PAT_MOVER && PAT_MOVER !== id){   // modo mover: troca as duas posições de lugar
+    const a = PAT_DADOS.pos[PAT_MOVER], b = PAT_DADOS.pos[id];
+    if(a) PAT_DADOS.pos[id] = a; else delete PAT_DADOS.pos[id];
+    if(b) PAT_DADOS.pos[PAT_MOVER] = b; else delete PAT_DADOS.pos[PAT_MOVER];
+    PAT_MOVER = null; PAT_SEL = id; patRerender(); if(await patGravar()) toast("Carreta movida ✓"); return;
+  }
+  PAT_MOVER = null; PAT_SEL = PAT_SEL === id ? null : id; patRerender();
+  if(PAT_SEL) setTimeout(()=>document.getElementById("pat-car")?.focus(), 30);
+};
+window.patArrastar = (ev, id) => { ev.dataTransfer.setData("text/plain", id); };
+window.patSoltar = async (ev, id) => { ev.preventDefault(); const de = ev.dataTransfer.getData("text/plain"); if(!de || de === id) return; PAT_MOVER = de; await patClicar(id); };
+window.patSalvarPos = async () => {
+  if(!PAT_SEL) return;
+  const txt = (document.getElementById("pat-car")?.value || "").trim(), st = document.getElementById("pat-st")?.value || "manutencao", obs = (document.getElementById("pat-obs")?.value || "").trim().toUpperCase();
+  if(!txt && !obs){ delete PAT_DADOS.pos[PAT_SEL]; }
+  else {
+    const c = txt ? carAchar(txt) : null;
+    const reg = { frota: c ? c.frota : txt.toUpperCase(), placa: c ? c.placa : "", st, obs };
+    const ja = txt ? Object.keys(PAT_DADOS.pos).find(k=>k !== PAT_SEL && PAT_DADOS.pos[k] && ((reg.placa && PAT_DADOS.pos[k].placa === reg.placa) || (reg.frota && PAT_DADOS.pos[k].frota === reg.frota))) : null;
+    if(ja){ if(!confirm(`${patNome(reg)} já está na posição ${ja}. Tirar de lá e colocar aqui?`)) return; delete PAT_DADOS.pos[ja]; }
+    PAT_DADOS.pos[PAT_SEL] = reg;
+  }
+  const id = PAT_SEL; PAT_SEL = null; patRerender(); if(await patGravar()) toast(`Posição ${id} salva ✓`);
+};
+window.patEsvaziar = async () => { if(!PAT_SEL) return; delete PAT_DADOS.pos[PAT_SEL]; PAT_SEL = null; patRerender(); if(await patGravar()) toast("Posição liberada ✓"); };
+window.patIniciarMover = () => { if(!PAT_SEL || !PAT_DADOS.pos[PAT_SEL]) return; PAT_MOVER = PAT_SEL; PAT_SEL = null; patRerender(); toast("Clique na posição de destino"); };
+window.patCopiarAnterior = async () => {
+  const de = PAT_DADOS.anterior; if(!de) return;
+  if(Object.keys(PAT_DADOS.pos).length && !confirm(`Substituir o pátio de ${frotaDataBR(PAT_DIA)} pelo de ${frotaDataBR(de)}?`)) return;
+  let pos = {};
+  if(sb){ const r = await sb.from("patio_layout").select("posicoes").eq("data", de).maybeSingle(); if(r.error){ toast("⚠ " + r.error.message); return; } pos = (r.data && r.data.posicoes) || {}; }
+  else { try{ pos = (JSON.parse(localStorage.getItem(PAT_LOCAL) || "{}")[de]) || {}; }catch(e){} }
+  PAT_DADOS.pos = JSON.parse(JSON.stringify(pos)); patRerender(); if(await patGravar()) toast(`Pátio copiado de ${frotaDataBR(de)} ✓ — agora ajuste o que mudou`);
+};
+window.patLimparTudo = async () => { if(!Object.keys(PAT_DADOS.pos).length || !confirm(`Esvaziar todas as posições de ${frotaDataBR(PAT_DIA)}?`)) return; PAT_DADOS.pos = {}; PAT_SEL = null; patRerender(); if(await patGravar()) toast("Pátio esvaziado"); };
+window.patUsarFila = (frota) => { const el = document.getElementById("pat-car"); if(el){ el.value = frota; document.getElementById("pat-st")?.focus(); } };
+
+function patLegendaHTML(n){
+  const tot = sumArr(PAT_TOTAL.map(k=>n[k]));
+  const linha = (k) => `<tr><td style="width:34px;background:${PAT_ST[k].bg};border:1px solid #999;"></td><td>${PAT_ST[k].nome.toUpperCase()}</td><td class="num"><b>${n[k]}</b></td></tr>`;
+  return `<div class="pat-leg" style="grid-column:${PAT_LEG.x+1} / span ${PAT_LEG.w}; grid-row:${PAT_LEG.y+1} / span ${PAT_LEG.h};">
+    <table><thead><tr><th colspan="2">LEGENDA</th><th class="num">QTD</th></tr></thead><tbody>
+      ${PAT_TOTAL.map(linha).join("")}
+      <tr class="tot"><td colspan="2"><i>TOTAL DE CARRETAS NO PÁTIO EXT.</i></td><td class="num">${tot}</td></tr>
+      ${PAT_EXTERNO.map(linha).join("")}
+    </tbody></table></div>`;
+}
+function patPagina(){
+  if(!PAT_DADOS.carregado && PAT_DADOS.dia !== PAT_DIA){ PAT_DADOS.dia = PAT_DIA; setTimeout(()=>patCarregar(), 0); }
+  const hoje = PAT_DIA === frotaHojeISO();
+  const topo = `<div class="panel" style="margin-bottom:16px;"><div class="prog-topo">
+      <div class="prog-dia">
+        <button class="os-btn" onclick="patMoverDia(-1)">◀</button>
+        <input type="date" value="${PAT_DIA}" onchange="patSetDia(this.value)">
+        <button class="os-btn" onclick="patMoverDia(1)">▶</button>
+        ${hoje ? `<span class="badge green">hoje</span>` : `<button class="os-link" onclick="patSetDia('${frotaHojeISO()}')">ir para hoje</button>`}
+        <b style="text-transform:capitalize;">${progDiaSemana(PAT_DIA)}</b>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="os-btn" onclick="patPDF()">📄 Baixar PDF</button>
+        <button class="os-btn green" onclick="patEnviar()">📲 Enviar (WhatsApp)</button>
+      </div></div></div>`;
+  if(PAT_DADOS.erro) return topo + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar o pátio</h4><p>${osEsc(PAT_DADOS.erro)}</p><p>Se falar em tabela inexistente ("patio_layout"), rode o SQL do Pátio no Supabase.</p></div></div>`;
+  if(!PAT_DADOS.carregado) return topo + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando o pátio...</p></div></div>`;
+  const pos = PAT_DADOS.pos, n = patContagem(pos), vazio = !Object.keys(pos).length;
+  const sel = PAT_SEL ? (pos[PAT_SEL] || { st:"manutencao", frota:"", placa:"", obs:"" }) : null;
+  // carretas da fila do pátio (Controle diário) que ainda não têm posição no mapa
+  const noMapa = new Set(Object.values(pos).flatMap(p=>[p.frota, p.placa]).filter(Boolean));
+  const semPos = CAR.carregado ? carDia(PAT_DIA).filaFim.filter(c=>!noMapa.has(c.frota) && !(c.placa && noMapa.has(c.placa))) : [];
+  const editor = sel ? `<div class="panel os-form" id="pat-form" style="margin-bottom:12px; border:2px solid var(--amber);">
+      <h3 style="margin:0;">✏️ Posição ${PAT_SEL}</h3>
+      <div class="nf-grid" style="grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); align-items:end; margin-top:8px;">
+        <label>Carreta (frota ou placa)<input id="pat-car" list="pat-l" value="${osEsc(sel.frota && sel.frota!==sel.placa ? sel.frota : (sel.placa||sel.frota||""))}" placeholder="ex: 2132 ou OAI 7836" autocomplete="off" style="text-transform:uppercase;" onkeydown="if(event.key==='Enter') patSalvarPos()"></label>
+        <label>Situação<select id="pat-st">${Object.entries(PAT_ST).map(([k,v])=>`<option value="${k}" ${sel.st===k?"selected":""}>${v.nome}</option>`).join("")}</select></label>
+        <label>Observação / serviço<input id="pat-obs" value="${osEsc(sel.obs||"")}" placeholder="ex: VERGALHÃO/COMPENS" style="text-transform:uppercase;" onkeydown="if(event.key==='Enter') patSalvarPos()"></label>
+      </div>
+      <datalist id="pat-l">${CAR.carretas.map(c=>`<option value="${osEsc(c.frota && c.frota!==c.placa ? c.frota : c.placa)}">${osEsc(carRotulo(c))}</option>`).join("")}</datalist>
+      ${semPos.length ? `<div class="hint" style="margin-top:8px;">Na fila do pátio sem posição no mapa: ${semPos.map(c=>`<button class="ose-chip" style="cursor:pointer;" onclick="patUsarFila('${osEsc(c.frota)}')">${osEsc(c.frota)}</button>`).join(" ")}</div>` : ""}
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <button class="entry-submit" style="margin:0;" onclick="patSalvarPos()">💾 Salvar posição</button>
+        ${pos[PAT_SEL] ? `<button class="os-btn" onclick="patIniciarMover()">↔ Mover para outra posição</button><button class="os-btn" onclick="patEsvaziar()">🧹 Esvaziar posição</button>` : ""}
+        <button class="os-link" onclick="patClicar('${PAT_SEL}')">cancelar</button>
+      </div>
+      <div class="hint" style="margin-top:6px;">Para tirar a carreta da posição, apague a carreta e a observação e salve (ou use Esvaziar). "Área / aviso" serve para textos como ABASTECIMENTO e não entra na contagem.</div>
+    </div>` : "";
+  const celula = (c) => { const p = pos[c.id], st = p ? (PAT_ST[p.st] || PAT_ST.manutencao) : null;
+    const cls = ["pat-pos", c.vert ? "vert" : "", PAT_SEL===c.id ? "sel" : "", PAT_MOVER===c.id ? "mov" : "", p ? "" : "vazia"].join(" ");
+    return `<div class="${cls}" style="grid-column:${c.x+1} / span ${c.w}; grid-row:${c.y+1} / span ${c.h}; ${st ? `background:${st.bg}; color:${st.fg};` : ""}"
+      title="${c.id}${p ? " · " + osEsc(patTexto(p)) + " · " + PAT_ST[p.st].nome : " · vazia"}" onclick="patClicar('${c.id}')"
+      ${p ? `draggable="true" ondragstart="patArrastar(event,'${c.id}')"` : ""} ondragover="event.preventDefault()" ondrop="patSoltar(event,'${c.id}')"><span>${p ? osEsc(patTexto(p)) : ""}</span></div>`; };
+  const fixo = (f) => `<div class="pat-fixo ${f.vert ? "vert" : ""}" style="grid-column:${f.x+1} / span ${f.w}; grid-row:${f.y+1} / span ${f.h}; background:${f.bg}; color:${f.fg};"><span>${f.txt}</span></div>`;
+  return topo + `
+    <div class="kpi-grid">
+      ${PAT_TOTAL.map(k=>`<div class="kpi" style="border-left:6px solid ${PAT_ST[k].bg==="#FFFFFF"?"#BBB":PAT_ST[k].bg};"><div class="lbl">${PAT_ST[k].nome}</div><div class="val">${n[k]}</div></div>`).join("")}
+      <div class="kpi"><div class="lbl">Total no pátio externo</div><div class="val">${sumArr(PAT_TOTAL.map(k=>n[k]))}</div><div class="delta flat">+ ${n.pe + n.sinistro} em serviço externo</div></div>
+    </div>
+    <div class="panel" style="margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+        <div class="hint" style="margin:0;">${PAT_MOVER ? `<b style="color:var(--amber);">↔ Movendo ${PAT_MOVER}: clique na posição de destino</b> (se estiver ocupada, as duas trocam de lugar) · <button class="os-link" onclick="PAT_MOVER=null; patRerender()">cancelar</button>` : `Clique numa posição para colocar ou editar a carreta. No computador também dá para <b>arrastar</b> uma carreta para outra posição.`}
+          ${PAT_DADOS.por ? `<br>Última alteração: ${osEsc(PAT_DADOS.por)}${PAT_DADOS.em ? " · " + new Date(PAT_DADOS.em).toLocaleString("pt-BR", { dateStyle:"short", timeStyle:"short" }) : ""}` : ""}</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          ${PAT_DADOS.anterior ? `<button class="os-btn ${vazio ? "green" : ""}" onclick="patCopiarAnterior()">📋 Copiar o pátio de ${frotaDataBR(PAT_DADOS.anterior)}</button>` : ""}
+          ${vazio ? "" : `<button class="os-link" onclick="patLimparTudo()">esvaziar tudo</button>`}
+        </div>
+      </div>
+    </div>
+    ${editor}
+    <div class="panel" style="padding:10px;">
+      <div style="text-align:center; font-weight:800; margin-bottom:6px;">${frotaDataBR(PAT_DIA)}</div>
+      <div id="pat-grade" style="overflow-x:auto;">
+        <div class="pat-grid" style="grid-template-columns:repeat(${PAT_COLS}, minmax(52px, 1fr)); grid-template-rows:repeat(${PAT_ROWS}, 26px);">
+          ${PAT.fixo.map(fixo).join("")}
+          ${patLegendaHTML(n)}
+          ${PAT.L.map(celula).join("")}
+        </div>
+      </div>
+    </div>`;
+}
+async function patPDFDoc(){
+  await nfgCarregarPDF();
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const M = 6, top = 13, uw = (W - 2*M)/PAT_COLS, uh = (H - top - M)/PAT_ROWS;
+  const rgb = (hex) => [1,3,5].map(i=>parseInt(hex.slice(i,i+2),16));
+  const X = (x) => M + x*uw, Y = (y) => top + y*uh;
+  doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.text(`PÁTIO EXTERNO — ${frotaDataBR(PAT_DIA)} (${progDiaSemana(PAT_DIA)})`, W/2, 8, { align:"center" });
+  doc.setLineWidth(0.15); doc.setDrawColor(150,150,150);
+  // linhas de grade claras (como a planilha)
+  doc.setDrawColor(225,225,225); for(let i=0;i<=PAT_ROWS;i++) doc.line(X(0), Y(i), X(PAT_COLS), Y(i)); for(let j=0;j<=PAT_COLS;j++) doc.line(X(j), Y(0), X(j), Y(PAT_ROWS));
+  doc.setDrawColor(120,120,120);
+  // texto que cabe na caixa: diminui a fonte e quebra em até 3 linhas
+  const caixa = (x, y, w, h, txt, bg, fg, vert, bold) => {
+    doc.setFillColor(...rgb(bg)); doc.rect(X(x), Y(y), w*uw, h*uh, "FD"); if(!txt) return;
+    doc.setTextColor(...rgb(fg)); doc.setFont("helvetica", bold ? "bold" : "bold");
+    const largura = (vert ? h*uh : w*uw) - 1.2, altura = (vert ? w*uw : h*uh) - 0.6;
+    let fs = 6.2, linhas;
+    const palavras = String(txt).split(/\s+/).length;
+    for(;;){ doc.setFontSize(fs); linhas = doc.splitTextToSize(txt, largura); if((linhas.length <= Math.min(3, palavras) && linhas.length*fs*0.36 <= altura) || fs <= 3.4) break; fs -= 0.3; }
+    linhas = linhas.slice(0,3); const lh = fs*0.36;
+    // texto em pé (90°): o jsPDF não centraliza texto girado, então a posição é calculada aqui
+    if(vert){ const cx = X(x) + w*uw/2, cy = Y(y) + h*uh/2; linhas.forEach((l,i)=>doc.text(l, cx - (linhas.length-1)*lh/2 + i*lh + lh*0.35, cy + doc.getTextWidth(l)/2, { angle:90 })); }
+    else { const cy = Y(y) + h*uh/2 - (linhas.length-1)*lh/2 + lh*0.35; linhas.forEach((l,i)=>doc.text(l, X(x) + w*uw/2, cy + i*lh, { align:"center" })); }
+  };
+  PAT.fixo.forEach(f=>caixa(f.x, f.y, f.w, f.h, f.txt, f.bg, f.fg, f.vert, true));
+  PAT.L.forEach(c=>{ const p = PAT_DADOS.pos[c.id], st = p ? (PAT_ST[p.st] || PAT_ST.manutencao) : null; caixa(c.x, c.y, c.w, c.h, p ? patTexto(p) : "", st ? st.bg : "#FFFFFF", st ? st.fg : "#17181C", c.vert); });
+  // legenda
+  const n = patContagem(PAT_DADOS.pos), lx = PAT_LEG.x, lw = PAT_LEG.w; let ly = PAT_LEG.y;
+  caixa(lx, ly, lw-1, 1, "LEGENDA", "#FFFFFF", "#17181C"); caixa(lx+lw-1, ly, 1, 1, "QTD", "#FFFFFF", "#17181C"); ly++;
+  const linhaLeg = (k) => { caixa(lx, ly, 1, 1, "", PAT_ST[k].bg, "#17181C"); caixa(lx+1, ly, lw-2, 1, PAT_ST[k].nome.toUpperCase(), "#FFFFFF", "#17181C"); caixa(lx+lw-1, ly, 1, 1, String(n[k]), "#FFFFFF", "#17181C"); ly++; };
+  PAT_TOTAL.forEach(linhaLeg);
+  caixa(lx, ly, lw-1, 1, "TOTAL DE CARRETAS NO PÁTIO EXT.", "#F2F2F2", "#17181C"); caixa(lx+lw-1, ly, 1, 1, String(sumArr(PAT_TOTAL.map(k=>n[k]))), "#F2F2F2", "#17181C"); ly++;
+  PAT_EXTERNO.forEach(linhaLeg);
+  return doc;
+}
+const patNomePDF = () => `Patio_${PAT_DIA}.pdf`;
+window.patPDF = async () => { try{ (await patPDFDoc()).save(patNomePDF()); toast("PDF baixado ✓"); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); } };
+window.patEnviar = async () => {
+  let doc; try{ doc = await patPDFDoc(); }catch(e){ toast("⚠ Não foi possível gerar o PDF: " + e.message); return; }
+  const n = patContagem(PAT_DADOS.pos), nome = patNomePDF();
+  const texto = `*PÁTIO EXTERNO — ${frotaDataBR(PAT_DIA)}*\n` + PAT_TOTAL.map(k=>`${PAT_ST[k].nome}: *${n[k]}*`).join("\n") + `\n*Total no pátio: ${sumArr(PAT_TOTAL.map(k=>n[k]))}*` + (n.pe + n.sinistro ? `\nServiço externo: ${n.pe + n.sinistro}` : "");
+  const arq = new File([doc.output("blob")], nome, { type:"application/pdf" });
+  if(navigator.canShare && navigator.canShare({ files:[arq] })){ try{ await navigator.share({ files:[arq], title:`Pátio ${frotaDataBR(PAT_DIA)}`, text:texto.replace(/\*/g,"") }); return; } catch(e){ if(e.name === "AbortError") return; } }
+  doc.save(nome); window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank"); toast("PDF baixado — no WhatsApp, anexe o arquivo " + nome);
+};
+
 renderers.manutencao = () => {
-  if(MEU_PAPEL === "oficina") MAN_ABA = "diario";
-  const abas = MEU_PAPEL === "oficina" ? "" : `
+  if(MEU_PAPEL === "oficina" && MAN_ABA === "custos") MAN_ABA = "diario";
+  const abas = `
     <div class="tabs" style="margin-bottom:14px;">
-      <button class="tab-btn ${MAN_ABA==="custos"?"active":""}" onclick="setManAba('custos')">💰 Custos</button>
+      ${MEU_PAPEL === "oficina" ? "" : `<button class="tab-btn ${MAN_ABA==="custos"?"active":""}" onclick="setManAba('custos')">💰 Custos</button>`}
       <button class="tab-btn ${MAN_ABA==="diario"?"active":""}" onclick="setManAba('diario')">🚛 Controle diário de carretas</button>
+      <button class="tab-btn ${MAN_ABA==="patio"?"active":""}" onclick="setManAba('patio')">🗺️ Pátio (mapa do dia)</button>
     </div>`;
   if(MAN_ABA === "diario") return `<div class="page-head"><h2>Controle diário de carretas</h2><p>Planejado x realizado, carretas recebidas do cliente e fila do pátio — dia a dia</p></div>${abas}${carPagina()}`;
+  if(MAN_ABA === "patio") return `<div class="page-head"><h2>Pátio — mapa do dia</h2><p>Onde está cada carreta no pátio externo e a situação dela · baixe em PDF para mandar no WhatsApp</p></div>${abas}${patPagina()}`;
   return abas + manutencaoCustos();
 };
-initCharts.manutencao = () => { if(MAN_ABA === "diario") carGrafico(); else manutencaoCustosCharts(); };
+initCharts.manutencao = () => { if(MAN_ABA === "diario") carGrafico(); else if(MAN_ABA === "custos") manutencaoCustosCharts(); };
 /* -------------------- INFRAÇÕES › SINISTRO --------------------
    Registro de sinistros por placa (lista do Status da Frota): Quem? Como? Quando? Aonde? Análise da
    ocorrência, com evidências (fotos reduzidas no navegador e arquivos) e relatório em PDF para enviar pelo

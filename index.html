@@ -556,6 +556,21 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 
 /* Folha — média mensal por trimestre */
 .ftri-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(230px,1fr)); gap:12px; }
+/* Manutenção › Pátio (mapa do dia) */
+.pat-grid{ display:grid; gap:0; min-width:1040px; border:1px solid #999; background:#fff; }
+.pat-fixo,.pat-pos{ border:1px solid #9A9CA6; margin:-0.5px; display:flex; align-items:center; justify-content:center; text-align:center; overflow:hidden; font-size:9.5px; font-weight:800; line-height:1.1; padding:1px 2px; }
+.pat-fixo{ letter-spacing:.03em; }
+.pat-pos{ cursor:pointer; background:#fff; color:#17181C; font-size:10px; }
+.pat-pos.vazia{ background:#fff; }
+.pat-pos.vazia:hover{ background:#FFF6E5; }
+.pat-pos.sel{ outline:3px solid var(--amber); outline-offset:-3px; z-index:2; }
+.pat-pos.mov{ outline:3px dashed var(--amber); outline-offset:-3px; z-index:2; }
+.pat-fixo.vert span,.pat-pos.vert span{ writing-mode:vertical-rl; transform:rotate(180deg); } .pat-pos.vert{ font-size:8.5px; }
+.pat-leg{ align-self:start; background:#fff; z-index:1; margin:6px; }
+.pat-leg table{ border-collapse:collapse; width:100%; font-size:11px; }
+.pat-leg th,.pat-leg td{ border:1px solid #9A9CA6; padding:4px 6px; }
+.pat-leg th{ font-size:14px; font-weight:800; background:#fff; color:#17181C; }
+.pat-leg tr.tot td{ font-weight:800; background:#F2F2F2; }
 .ftri-card{ border:1px solid var(--line); border-top:4px solid var(--c); border-radius:12px; padding:12px 14px; background:var(--card); }
 .ftri-top{ display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--ink-soft); }
 .ftri-top i{ width:10px; height:10px; border-radius:3px; background:var(--c); }
@@ -861,7 +876,7 @@ body.pending #pendingScreen{display:flex;}
   <main class="content" id="content"></main>
 </div>
 
-<script src="data.js?v=20261031a"></script>
-<script src="app.js?v=20261031a"></script>
+<script src="data.js?v=20261103a"></script>
+<script src="app.js?v=20261103a"></script>
 </body>
 </html>
