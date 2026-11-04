@@ -11571,11 +11571,13 @@ window.patEnviar = async () => {
 };
 
 renderers.manutencao = () => {
-  if(MEU_PAPEL === "oficina" && MAN_ABA === "custos") MAN_ABA = "diario";
+  // perfis restritos (Oficina, ou quem recebeu a tela como extra) não carregam os custos: só Controle diário e Pátio
+  const semCustos = !!paginasRestritas();
+  if(semCustos && MAN_ABA === "custos") MAN_ABA = "diario";
   if(MEU_PAPEL === "patio") MAN_ABA = "patio";   // perfil Pátio: só o mapa do dia
   const abas = MEU_PAPEL === "patio" ? "" : `
     <div class="tabs" style="margin-bottom:14px;">
-      ${MEU_PAPEL === "oficina" ? "" : `<button class="tab-btn ${MAN_ABA==="custos"?"active":""}" onclick="setManAba('custos')">💰 Custos</button>`}
+      ${semCustos ? "" : `<button class="tab-btn ${MAN_ABA==="custos"?"active":""}" onclick="setManAba('custos')">💰 Custos</button>`}
       <button class="tab-btn ${MAN_ABA==="diario"?"active":""}" onclick="setManAba('diario')">🚛 Controle diário de carretas</button>
       <button class="tab-btn ${MAN_ABA==="patio"?"active":""}" onclick="setManAba('patio')">🗺️ Pátio (mapa do dia)</button>
     </div>`;
