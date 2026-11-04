@@ -495,7 +495,7 @@ function navigate(page){
   // Perfis restritos só abrem as telas deles (que podem ser telas da Diretoria, ex: Organograma)
   const restritas = paginasRestritas();
   if(restritas){ if(!restritas.includes(page)) page = restritas[0]; }
-  else if(PAGINAS_SO_DIRETOR.includes(page) && MEU_PAPEL !== "diretor") page = "overview";
+  else if(PAGINAS_SO_DIRETOR.includes(page) && MEU_PAPEL !== "diretor" && !PAGINAS_EXTRA.includes(page)) page = "overview";
   document.getElementById("pageTitle").textContent = titles[page][0];
   document.getElementById("pageSub").textContent = titles[page][1];
   document.querySelectorAll("nav.menu button").forEach(b=>{
@@ -5979,6 +5979,8 @@ function aplicarRestricoesDePapel(){
   document.querySelectorAll("nav.menu button[data-page], nav.menu .grp-label").forEach(el=>{
     if(souLider) el.style.display = (el.dataset.page && restritas.includes(el.dataset.page)) ? "" : "none";
   });
+  // perfil sem restrição (ex: Operacional) que recebeu uma tela da Diretoria como extra (ex: Recursos Humanos)
+  if(!souLider) PAGINAS_EXTRA.forEach(p=>{ const b = document.querySelector(`nav.menu button[data-page="${p}"]`); if(b) b.style.display = ""; });
   document.querySelectorAll('button[onclick="exportDataJs()"]').forEach(el=>{ el.style.display = souLider ? "none" : ""; });
   document.body.classList.toggle("papel-lider", souLider);
 }
