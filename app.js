@@ -440,12 +440,12 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","custos","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","acessos","gerencial"];
-const PAGINAS_SO_DIRETOR = ["custos","gerencial","faturamento","emissaonf","contaspagar","belem","ordens","organograma","acessos"];
+const pages = ["overview","custos","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","rh","acessos","gerencial"];
+const PAGINAS_SO_DIRETOR = ["custos","gerencial","faturamento","emissaonf","contaspagar","belem","ordens","organograma","rh","acessos"];
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"], patio:["manutencao"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["rh","organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"], patio:["manutencao"] };
 // Telas extras liberadas para um usuário específico (tabela user_paginas_extra), somadas às do perfil restrito dele
 let PAGINAS_EXTRA = [];
 // Só a Emissão de O.S: perfil Administrativo ou perfil restrito que recebeu "emissaonf" como tela extra
@@ -457,6 +457,7 @@ const titles = {
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
   organograma: ["Organograma","Colaboradores por local, função e liderança"],
+  rh: ["Recursos Humanos","Ficha cadastral de cada funcionário — preenchimento pelo RH"],
   gerencial: ["Painel Gerencial","Todas as operações e o status de cada uma — da operação ao recebimento da NF"],
   emissaonf: ["Emissão de NF","Lançamento das notas por contrato, serviço ou balsa, minuta e vencimento"],
   faturamento: ["Faturamento","Contratos faturados — controle mensal por vencimento e resumo por balsa/viagem"],
@@ -9857,6 +9858,373 @@ renderers.organograma = () => {
 };
 initCharts.organograma = () => { orgDepoisDeDesenhar(); if(ORG_FICHA) orgDesenharFicha(); };
 
+/* -------------------- RECURSOS HUMANOS (ficha cadastral do funcionário) --------------------
+   Uma ficha por colaborador do Organograma, no modelo "Ficha Cadastral do Funcionário" da Avance
+   (tabela rh_fichas, chave = colaboradores.id). Nome, cargo, setor, gestor e admissão vêm do Organograma
+   e, se o RH alterar aqui, voltam para lá; o resto fica em rh_fichas.dados (jsonb).
+   Só Diretor e RH acessam (dados pessoais e bancários). PDF no modelo, preenchido ou em branco. */
+const RH_UFS = ["AC","AL","AM","AP","BA","CE","DF","ES","GO","MA","MG","MS","MT","PA","PB","PE","PI","PR","RJ","RN","RO","RR","RS","SC","SE","SP","TO"];
+// campo: k = chave, l = rótulo, t = tipo, ob = obrigatório (true | "mot" = só para motorista), w = largura (2 ou 3 colunas), org = vem do Organograma
+const RH_SECOES = [
+  { t:"1. Identificação pessoal", campos:[
+    { k:"nome", l:"Nome completo", ob:true, w:2, org:"nome" }, { k:"nasc", l:"Data de nascimento", t:"date", ob:true },
+    { k:"cpf", l:"CPF", t:"cpf", ob:true }, { k:"rg", l:"RG", ob:true }, { k:"rg_orgao", l:"Órgão expedidor/UF", ob:true },
+    { k:"civil", l:"Estado civil", t:"sel", op:["Solteiro(a)","Casado(a)","União estável","Divorciado(a)","Separado(a)","Viúvo(a)"], ob:true },
+    { k:"natural", l:"Naturalidade/UF", ob:true }, { k:"nacion", l:"Nacionalidade", ob:true },
+    { k:"mae", l:"Nome da mãe", ob:true, w:3 } ]},
+  { t:"2. Endereço e contatos", campos:[
+    { k:"cep", l:"CEP", t:"cep", ob:true }, { k:"logradouro", l:"Logradouro", ob:true, w:2 },
+    { k:"numero", l:"Número", ob:true }, { k:"complemento", l:"Complemento" }, { k:"bairro", l:"Bairro", ob:true },
+    { k:"cidade", l:"Cidade", ob:true }, { k:"uf", l:"UF", t:"sel", op:RH_UFS, ob:true }, { k:"telefone", l:"Telefone/WhatsApp", t:"tel", ob:true },
+    { k:"email", l:"E-mail", t:"email" }, { k:"recado", l:"Contato para recado (nome e telefone)", w:2 } ]},
+  { t:"3. Documentação e habilitações", campos:[
+    { k:"ctps", l:"CTPS Digital / observações", w:2 }, { k:"pis", l:"PIS/PASEP/NIT (se aplicável)" },
+    { k:"titulo", l:"Título de eleitor (se necessário)" }, { k:"cnh", l:"CNH nº", ob:"mot" },
+    { k:"cnh_cat", l:"Categoria da CNH", t:"sel", op:["A","B","C","D","E","AB","AC","AD","AE"], ob:"mot" },
+    { k:"cnh_val", l:"Validade da CNH", t:"date", ob:"mot" }, { k:"cert", l:"Certificados/qualificações", w:2 } ]},
+  { t:"4. Informações familiares e dependentes", campos:[
+    { k:"conjuge", l:"Nome do cônjuge (opcional)", w:2 }, { k:"conjuge_cpf", l:"CPF do cônjuge (se necessário)", t:"cpf" } ], deps:true },
+  { t:"5. Dados profissionais — preenchimento pelo RH", campos:[
+    { k:"cargo", l:"Cargo", ob:true, org:"funcao" }, { k:"setor", l:"Setor", t:"sel", ob:true, org:"local" },
+    { k:"admissao", l:"Data de admissão", t:"date", ob:true, org:"adm" }, { k:"gestor", l:"Gestor responsável", t:"sel", org:"gestorId" },
+    { k:"salario", l:"Salário-base (R$)", t:"money", ob:true },
+    { k:"contrato", l:"Tipo de contrato", t:"sel", op:["CLT — prazo indeterminado","CLT — experiência","Temporário","Estágio","Jovem aprendiz","Intermitente","Autônomo / PJ"], ob:true },
+    { k:"jornada", l:"Jornada/escala", ob:true }, { k:"intervalo", l:"Intervalo" }, { k:"horario", l:"Horário de trabalho", ob:true },
+    { k:"folga", l:"Folga semanal" } ]},
+  { t:"6. Dados para pagamento", campos:[
+    { k:"banco", l:"Banco", ob:true }, { k:"agencia", l:"Agência", ob:true },
+    { k:"tipo_conta", l:"Tipo de conta", t:"sel", op:["Corrente","Poupança","Salário"], ob:true }, { k:"conta", l:"Conta", ob:true },
+    { k:"pix", l:"Chave PIX (se utilizada e autorizada)", w:2 } ], nota:"Não informar senhas, códigos de autenticação ou dados de acesso bancário." },
+  { t:"7. Controle de documentos e itens — RH", campos:[
+    { k:"pendencias", l:"Pendências/observações", w:3 }, { k:"data_conf", l:"Data da conferência", t:"date" }, { k:"resp_rh", l:"Responsável pelo RH" } ], checks:true },
+];
+const RH_CHECKS = [["doc","Documentos admissionais conferidos"],["contrato","Contrato de trabalho assinado"],["aso","ASO admissional recebido"],["resid","Comprovante de residência recebido"],
+  ["banco","Dados bancários cadastrados"],["uniforme","Uniforme entregue"],["epi","EPI entregue (quando aplicável)"],["equip","Equipamentos entregues (quando aplicável)"]];
+const RH_DECLARACAO = "Declaro que as informações fornecidas nesta ficha são verdadeiras e que me comprometo a comunicar ao Departamento de Recursos Humanos qualquer alteração nos meus dados cadastrais. Estou ciente de que meus dados serão tratados pela empresa para finalidades relacionadas à gestão do vínculo de trabalho e ao cumprimento de obrigações legais, observada a legislação de proteção de dados.";
+const RH_LOCAL = "avance_rh_fichas_local";
+let RH = { fichas:{}, carregado:false, carregando:false, erro:null };
+let RH_EDIT = null;            // { id ("novo" no cadastro), p (dados do Organograma), d (dados da ficha), deps }
+let RH_BUSCA = "", RH_FILTRO = "todos", RH_LOCAL_F = "", RH_SUJO = false;
+
+const rhCampos = () => RH_SECOES.flatMap(s=>s.campos);
+const rhMotorista = (p) => /motorista/i.test(p.funcao||"");
+function rhValor(p, d, c){ return c.org ? (p[c.org] || "") : (d[c.k] ?? ""); }
+function rhObrigatorios(p){ return rhCampos().filter(c=>c.ob===true || (c.ob==="mot" && rhMotorista(p))); }
+function rhStatus(p){
+  const d = (RH.fichas[p.id]||{}).dados || {}, obr = rhObrigatorios(p);
+  const ok = obr.filter(c=>String(rhValor(p, d, c)).trim()).length, checks = RH_CHECKS.filter(([k])=>(d.checks||{})[k]).length;
+  const pct = Math.round(ok/obr.length*100), cnhDias = d.cnh_val ? nfeDias(orgHoje(), d.cnh_val) : null;
+  return { d, pct, faltam:obr.filter(c=>!String(rhValor(p, d, c)).trim()).map(c=>c.l), checks, completa: pct===100 && checks===RH_CHECKS.length,
+    temFicha: !!RH.fichas[p.id], cnhDias, aniver: !!d.nasc && d.nasc.slice(5,7) === orgHoje().slice(5,7) };
+}
+function rhCpfOk(s){
+  const n = String(s||"").replace(/\D/g,""); if(n.length!==11 || /^(\d)\1+$/.test(n)) return false;
+  const dv = (t) => { let soma = 0; for(let i=0;i<t;i++) soma += +n[i]*(t+1-i); const r = soma*10 % 11; return r===10 ? 0 : r; };
+  return dv(9)===+n[9] && dv(10)===+n[10];
+}
+function rhMascarar(t, v){
+  const n = String(v||"").replace(/\D/g,"");
+  if(t==="cpf") return n.slice(0,11).replace(/(\d{3})(\d)/,"$1.$2").replace(/(\d{3})\.(\d{3})(\d)/,"$1.$2.$3").replace(/\.(\d{3})(\d{1,2})$/,".$1-$2");
+  if(t==="cep") return n.slice(0,8).replace(/(\d{5})(\d)/,"$1-$2");
+  if(t==="tel") return n.slice(0,11).replace(/^(\d{2})(\d)/,"($1) $2").replace(/(\d)(\d{4})$/,"$1-$2");
+  return v;
+}
+const rhMoeda = (v) => v!=="" && v!=null && !isNaN(+v) ? "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits:2, maximumFractionDigits:2 }) : "";
+// texto do campo para a lista/PDF (datas em dd/mm/aaaa, gestor pelo nome, salário em R$)
+function rhTexto(p, d, c){
+  const v = rhValor(p, d, c); if(!v) return "";
+  if(c.t==="date") return fmtDataBR(v);
+  if(c.t==="money") return rhMoeda(v);
+  if(c.org==="gestorId") return (ORG.lista.find(x=>x.id===v)||{}).nome || "";
+  return String(v);
+}
+
+/* ---------- Banco ---------- */
+async function rhCarregar(){
+  RH.carregando = true;
+  if(!ORG.carregado) await orgCarregar();
+  if(!sb){ try{ RH.fichas = JSON.parse(localStorage.getItem(RH_LOCAL)||"{}"); }catch(e){ RH.fichas = {}; } }
+  else {
+    const { data, error } = await sb.from("rh_fichas").select("*");
+    if(error){ RH.erro = error.message; RH.carregando = false; RH.carregado = true; rhRerender(); return; }
+    RH.erro = null; RH.fichas = {}; data.forEach(r=>RH.fichas[r.colaborador_id] = { dados:r.dados||{}, por:r.atualizado_por, em:r.atualizado_em });
+  }
+  RH.carregando = false; RH.carregado = true; rhRerender();
+}
+function rhRerender(){ if(document.querySelector('nav.menu button.active')?.dataset.page === "rh") document.getElementById("content").innerHTML = renderers.rh(); }
+
+/* ---------- Ações de tela ---------- */
+window.rhBuscar = (t) => { RH_BUSCA = t; rhRerender(); const el = document.getElementById("rh-busca"); if(el){ el.focus(); el.setSelectionRange(t.length,t.length); } };
+window.rhSetFiltro = (f) => { RH_FILTRO = f; rhRerender(); };
+window.rhSetLocal = (l) => { RH_LOCAL_F = l; rhRerender(); };
+window.rhAbrir = (id) => {
+  if(id==="novo") RH_EDIT = { id:"novo", p:{ nome:"", funcao:"", local:"", gestorId:null, adm:orgHoje() }, d:{ nacion:"Brasileira", checks:{} }, deps:[] };
+  else { const p = ORG.lista.find(x=>x.id===id); if(!p) return; const d = JSON.parse(JSON.stringify((RH.fichas[id]||{}).dados || { nacion:"Brasileira" }));
+    RH_EDIT = { id, p:{ ...p }, d:{ checks:{}, ...d }, deps:d.dependentes || [] }; }
+  RH_SUJO = false; rhRerender(); window.scrollTo(0,0);
+};
+window.rhFechar = () => { if(RH_SUJO && !confirm("Sair sem salvar as alterações da ficha?")) return; RH_EDIT = null; RH_SUJO = false; rhRerender(); };
+// lê o formulário aberto para RH_EDIT (antes de redesenhar ou salvar)
+function rhLer(){
+  if(!RH_EDIT) return;
+  const g = (id) => document.getElementById(id);
+  rhCampos().forEach(c=>{ const el = g("rh-f-"+c.k); if(!el) return; const v = el.value.trim(); if(c.org) RH_EDIT.p[c.org] = c.org==="gestorId" ? (v||null) : v; else RH_EDIT.d[c.k] = v; });
+  RH_EDIT.d.checks = {}; RH_CHECKS.forEach(([k])=>{ if(g("rh-c-"+k)?.checked) RH_EDIT.d.checks[k] = true; });
+  RH_EDIT.deps = RH_EDIT.deps.map((x,i)=>({ nome:g(`rh-d${i}-nome`)?.value.trim()||"", nasc:g(`rh-d${i}-nasc`)?.value||"", parentesco:g(`rh-d${i}-par`)?.value.trim()||"",
+    cpf:g(`rh-d${i}-cpf`)?.value.trim()||"", ir:!!g(`rh-d${i}-ir`)?.checked, sf:!!g(`rh-d${i}-sf`)?.checked }));
+}
+window.rhSujou = () => { RH_SUJO = true; };
+window.rhAddDep = () => { rhLer(); RH_EDIT.deps.push({ nome:"", nasc:"", parentesco:"", cpf:"", ir:false, sf:false }); RH_SUJO = true; rhRerender(); };
+window.rhDelDep = (i) => { rhLer(); RH_EDIT.deps.splice(i,1); RH_SUJO = true; rhRerender(); };
+window.rhMascara = (el, t) => {
+  el.value = rhMascarar(t, el.value); RH_SUJO = true;
+  if(t==="cpf"){ const n = el.value.replace(/\D/g,""); el.style.borderColor = n.length===11 && !rhCpfOk(n) ? "var(--red)" : ""; el.title = n.length===11 && !rhCpfOk(n) ? "CPF inválido — confira os números" : ""; }
+  if(t==="cep" && el.value.replace(/\D/g,"").length===8) rhBuscarCEP(el.value.replace(/\D/g,""));
+};
+// CEP → endereço automático (ViaCEP, serviço público e gratuito)
+async function rhBuscarCEP(cep){
+  try{
+    const r = await (await fetch(`https://viacep.com.br/ws/${cep}/json/`)).json();
+    if(r.erro){ toast("CEP não encontrado — preencha o endereço à mão."); return; }
+    const s = (k, v) => { const el = document.getElementById("rh-f-"+k); if(el && v) el.value = v; };
+    s("logradouro", r.logradouro); s("bairro", r.bairro); s("cidade", r.localidade); s("uf", r.uf);
+    document.getElementById("rh-f-numero")?.focus(); toast("✓ Endereço preenchido pelo CEP — confira o número");
+  }catch(e){ /* sem internet ou serviço fora: o RH preenche à mão */ }
+}
+window.rhSalvar = async () => {
+  rhLer(); const e = RH_EDIT, novo = e.id==="novo";
+  if(!e.p.nome){ toast("Informe o nome completo."); return; }
+  if(!e.p.local){ toast("Escolha o setor (item 5)."); return; }
+  if(e.d.cpf && !rhCpfOk(e.d.cpf) && !confirm("O CPF parece inválido. Salvar mesmo assim?")) return;
+  const btn = document.getElementById("rh-salvar"); if(btn){ btn.disabled = true; btn.textContent = "Salvando..."; }
+  const voltar = () => { if(btn){ btn.disabled = false; btn.textContent = "💾 Salvar ficha"; } };
+  // dados do Organograma: grava lá só se for novo ou se mudou algo
+  const antes = novo ? null : ORG.lista.find(x=>x.id===e.id);
+  const p = novo ? { ...e.p, id:crypto.randomUUID(), ativo:true, foto:"", obs:"", ordem:Math.max(0, ...ORG.lista.map(x=>x.ordem||0))+1, deslData:"", deslMotivo:"" } : { ...antes, ...e.p };
+  if(novo || ["nome","funcao","local","gestorId","adm"].some(k=>(antes[k]||"")!==(p[k]||""))){ if(!await orgGravar([p])){ voltar(); return; } }
+  const dados = { ...e.d, dependentes:e.deps.filter(x=>x.nome || x.cpf) };
+  rhCampos().filter(c=>c.org).forEach(c=>delete dados[c.k]);
+  if(sb){
+    const { error } = await sb.from("rh_fichas").upsert({ colaborador_id:p.id, dados, atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() });
+    if(error){ toast("⚠ Não salvou a ficha: " + error.message); voltar(); return; }
+  }
+  RH.fichas[p.id] = { dados, por:MEU_EMAIL||"", em:new Date().toISOString() };
+  if(!sb) try{ localStorage.setItem(RH_LOCAL, JSON.stringify(RH.fichas)); }catch(err){}
+  RH_EDIT = { id:p.id, p:{ ...p }, d:dados, deps:dados.dependentes }; RH_SUJO = false;
+  toast(`✓ Ficha de ${p.nome} salva`); rhRerender();
+};
+
+/* ---------- Telas ---------- */
+function rhCampoHTML(c){
+  const e = RH_EDIT, v = rhValor(e.p, e.d, c), id = "rh-f-"+c.k, obr = c.ob===true || (c.ob==="mot" && rhMotorista(e.p));
+  const cls = c.w===3 ? "rh-w3" : c.w===2 ? "rh-w2" : "";
+  const rot = `${osEsc(c.l)}${obr ? ' <span style="color:var(--red);">*</span>' : ""}${c.org ? ' <span class="rh-org" title="Vem do Organograma; se alterar aqui, muda lá também">🔗 Organograma</span>' : ""}`;
+  let campo;
+  if(c.t==="sel"){
+    let ops = c.op || [];
+    if(c.k==="setor") ops = orgLocais().map(l=>l.nome);
+    if(c.k==="gestor"){
+      const ges = orgAtivos().filter(x=>x.id!==e.id).sort((a,b)=>a.nome.localeCompare(b.nome,"pt-BR"));
+      campo = `<select id="${id}" onchange="rhSujou()"><option value="">—</option>${ges.map(x=>`<option value="${x.id}" ${x.id===v?"selected":""}>${osEsc(x.nome)} · ${osEsc(x.funcao)}</option>`).join("")}</select>`;
+    } else {
+      if(v && !ops.includes(v)) ops = [v, ...ops];
+      campo = `<select id="${id}" onchange="rhSujou()"><option value="">Selecione</option>${ops.map(o=>`<option ${o===v?"selected":""}>${osEsc(o)}</option>`).join("")}</select>`;
+    }
+  }
+  else if(c.t==="date") campo = `<input type="date" id="${id}" value="${osEsc(v)}" oninput="rhSujou()">`;
+  else if(c.t==="money") campo = `<input type="number" step="0.01" min="0" id="${id}" value="${osEsc(v)}" placeholder="0,00" oninput="rhSujou()">`;
+  else if(["cpf","cep","tel"].includes(c.t)) campo = `<input id="${id}" value="${osEsc(v)}" inputmode="numeric" placeholder="${({ cpf:"000.000.000-00", cep:"00000-000 (preenche o endereço)", tel:"(92) 90000-0000" })[c.t]}" oninput="rhMascara(this,'${c.t}')">`;
+  else campo = `<input id="${id}" type="${c.t==="email"?"email":"text"}" value="${osEsc(v)}" ${c.k==="cargo"?'list="rh-l-cargos"':""} oninput="rhSujou()">`;
+  return `<label class="${cls}"><span>${rot}</span>${campo}</label>`;
+}
+function rhFichaHTML(){
+  const e = RH_EDIT, novo = e.id==="novo", st = novo ? null : rhStatus({ ...e.p, id:e.id });
+  const reg = !novo && RH.fichas[e.id] ? `Última atualização: ${new Date(RH.fichas[e.id].em).toLocaleString("pt-BR")}${RH.fichas[e.id].por ? " · " + osEsc(RH.fichas[e.id].por) : ""}` : "Ficha ainda não preenchida";
+  const deps = `<div class="rh-w3"><div class="rh-sub">Dependentes <span class="hint">— só quando necessário para fins legais, fiscais ou de benefícios</span></div>
+    ${e.deps.map((x,i)=>`<div class="rh-dep">
+      <label class="rh-w2">Dependente ${i+1} — Nome<input id="rh-d${i}-nome" value="${osEsc(x.nome)}" oninput="rhSujou()"></label>
+      <label>Nascimento<input type="date" id="rh-d${i}-nasc" value="${osEsc(x.nasc)}" oninput="rhSujou()"></label>
+      <label>Parentesco<input id="rh-d${i}-par" list="rh-l-par" value="${osEsc(x.parentesco)}" oninput="rhSujou()"></label>
+      <label>CPF do dependente<input id="rh-d${i}-cpf" value="${osEsc(x.cpf)}" inputmode="numeric" placeholder="000.000.000-00" oninput="rhMascara(this,'cpf')"></label>
+      <div class="rh-fin">Finalidade: <label><input type="checkbox" id="rh-d${i}-ir" ${x.ir?"checked":""} onchange="rhSujou()"> IR</label>
+        <label><input type="checkbox" id="rh-d${i}-sf" ${x.sf?"checked":""} onchange="rhSujou()"> Salário-família</label>
+        <button class="os-link" onclick="rhDelDep(${i})">remover</button></div></div>`).join("")}
+    <button class="os-btn sm" onclick="rhAddDep()">+ Adicionar dependente</button>
+    <datalist id="rh-l-par">${["Filho(a)","Enteado(a)","Cônjuge","Companheiro(a)","Pai","Mãe","Menor sob guarda"].map(x=>`<option value="${x}">`).join("")}</datalist></div>`;
+  const checks = `<div class="rh-w3 rh-checks">${RH_CHECKS.map(([k,l])=>`<label><input type="checkbox" id="rh-c-${k}" ${(e.d.checks||{})[k]?"checked":""} onchange="rhSujou()"> ${osEsc(l)}</label>`).join("")}</div>`;
+  return `
+    <div class="panel rh-topo">
+      <button class="os-btn" onclick="rhFechar()">← Voltar à lista</button>
+      <div style="flex:1; min-width:200px;"><h3 style="margin:0;">${novo ? "Novo funcionário" : osEsc(e.p.nome)}</h3>
+        <div class="hint">${novo ? "Cadastre a ficha; a pessoa entra também no Organograma" : `${osEsc(e.p.funcao)} · ${osEsc(e.p.local)} · ${reg}`}</div></div>
+      ${st ? `<div class="rh-pct" title="${st.faltam.length ? "Falta: " + osEsc(st.faltam.join(", ")) : "Todos os campos obrigatórios preenchidos"}"><b>${st.pct}%</b> preenchida<div class="rh-barra"><i style="width:${st.pct}%; background:${st.pct===100?"var(--green)":"var(--amber)"};"></i></div></div>` : ""}
+      ${!novo ? `<button class="os-btn" onclick="rhPDF('${e.id}')">📄 PDF da ficha</button>` : ""}
+      <button class="entry-submit" id="rh-salvar" style="margin:0;" onclick="rhSalvar()">💾 Salvar ficha</button>
+    </div>
+    ${st && st.faltam.length ? `<div class="os-alerta amber" style="margin-bottom:12px;">Falta preencher: ${osEsc(st.faltam.join(" · "))}</div>` : ""}
+    <div class="os-form">
+    ${RH_SECOES.map(s=>`<div class="panel rh-sec"><h3>${osEsc(s.t.toUpperCase())}</h3><div class="rh-grid">
+      ${s.campos.filter(c=>c.k!=="pendencias" && c.k!=="data_conf" && c.k!=="resp_rh").map(rhCampoHTML).join("")}
+      ${s.deps ? deps : ""}${s.checks ? checks + s.campos.filter(c=>["pendencias","data_conf","resp_rh"].includes(c.k)).map(rhCampoHTML).join("") : ""}
+      ${s.nota ? `<div class="rh-w3 hint">⚠ ${osEsc(s.nota)}</div>` : ""}</div></div>`).join("")}
+    </div>
+    <datalist id="rh-l-cargos">${[...new Set(ORG.lista.map(x=>x.funcao).filter(Boolean))].sort().map(x=>`<option value="${osEsc(x)}">`).join("")}</datalist>
+    <div class="panel rh-sec"><h3>8. DECLARAÇÃO E ASSINATURA</h3><p class="hint" style="margin:0;">${osEsc(RH_DECLARACAO)}</p>
+      <p class="hint" style="margin:8px 0 0;">A assinatura é feita no papel: baixe o <b>PDF da ficha</b>, imprima e colha a assinatura do funcionário.</p></div>
+    <div style="display:flex; gap:10px; justify-content:flex-end; margin-bottom:20px;">
+      <button class="os-btn" onclick="rhFechar()">Voltar</button>
+      <button class="entry-submit" style="margin:0;" onclick="rhSalvar()">💾 Salvar ficha</button></div>`;
+}
+renderers.rh = () => {
+  if(!RH.carregado && !RH.carregando){ RH.carregando = true; setTimeout(()=>rhCarregar(), 0); }
+  const cab = `<div class="page-head"><h2>Recursos Humanos</h2><p>Ficha cadastral de cada funcionário — dados pessoais, documentos, contrato, pagamento e checklist de admissão</p></div>`;
+  if(RH.erro) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar as fichas</h4><p>${osEsc(RH.erro)}</p><p>Se falar em tabela inexistente ("rh_fichas"), rode o SQL de Recursos Humanos no Supabase.</p></div></div>`;
+  if(ORG.erro) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><p>${osEsc(ORG.erro)}</p></div></div>`;
+  if(!RH.carregado) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando...</p></div></div>`;
+  if(RH_EDIT) return cab + rhFichaHTML();
+
+  const ativos = orgAtivos(), todos = ativos.map(p=>({ p, s:rhStatus(p) }));
+  const completas = todos.filter(x=>x.s.completa).length, semFicha = todos.filter(x=>!x.s.temFicha).length;
+  const cnhAlerta = todos.filter(x=>x.s.cnhDias!=null && x.s.cnhDias<=30), aniver = todos.filter(x=>x.s.aniver);
+  const media = todos.length ? Math.round(sumArr(todos.map(x=>x.s.pct))/todos.length) : 0;
+  const q = nfSemAcento(RH_BUSCA);
+  const lista = todos.filter(({ p, s })=>(!q || nfSemAcento(`${p.nome} ${p.funcao}`).includes(q)) && (!RH_LOCAL_F || p.local===RH_LOCAL_F)
+    && (RH_FILTRO==="todos" || (RH_FILTRO==="pend" && !s.completa) || (RH_FILTRO==="ok" && s.completa) || (RH_FILTRO==="sem" && !s.temFicha) || (RH_FILTRO==="cnh" && s.cnhDias!=null && s.cnhDias<=30) || (RH_FILTRO==="aniver" && s.aniver)))
+    .sort((a,b)=>a.p.nome.localeCompare(b.p.nome,"pt-BR"));
+  const chip = (k,l,n) => `<button class="sub-tab-btn ${RH_FILTRO===k?"active":""}" style="margin:0;" onclick="rhSetFiltro('${k}')">${l}${n!=null?` <b>${n}</b>`:""}</button>`;
+  const cnhBadge = (s) => s.cnhDias==null ? `<span class="hint">—</span>` : s.cnhDias<0 ? `<span class="badge red">vencida ${fmtDataBR(s.d.cnh_val)}</span>` : s.cnhDias<=30 ? `<span class="badge amber">vence ${fmtDataBR(s.d.cnh_val)}</span>` : fmtDataBR(s.d.cnh_val);
+  return cab + `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Funcionários ativos</div><div class="val">${ativos.length}</div><div class="delta flat">base do Organograma</div></div>
+      <div class="kpi"><div class="lbl">Fichas completas</div><div class="val" style="color:var(--green);">${completas}</div><div class="delta flat">dados + checklist 100%</div></div>
+      <div class="kpi"><div class="lbl">Preenchimento médio</div><div class="val">${media}%</div><div class="delta flat">${semFicha} sem ficha iniciada</div></div>
+      <div class="kpi"><div class="lbl">CNH vencida / a vencer</div><div class="val" style="color:${cnhAlerta.length?"var(--red)":"inherit"};">${cnhAlerta.length}</div><div class="delta flat">vence em até 30 dias</div></div>
+      <div class="kpi"><div class="lbl">Aniversariantes do mês</div><div class="val">${aniver.length}</div><div class="delta flat">${aniver.slice(0,3).map(x=>osEsc(x.p.nome.split(" ")[0]) + " " + x.s.d.nasc.slice(8,10)).join(" · ") || "—"}</div></div>
+    </div>
+    <div class="panel" style="margin-bottom:12px;">
+      <div class="og-barra">
+        <input id="rh-busca" value="${osEsc(RH_BUSCA)}" placeholder="🔎 Buscar por nome ou função" oninput="rhBuscar(this.value)">
+        <select onchange="rhSetLocal(this.value)" style="padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-family:inherit;"><option value="">Todos os setores</option>${orgLocais().filter(l=>ativos.some(p=>p.local===l.nome)).map(l=>`<option ${RH_LOCAL_F===l.nome?"selected":""}>${osEsc(l.nome)}</option>`).join("")}</select>
+        <button class="os-btn" onclick="rhPDF(null)" title="Ficha no modelo, sem dados, para preencher à mão">📄 Ficha em branco (PDF)</button>
+        <button class="entry-submit" style="margin:0;" onclick="rhAbrir('novo')">+ Novo funcionário</button>
+      </div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">${chip("todos","Todos",todos.length)}${chip("pend","Pendentes",todos.length-completas)}${chip("ok","Completas",completas)}${chip("sem","Sem ficha",semFicha)}${chip("cnh","⚠ CNH",cnhAlerta.length)}${chip("aniver","🎂 Aniversário",aniver.length)}</div>
+    </div>
+    <div class="panel">${!lista.length ? `<div class="empty-state" style="padding:20px;"><p>${ativos.length ? "Ninguém encontrado." : "Nenhum funcionário no Organograma ainda. Cadastre em “+ Novo funcionário”."}</p></div>` : `
+      <div style="overflow-x:auto;"><table class="nf-tab">
+      <thead><tr><th></th><th>Nome</th><th>Função</th><th>Setor</th><th>Admissão</th><th>Ficha</th><th>Checklist</th><th>Validade CNH</th><th></th></tr></thead>
+      <tbody>${lista.map(({ p, s })=>`<tr onclick="rhAbrir('${p.id}')" style="cursor:pointer;">
+        <td style="width:46px;">${orgAvatar(p,"sm").replace('class="og-av','style="--c:'+orgCor(p.local)+'" class="og-av')}</td>
+        <td><b>${osEsc(p.nome)}</b>${s.aniver ? " 🎂" : ""}</td><td>${osEsc(p.funcao)}</td>
+        <td><span class="og-badge" style="--c:${orgCor(p.local)}"><i></i>${osEsc(p.local)}</span></td><td>${fmtDataBR(p.adm)}</td>
+        <td style="min-width:120px;" title="${s.faltam.length ? "Falta: " + osEsc(s.faltam.join(", ")) : "Completa"}">${!s.temFicha ? '<span class="badge gray">não iniciada</span>' : `<div class="rh-barra"><i style="width:${s.pct}%; background:${s.pct===100?"var(--green)":"var(--amber)"};"></i></div><span class="hint">${s.pct}%</span>`}</td>
+        <td>${s.checks===RH_CHECKS.length ? '<span class="badge green">8/8 ✓</span>' : `<span class="hint">${s.checks}/${RH_CHECKS.length}</span>`}</td>
+        <td>${cnhBadge(s)}</td>
+        <td style="white-space:nowrap;"><button class="os-btn sm" onclick="event.stopPropagation(); rhAbrir('${p.id}')">Abrir ficha</button> ${s.temFicha ? `<button class="os-btn sm" title="PDF da ficha" onclick="event.stopPropagation(); rhPDF('${p.id}')">📄</button>` : ""}</td></tr>`).join("")}</tbody>
+      </table></div>`}</div>`;
+};
+
+/* ---------- PDF no modelo da ficha (A4 em pé) — preenchida ou em branco (id = null) ---------- */
+window.rhPDF = async (id) => {
+  const p = id ? ORG.lista.find(x=>x.id===id) : { nome:"", funcao:"", local:"", gestorId:null, adm:"" };
+  if(!p) return;
+  const d = id ? ((RH.fichas[id]||{}).dados || {}) : {};
+  const aba = window.open("", "_blank");
+  try{
+    await nfgCarregarPDF();
+    const { jsPDF } = window.jspdf, doc = new jsPDF({ unit:"mm", format:"a4" });
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 18, AW = W - 2*M, AZUL = [31,78,121];
+    let y = 0;
+    const cabecalho = () => {
+      doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...AZUL); doc.text("AVANCE LOGÍSTICA", M, 12);
+      doc.setDrawColor(...AZUL); doc.setLineWidth(0.4); doc.line(M, 14, W-M, 14); y = 21;
+    };
+    const espaco = (h) => { if(y + h > H - 16){ doc.addPage(); cabecalho(); } };
+    const secao = (t) => { espaco(16); doc.setFillColor(...AZUL); doc.rect(M, y, AW, 6.2, "F"); doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(255,255,255); doc.text(t.toUpperCase(), M+2.5, y+4.3); y += 9.5; };
+    // um campo "Rótulo: valor" com a linha para escrever; em branco, datas ganham as barras
+    const campo = (rot, val, x, w, data) => {
+      doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(60,60,60);
+      const r = rot + ":", rw = doc.getTextWidth(r) + 1.5; doc.text(r, x, y);
+      doc.setDrawColor(150,150,150); doc.setLineWidth(0.2); doc.line(x+rw, y+0.8, x+w-3, y+0.8);
+      doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(20,20,20);
+      if(val) doc.text(doc.splitTextToSize(String(val), w-rw-4)[0], x+rw+0.5, y-0.3);
+      else if(data){ doc.setTextColor(120,120,120); const q = (w-rw-3)/3; doc.text("/", x+rw+q, y); doc.text("/", x+rw+2*q, y); }
+    };
+    const linhaCampos = (lista) => { espaco(8); let x = M; lista.forEach(([rot, val, frac, data])=>{ const w = AW*frac; campo(rot, val, x, w, data); x += w; }); y += 8; };
+    const caixa = (x, marcado) => { doc.setDrawColor(60,60,60); doc.setLineWidth(0.3); doc.rect(x, y-2.9, 3.2, 3.2); if(marcado){ doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...AZUL); doc.text("X", x+0.6, y-0.2); } };
+    const nota = (t) => { doc.setFont("helvetica","italic"); doc.setFontSize(7.8); doc.setTextColor(90,90,90); const l = doc.splitTextToSize(t, AW); espaco(l.length*3.6+2); doc.text(l, M, y); y += l.length*3.6 + 2.5; };
+
+    cabecalho();
+    doc.setFont("helvetica","bold"); doc.setFontSize(13); doc.setTextColor(...AZUL); doc.text("FICHA CADASTRAL DO FUNCIONÁRIO", W/2, y+2, { align:"center" });
+    doc.setFont("helvetica","normal"); doc.setFontSize(8.5); doc.setTextColor(100,100,100); doc.text("Uso interno – Departamento de Recursos Humanos", W/2, y+7, { align:"center" }); y += 14;
+
+    const c = Object.fromEntries(rhCampos().map(x=>[x.k, x])), t = (k) => id ? rhTexto(p, d, c[k]) : "";
+    secao("1. Identificação pessoal");
+    linhaCampos([["Nome completo", t("nome"), .62], ["Data de nascimento", t("nasc"), .38, 1]]);
+    linhaCampos([["CPF", t("cpf"), .5], ["RG", t("rg"), .5]]);
+    linhaCampos([["Órgão expedidor/UF", t("rg_orgao"), .5], ["Estado civil", t("civil"), .5]]);
+    linhaCampos([["Naturalidade/UF", t("natural"), .5], ["Nacionalidade", t("nacion"), .5]]);
+    linhaCampos([["Nome da mãe", t("mae"), 1]]);
+    secao("2. Endereço e contatos");
+    linhaCampos([["Logradouro", t("logradouro"), .62], ["Número", t("numero"), .38]]);
+    linhaCampos([["Complemento", t("complemento"), .5], ["Bairro", t("bairro"), .5]]);
+    linhaCampos([["CEP", t("cep"), .3], ["Cidade", t("cidade"), .45], ["UF", t("uf"), .25]]);
+    linhaCampos([["Telefone/WhatsApp", t("telefone"), .5], ["E-mail", t("email"), .5]]);
+    linhaCampos([["Contato para recado (nome e telefone)", t("recado"), 1]]);
+    secao("3. Documentação e habilitações");
+    linhaCampos([["CTPS Digital / observações", t("ctps"), .58], ["PIS/PASEP/NIT", t("pis"), .42]]);
+    linhaCampos([["Título de eleitor", t("titulo"), .5], ["CNH nº", t("cnh"), .5]]);
+    linhaCampos([["Categoria", t("cnh_cat"), .3], ["Validade da CNH", t("cnh_val"), .7, 1]]);
+    linhaCampos([["Certificados/qualificações", t("cert"), 1]]);
+    secao("4. Informações familiares e dependentes");
+    linhaCampos([["Nome do cônjuge (opcional)", t("conjuge"), .62], ["CPF", t("conjuge_cpf"), .38]]);
+    const deps = id ? (d.dependentes||[]) : [];
+    const nDeps = id ? deps.length : 2;
+    for(let i=0;i<nDeps;i++){
+      const x = deps[i] || {};
+      linhaCampos([[`Dependente ${i+1} – Nome`, x.nome, 1]]);
+      linhaCampos([["Nascimento", x.nasc ? fmtDataBR(x.nasc) : "", .5, 1], ["Parentesco", x.parentesco, .5]]);
+      linhaCampos([["CPF do dependente", x.cpf, .55]]); y -= 8;
+      doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(60,60,60);
+      const fx = M + AW*.57; doc.text("Finalidade:", fx, y); caixa(fx+18, x.ir); doc.text("IR", fx+22.5, y); caixa(fx+30, x.sf); doc.text("Salário-família", fx+34.5, y); y += 8;
+    }
+    if(id && !deps.length){ doc.setFont("helvetica","normal"); doc.setFontSize(8.5); doc.setTextColor(90,90,90); espaco(6); doc.text("Sem dependentes informados.", M, y); y += 6; }
+    nota("Caso existam outros dependentes, anexar relação complementar. Informações de dependentes devem ser coletadas apenas quando necessárias para fins legais, fiscais ou de benefícios.");
+    secao("5. Dados profissionais – preenchimento pelo RH");
+    linhaCampos([["Cargo", t("cargo"), .55], ["Setor", t("setor"), .45]]);
+    linhaCampos([["Data de admissão", t("admissao"), .45, 1], ["Gestor responsável", t("gestor"), .55]]);
+    linhaCampos([["Salário-base", t("salario"), .45], ["Tipo de contrato", t("contrato"), .55]]);
+    linhaCampos([["Jornada/escala", t("jornada"), .55], ["Intervalo", t("intervalo"), .45]]);
+    linhaCampos([["Horário de trabalho", t("horario"), .55], ["Folga semanal", t("folga"), .45]]);
+    secao("6. Dados para pagamento");
+    linhaCampos([["Banco", t("banco"), .55], ["Agência", t("agencia"), .45]]);
+    linhaCampos([["Tipo de conta", t("tipo_conta"), .55], ["Conta", t("conta"), .45]]);
+    linhaCampos([["Chave PIX (se utilizada e autorizada)", t("pix"), 1]]);
+    nota("Não informar senhas, códigos de autenticação ou dados de acesso bancário.");
+    secao("7. Controle de documentos e itens – RH");
+    espaco(4*6.5 + 2);
+    doc.setFont("helvetica","normal"); doc.setFontSize(8.8); doc.setTextColor(20,20,20);
+    const y0 = y;
+    RH_CHECKS.forEach(([k,l], i)=>{ y = y0 + (i%4)*6.5; const x = M + (i<4 ? 0 : AW/2); caixa(x, id && (d.checks||{})[k]); doc.setFont("helvetica","normal"); doc.setFontSize(8.8); doc.setTextColor(20,20,20); doc.text(l, x+5.5, y); });
+    y = y0 + 4*6.5 + 2;
+    linhaCampos([["Pendências/observações", t("pendencias"), 1]]);
+    linhaCampos([["Data da conferência", t("data_conf"), .45, 1], ["Responsável pelo RH", t("resp_rh"), .55]]);
+    secao("8. Declaração e assinatura");
+    doc.setFont("helvetica","normal"); doc.setFontSize(8.8); doc.setTextColor(20,20,20);
+    const dl = doc.splitTextToSize(RH_DECLARACAO, AW); espaco(dl.length*4.2 + 26); doc.text(RH_DECLARACAO, M, y, { align:"justify", maxWidth:AW }); y += dl.length*4.2 + 18;
+    doc.setDrawColor(60,60,60); doc.setLineWidth(0.3); doc.line(M, y, M+AW*.45, y); doc.line(M+AW*.55, y, W-M, y);
+    doc.setFontSize(8.5); doc.setTextColor(60,60,60); doc.text("Assinatura do(a) funcionário(a)", M+AW*.225, y+4.5, { align:"center" }); doc.text("Local e data", M+AW*.775, y+4.5, { align:"center" });
+
+    const n = doc.getNumberOfPages();
+    for(let i=1;i<=n;i++){ doc.setPage(i); doc.setFont("helvetica","normal"); doc.setFontSize(7.5); doc.setTextColor(120,120,120);
+      doc.text("AVANCE LOGÍSTICA | Departamento de Recursos Humanos", M, H-8); doc.text(`Página ${i} de ${n}`, W-M, H-8, { align:"right" }); }
+    const url = doc.output("bloburl");
+    const nome = id ? "Ficha_Cadastral_" + nfSemAcento(p.nome).replace(/[^A-Z0-9]+/g,"_") : "Ficha_Cadastral_em_branco";
+    if(aba) aba.location.href = url; else doc.save(nome + ".pdf");
+  }catch(e){ if(aba) aba.close(); toast("⚠ Não foi possível gerar o PDF: " + e.message); }
+};
+
+
 /* -------------------- EMISSÃO DE O.S (plano do dia → Pré O.S → O.S para a Combitrans) --------------------
    Fluxo, com lançamentos separados na tabela manutencao_os:
      1) PLANO DO DIA — a operação lança as Pré O.S do dia (frota/carreta + serviços da tabela + quantidade).
@@ -11711,7 +12079,7 @@ async function carregarGestaoAcessos(){
               <option value="monitoramento" ${u.papel==="monitoramento"?"selected":""}>Monitoramento (só Programação de Entregas)</option>
               <option value="coordenacao" ${u.papel==="coordenacao"?"selected":""}>Coordenação (só Emissão de NF)</option>
 ${u.papel==="manutencao" ? `<option value="manutencao" selected>Manutenção (tela desativada)</option>` : ""}
-              <option value="rh" ${u.papel==="rh"?"selected":""}>RH (só Organograma)</option>
+              <option value="rh" ${u.papel==="rh"?"selected":""}>RH (Recursos Humanos + Organograma)</option>
               <option value="administrativo" ${u.papel==="administrativo"?"selected":""}>Administrativo (Emissão de O.S + Organograma)</option>
               <option value="preos" ${u.papel==="preos"?"selected":""}>Operação (só Pré O.S / plano do dia)</option>
               <option value="frotaoficina" ${u.papel==="frotaoficina"?"selected":""}>Oficina da frota (só aba Oficina do Status da Frota)</option>
@@ -11737,7 +12105,7 @@ window.salvarPapelUsuario = async (userId, email) => {
   } else {
     const { error } = await sb.from("user_roles").upsert({ user_id:userId, email, papel });
     if(error){ toast("⚠ Falha ao salvar: " + error.message); return; }
-    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)", coordenacao:"Coordenação (só Emissão de NF)", manutencao:"Manutenção (só O.S de Manutenção)", rh:"RH (só Organograma)", oficina:"Oficina (só Controle de carretas)" })[papel]} ✓`);
+    toast(`${email} agora é ${({ diretor:"Diretor", operacional:"Operacional", lider:"Líder (só Status da Frota)", monitoramento:"Monitoramento (só Programação de Entregas)", coordenacao:"Coordenação (só Emissão de NF)", manutencao:"Manutenção (só O.S de Manutenção)", rh:"RH (Recursos Humanos + Organograma)", oficina:"Oficina (só Controle de carretas)" })[papel]} ✓`);
   }
   carregarGestaoAcessos();
 };
