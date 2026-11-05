@@ -520,6 +520,11 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .ose-pre-btn{ font-weight:700; color:#B86E00 !important; }
 .nfg-cob{ display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; } .nfg-cob label{ display:flex; flex-direction:column; gap:3px; font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; }
 .nfg-cob input{ font-family:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; text-transform:none; }
+.nfg-bxs{ display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; margin-bottom:14px; }
+.nfg-bx{ border:1px solid var(--line); border-left:4px solid var(--green); border-radius:10px; padding:10px 14px; display:flex; flex-direction:column; gap:2px; }
+.nfg-bx span{ font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; } .nfg-bx b{ font-size:20px; color:var(--green); } .nfg-bx small{ font-size:11px; color:var(--ink-soft); } .nfg-bx i{ font-style:normal; font-weight:700; }
+.nfe-pg.nfe-vr{ width:100px; text-align:right; }
+@media (max-width:700px){ .nfg-bxs{ grid-template-columns:1fr; } }
 .nfg-cob select{ font-family:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--paper); }
 .nfg-cel.sel{ box-shadow:0 0 0 2px var(--c); background:var(--paper); } .nfg-run{ font-size:11px; font-weight:800; color:var(--c); } .nfg-na{ color:#C9CBD4; }
 /* NF Emitidas — painel de emissão */
@@ -894,7 +899,7 @@ body.pending #pendingScreen{display:flex;}
   <main class="content" id="content"></main>
 </div>
 
-<script src="data.js?v=20261105b"></script>
-<script src="app.js?v=20261105b"></script>
+<script src="data.js?v=20261105c"></script>
+<script src="app.js?v=20261105c"></script>
 </body>
 </html>

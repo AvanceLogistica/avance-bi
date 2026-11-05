@@ -8370,7 +8370,8 @@ async function nfeCarregar(){
     if(l.error){ NFE.erro = l.error.message; NFE.carregando = false; NFE.carregado = true; nfeRerender(); return; }
     NFE.erro = null;
     NFE.lista = l.data.map(r=>({ id:r.id, atividade:r.atividade, sentido:r.sentido||"", periodo:r.periodo||"", numero:r.numero||"", nf:r.nf||"", valor:Number(r.valor)||0,
-      dataEmissao:r.data_emissao, dataPagamento:r.data_pagamento||"", balsa:r.balsa||"", obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+      dataEmissao:r.data_emissao, dataPagamento:r.data_pagamento||"", valorRecebido:r.valor_recebido!=null ? Number(r.valor_recebido) : null,
+      balsa:r.balsa||"", obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
     NFE.painel = {};
     if(!p.error) p.data.forEach(r=>{ NFE.painel[`${r.atividade}|${r.periodo}`] = { status:r.status||"", obs:r.obs||"", por:(r.atualizado_por||"").split("@")[0], em:r.atualizado_em }; });
     else NFE.erroPainel = p.error.message;
@@ -8656,18 +8657,23 @@ window.nfeBaixar = async (id, inputId) => {
   const r = NFE.lista.find(x=>x.id===id); if(!r) return;
   const data = document.getElementById(inputId || `nfe-pg-${id}`)?.value || frotaHojeISO();
   if(data < r.dataEmissao && !confirm("A data de pagamento é anterior à emissão. Confirmar assim mesmo?")) return;
-  if(sb){ const { error } = await sb.from("nf_emitidas").update({ data_pagamento:data, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id);
-    if(error){ toast(/data_pagamento/i.test(error.message) ? "⚠ Falta rodar o SQL da baixa de pagamento no Supabase." : /diretoria/i.test(error.message) ? "⚠ A baixa do recebimento é feita pela Diretoria." : "⚠ Não salvou: " + error.message); return; } }
-  r.dataPagamento = data; nfeSalvarLocal();
-  toast(`NF ${r.nf} baixada como paga em ${fmtDataBR(data)} · lead time ${nfeDias(r.dataEmissao, data)} dias ✓`);
+  // valor que caiu na conta (pode vir diferente da NF: desconto, imposto retido...); sem o campo, vale o valor da NF
+  const vrEl = document.getElementById(`nfe-vr-${id}`), vr = vrEl && vrEl.value !== "" ? Math.round(Number(vrEl.value)*100)/100 : r.valor;
+  if(!(vr >= 0)){ toast("Informe o valor recebido."); return; }
+  const dif = Math.round((vr - r.valor)*100)/100;
+  if(dif && !confirm(`O valor recebido (${fmtBRL2(vr)}) é ${dif<0?"MENOR":"MAIOR"} que o da NF ${r.nf} (${fmtBRL2(r.valor)}) em ${fmtBRL2(Math.abs(dif))}. Dar baixa assim mesmo?`)) return;
+  if(sb){ const { error } = await sb.from("nf_emitidas").update({ data_pagamento:data, valor_recebido:vr, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id);
+    if(error){ toast(/valor_recebido/i.test(error.message) ? "⚠ Falta rodar o SQL do valor recebido no Supabase." : /data_pagamento/i.test(error.message) ? "⚠ Falta rodar o SQL da baixa de pagamento no Supabase." : /diretoria/i.test(error.message) ? "⚠ A baixa do recebimento é feita pela Diretoria." : "⚠ Não salvou: " + error.message); return; } }
+  r.dataPagamento = data; r.valorRecebido = vr; nfeSalvarLocal();
+  toast(`NF ${r.nf} baixada: ${fmtBRL2(vr)} recebido em ${fmtDataBR(data)}${dif ? ` (diferença ${dif<0?"−":"+"}${fmtBRL2(Math.abs(dif))})` : ""} · lead time ${nfeDias(r.dataEmissao, data)} dias ✓`);
   const consultando = !!NFG_BUSCA_NF.trim(); if(consultando) NFG_BUSCA_NF = "";   // limpa a consulta para já digitar a próxima NF
   nfeRerender(); if(consultando) document.getElementById("nfg-busca-nf")?.focus();
 };
 window.nfeEstornar = async (id) => {
   if(!nfePodeBaixar()){ toast("Somente a Diretoria pode desfazer a baixa."); return; }
   const r = NFE.lista.find(x=>x.id===id); if(!r || !confirm(`Desfazer a baixa da NF ${r.nf}? Ela volta para as pendentes.`)) return;
-  if(sb){ const { error } = await sb.from("nf_emitidas").update({ data_pagamento:null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id); if(error){ toast("⚠ Não salvou: " + error.message); return; } }
-  r.dataPagamento = ""; nfeSalvarLocal(); nfeRerender();
+  if(sb){ const { error } = await sb.from("nf_emitidas").update({ data_pagamento:null, valor_recebido:null, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id); if(error){ toast("⚠ Não salvou: " + error.message); return; } }
+  r.dataPagamento = ""; r.valorRecebido = null; nfeSalvarLocal(); nfeRerender();
 };
 
 // Logística Reversa (SW e Carreteira): a NF tem o campo Balsa e o período vem da balsa ligada a ela
@@ -9073,10 +9079,20 @@ function nfeBaixaHTML(r){
   const dias = nfeDias(r.dataEmissao, frotaHojeISO()), venc = r.atividade==="manutencao" ? nfeAddDias(r.dataEmissao, MAN_PRAZO_PGTO) : null;
   const idade = `<span class="hint" style="margin:0 6px 0 0;">em aberto há <b style="color:var(--${nfeVencida(r)?"red":"ink"});">${dias}</b> dias${venc ? ` · vence ${nfeBR(venc)}` : ""}</span>`;
   return nfePodeBaixar()
-    ? `${idade}<input type="date" id="nfe-pg-${r.id}" value="${frotaHojeISO()}" class="nfe-pg"> <button class="os-btn sm green" onclick="nfeBaixar('${r.id}')">💵 Dar baixa</button>`
+    ? `${idade}<input type="date" id="nfe-pg-${r.id}" value="${frotaHojeISO()}" class="nfe-pg" title="Data do recebimento">
+       <input type="number" step="0.01" min="0" id="nfe-vr-${r.id}" value="${(Number(r.valor)||0).toFixed(2)}" class="nfe-pg nfe-vr" title="Valor recebido (R$) — já vem com o valor da NF" oninput="nfeDifVR(this, ${Number(r.valor)||0})">
+       <button class="os-btn sm green" onclick="nfeBaixar('${r.id}')">💵 Dar baixa</button><span class="nfe-dif"></span>`
     : `${idade}<span class="bal-badge" style="--c:#8E2EB0;">aguardando baixa da Diretoria</span>`;
 }
 
+// mostra ao lado do botão a diferença entre o valor digitado e o da NF
+window.nfeDifVR = (el, valor) => {
+  const sp = el.parentElement.querySelector(".nfe-dif"); if(!sp) return;
+  const d = el.value === "" ? 0 : Math.round((Number(el.value) - valor)*100)/100;
+  sp.innerHTML = d ? ` <b style="color:var(--${d<0?"red":"green"}); font-size:11.5px;">${d<0?"−":"+"}${fmtBRL2(Math.abs(d))} ${d<0?"a menos":"a mais"}</b>` : "";
+};
+// valor efetivamente recebido (NFs baixadas antes deste campo existir contam pelo valor da NF)
+const nfeRecebido = (r) => r.valorRecebido!=null ? r.valorRecebido : (Number(r.valor)||0);
 // NF em aberto além do prazo: Manutenção (Combitrans) 15 dias da emissão; demais 30 dias
 function nfeVencida(r){ return !r.dataPagamento && nfeDias(r.dataEmissao, frotaHojeISO()) > (r.atividade==="manutencao" ? MAN_PRAZO_PGTO : 30); }
 function nfgLinha(a){
@@ -9180,10 +9196,11 @@ let NFG_COB_ATIV = "todas";
 // Consulta de NF na lista de recebimentos: esconde as linhas que não batem, sem redesenhar a tela
 // (o texto fica guardado e vale de novo depois de dar baixa, quando a lista é redesenhada)
 let NFG_BUSCA_NF = "";
-const nfgBateNF = (busca) => { const q = nfSemAcento(NFG_BUSCA_NF); return !q || busca.includes(q); };
+// só números = número da NF (começa com); com letras = balsa / operação
+const nfgBateNF = (busca, nf) => { const q = nfSemAcento(NFG_BUSCA_NF); return !q || (/^\d+$/.test(q) ? String(nf||"").replace(/\D/g,"").startsWith(q) : busca.includes(q)); };
 window.nfgBuscarNF = (t) => {
   NFG_BUSCA_NF = t; let n = 0, tot = 0;
-  document.querySelectorAll("#nfg-receber tr[data-busca]").forEach(tr=>{ const ok = nfgBateNF(tr.dataset.busca); tr.style.display = ok ? "" : "none"; if(ok){ n++; tot += Number(tr.dataset.valor)||0; } });
+  document.querySelectorAll("#nfg-receber tr[data-busca]").forEach(tr=>{ const ok = nfgBateNF(tr.dataset.busca, tr.dataset.nf); tr.style.display = ok ? "" : "none"; if(ok){ n++; tot += Number(tr.dataset.valor)||0; } });
   const st = document.getElementById("nfg-busca-st");
   if(st) st.innerHTML = NFG_BUSCA_NF.trim() ? (n ? `${n} NF(s) encontrada(s) · ${fmtBRL2(tot)}` : `<span style="color:var(--red);">Nenhuma NF em aberto com esse número — confira se já não teve baixa.</span>`) : "";
   const ft = document.getElementById("nfg-receber-tot"); if(ft) ft.innerHTML = `<td colspan="3">Total (${n})</td><td class="num">${fmtBRL2(tot)}</td><td colspan="2"></td>`;
@@ -9291,6 +9308,17 @@ window.nfgCobWhatsApp = async () => {
   toast("PDF baixado — no WhatsApp, anexe o arquivo " + nome);
 };
 
+// Quanto já foi baixado (recebido): hoje, semana (segunda até hoje) e mês — respeita o filtro de operação
+function nfgResumoBaixado(){
+  const hoje = frotaHojeISO(), dow = (nfeDate(hoje).getDay()+6)%7, seg = nfeAddDias(hoje, -dow), mes = hoje.slice(0,7);
+  const pagas = NFE.lista.filter(r=>r.dataPagamento && (NFG_COB_ATIV==="todas" || r.atividade===NFG_COB_ATIV));
+  const bloco = (rot, ls, sub) => { const v = sumArr(ls.map(nfeRecebido)), nf = sumArr(ls.map(r=>Number(r.valor)||0)), d = Math.round((v-nf)*100)/100;
+    return `<div class="nfg-bx"><span>${rot}</span><b>${fmtBRL2(v)}</b><small>${ls.length} NF(s)${sub ? " · " + sub : ""}${d ? ` · <i style="color:var(--${d<0?"red":"green"});">${d<0?"−":"+"}${fmtBRL2(Math.abs(d))} vs NF</i>` : ""}</small></div>`; };
+  return `<div style="flex-basis:100%;"><div class="hint" style="margin:0 0 6px; font-weight:700;">✅ Baixado (recebido)${NFG_COB_ATIV==="todas" ? "" : " · " + osEsc(nfeAtiv(NFG_COB_ATIV).label)}</div>
+    <div class="nfg-bxs">${bloco("Hoje", pagas.filter(r=>r.dataPagamento===hoje), fmtDataBR(hoje))}
+      ${bloco("Esta semana", pagas.filter(r=>r.dataPagamento>=seg && r.dataPagamento<=hoje), `desde ${fmtDataBR(seg).slice(0,5)}`)}
+      ${bloco("Este mês", pagas.filter(r=>r.dataPagamento.startsWith(mes)), nfeNomeMes(mes))}</div></div>`;
+}
 function nfgDetalhe(linhas){
   const hoje = frotaHojeISO();
   const L = NFG_SEL ? linhas.find(x=>x.a.chave===NFG_SEL.ativ) : null;
@@ -9299,11 +9327,11 @@ function nfgDetalhe(linhas){
   const voltar = `<button class="os-btn sm" onclick="nfgSel(null)">← Ver recebimentos para dar baixa</button>`;
   const tabNF = (ls, pagas, id) => ls.length ? `<div style="overflow-x:auto;"><table class="nf-tab" ${id ? `id="${id}"` : ""}>
       <thead><tr><th>Operação</th><th>Período / Balsa</th><th>NF</th><th class="num">Valor</th><th>Emissão</th><th>${pagas ? "Recebimento" : "Baixa do recebimento"}</th></tr></thead>
-      <tbody>${ls.map(r=>{ const busca = nfSemAcento(`NF ${r.nf} ${nfeBalsaDe(r)||""} ${r.numero||""} ${nfeRotulo(r)}`), ok = !id || nfgBateNF(busca);
-        return `<tr ${id ? `data-busca="${osEsc(busca)}" data-valor="${Number(r.valor)||0}"` : ""} ${ok ? "" : 'style="display:none;"'}><td><span class="nfe-dot" style="--c:${nfeAtiv(r.atividade).cor};"></span>${osEsc(nfeRotulo(r))}</td>
+      <tbody>${ls.map(r=>{ const busca = nfSemAcento(`NF ${r.nf} ${nfeBalsaDe(r)||""} ${r.numero||""} ${nfeRotulo(r)}`), ok = !id || nfgBateNF(busca, r.nf);
+        return `<tr ${id ? `data-busca="${osEsc(busca)}" data-nf="${osEsc(r.nf)}" data-valor="${Number(r.valor)||0}"` : ""} ${ok ? "" : 'style="display:none;"'}><td><span class="nfe-dot" style="--c:${nfeAtiv(r.atividade).cor};"></span>${osEsc(nfeRotulo(r))}</td>
         <td style="font-size:12px;">${nfeBalsaDe(r) ? `🚢 ${osEsc(nfeBalsaDe(r))}${r.numero ? " – " + osEsc(r.numero) : ""}<br>` : ""}${osEsc(nfePeriodoNF(r))}</td>
         <td><b>${osEsc(r.nf)}</b></td><td class="num"><b>${fmtBRL2(r.valor)}</b></td><td>${fmtDataBR(r.dataEmissao)}</td>
-        <td style="white-space:nowrap;">${r.dataPagamento ? `<span class="badge green">✓ recebido ${fmtDataBR(r.dataPagamento)}</span> <span class="hint" style="margin:0;">${nfeDias(r.dataEmissao, r.dataPagamento)} dias</span>${nfePodeBaixar() ? ` <button class="os-link" onclick="nfeEstornar('${r.id}')">desfazer</button>` : ""}` : nfeBaixaHTML(r)}</td></tr>`; }).join("")}</tbody>
+        <td style="white-space:nowrap;">${r.dataPagamento ? `<span class="badge green">✓ recebido ${fmtDataBR(r.dataPagamento)}</span>${r.valorRecebido!=null && Math.abs(r.valorRecebido - r.valor) >= 0.01 ? ` <span class="hint" style="margin:0; color:var(--${r.valorRecebido<r.valor?"red":"green"}); font-weight:700;">recebido ${fmtBRL2(r.valorRecebido)} (${r.valorRecebido<r.valor?"−":"+"}${fmtBRL2(Math.abs(r.valorRecebido-r.valor))})</span>` : ""} <span class="hint" style="margin:0;">${nfeDias(r.dataEmissao, r.dataPagamento)} dias</span>${nfePodeBaixar() ? ` <button class="os-link" onclick="nfeEstornar('${r.id}')">desfazer</button>` : ""}` : nfeBaixaHTML(r)}</td></tr>`; }).join("")}</tbody>
       <tfoot><tr ${id ? `id="${id}-tot"` : ""} style="font-weight:800; background:var(--paper);"><td colspan="3">Total (${ls.length})</td><td class="num">${fmtBRL2(sumArr(ls.map(r=>r.valor)))}</td><td colspan="2"></td></tr></tfoot>
     </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nada nesta etapa.</p></div>`;
 
@@ -9316,6 +9344,7 @@ function nfgDetalhe(linhas){
     if(NFG_BUSCA_NF.trim()) setTimeout(()=>nfgBuscarNF(NFG_BUSCA_NF), 0);   // reaplica a consulta (contagem e total) depois de redesenhar
     const pend = nfgCobLista(), ativs = NFE_ATIVIDADES.filter(a=>NFE.lista.some(r=>!r.dataPagamento && r.atividade===a.chave));
     return `<div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+        ${nfgResumoBaixado()}
         <div><h3 style="margin:0;">💵 Recebimentos aguardando baixa (${pend.length})</h3>
           <div class="hint">Da NF mais antiga para a mais nova. Quando o valor cair na conta, escolha a data e clique em "Dar baixa".</div></div>
         <div class="nfg-cob">
