@@ -2498,6 +2498,19 @@ const MESES_HE = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","n
 const FILTRO_HE = { ano:null, mes:"todos", funcao:"todas" };
 
 window.setFiltroHE = (campo, valor) => { FILTRO_HE[campo] = valor; navigate("horaextra"); };
+// Busca no quadro "Maiores por mês": sem texto mostra os 10 maiores; com texto, qualquer colaborador do ano
+// (as linhas de todos já vêm na tabela, só escondidas — não redesenha a tela nem os gráficos)
+let HE_BUSCA = "";
+window.heBuscarMatriz = (t) => {
+  HE_BUSCA = t; const q = nfSemAcento(t);
+  let n = 0;
+  document.querySelectorAll(".he-matriz tr[data-nome]").forEach(tr=>{
+    const ok = q ? tr.dataset.nome.includes(q) : tr.dataset.top==="1";
+    tr.style.display = ok ? "" : "none"; if(ok) n++;
+  });
+  const st = document.getElementById("he-busca-st");
+  if(st) st.textContent = q ? (n ? `${n} colaborador(es) encontrado(s) — o nº à esquerda é a posição no ranking do ano` : "Nenhum colaborador com esse nome teve HE no ano.") : "";
+};
 
 function heLanc(){ return (DATA.horaExtra && DATA.horaExtra.lancamentos) || []; }
 function heAnos(){ return [...new Set(heLanc().map(r=>r.mes.slice(0,4)))].sort(); }
@@ -2642,7 +2655,8 @@ renderers.horaextra = () => {
   const doAno = st.porFuncao.filter(r=>r.mes.startsWith(ano) && r.total);
   const matriz = {};
   doAno.forEach(r=>{ const m = heMesNum(r); (matriz[r.colaborador] = matriz[r.colaborador] || {})[m] = (matriz[r.colaborador][m]||0) + r.total; });
-  const top10Ano = Object.entries(matriz).map(([nome, ms])=>({ nome, ms, total:sumArr(Object.values(ms)) })).sort((a,b)=>b.total-a.total).slice(0,10);
+  const rankAno = Object.entries(matriz).map(([nome, ms])=>({ nome, ms, total:sumArr(Object.values(ms)) })).sort((a,b)=>b.total-a.total);
+  const nMesesAno = st.mesesComDado.length || 1;
   const maxMes = {};
   st.mesesComDado.forEach(m=>{ maxMes[m] = Math.max(...Object.values(matriz).map(ms=>ms[m]||0)); });
   const liderMes = st.mesesComDado.map(m=>{
@@ -2716,16 +2730,19 @@ renderers.horaextra = () => {
 
     <div class="panel" style="margin:16px 0;">
       <h3>Maiores por mês em ${ano} (R$)</h3>
-      <div class="hint">Os 10 colaboradores com mais HE no ano. Em vermelho, o maior valor de cada mês; a seta compara com o mês anterior do próprio colaborador.</div>
+      <div class="hint">Os 10 colaboradores com mais HE no ano. Em vermelho, o maior valor de cada mês; a seta compara com o mês anterior do próprio colaborador. Média/mês = total do ano ÷ ${nMesesAno} mês(es) com dados.</div>
+      <div class="filtro-bar" style="margin:10px 0 6px;"><input id="he-busca" value="${osEsc(HE_BUSCA)}" placeholder="🔎 Pesquisar colaborador pelo nome" oninput="heBuscarMatriz(this.value)" style="min-width:260px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-family:inherit;">
+        <span id="he-busca-st" class="hint" style="margin:0;"></span></div>
       <div style="overflow-x:auto;">
       <table class="he-matriz">
-        <thead><tr><th>#</th><th>Colaborador</th>${st.mesesComDado.map(m=>`<th class="num">${MESES_HE[m-1]}</th>`).join("")}<th class="num">Total</th></tr></thead>
+        <thead><tr><th>#</th><th>Colaborador</th>${st.mesesComDado.map(m=>`<th class="num">${MESES_HE[m-1]}</th>`).join("")}<th class="num">Total</th><th class="num">Média/mês</th></tr></thead>
         <tbody>
-          <tr class="he-lider-row"><td></td><td><b>Maior do mês</b></td>${liderMes}<td></td></tr>
-          ${top10Ano.map((t,i)=>`<tr><td class="rank">${i+1}</td><td><b>${t.nome}</b><div class="hint" style="margin:0;">${st.funcaoDe[t.nome]||""}</div></td>
+          <tr class="he-lider-row"><td></td><td><b>Maior do mês</b></td>${liderMes}<td></td><td></td></tr>
+          ${rankAno.map((t,i)=>`<tr data-nome="${osEsc(nfSemAcento(t.nome))}" data-top="${i<10?1:0}" ${i<10?"":'style="display:none;"'}><td class="rank">${i+1}</td><td><b>${t.nome}</b><div class="hint" style="margin:0;">${st.funcaoDe[t.nome]||""}</div></td>
             ${st.mesesComDado.map((m,j)=>{ const v = t.ms[m]||0, vAnt = j>0 ? (t.ms[st.mesesComDado[j-1]]||0) : 0;
               return `<td class="num ${v && v===maxMes[m]?"he-max":""}">${v ? fmtBRL(v) : "—"} ${j>0?heSetaMini(v, vAnt):""}</td>`; }).join("")}
-            <td class="num"><b>${fmtBRL(t.total)}</b></td></tr>`).join("")}
+            <td class="num"><b>${fmtBRL(t.total)}</b></td>
+            <td class="num"><b>${fmtBRL(t.total/nMesesAno)}</b><div class="hint" style="margin:0;">HE em ${Object.values(t.ms).filter(v=>v).length} de ${nMesesAno} meses</div></td></tr>`).join("")}
         </tbody>
       </table>
       </div>
@@ -2756,6 +2773,7 @@ renderers.horaextra = () => {
 };
 
 initCharts.horaextra = () => {
+  if(HE_BUSCA) heBuscarMatriz(HE_BUSCA);   // mantém a pesquisa ao trocar o filtro
   if(!heLanc().length) return;
   const st = heStats(), { ano, anoAnt } = st;
   const mensal = heAgrupar(st.porFuncao, r=>r.mes);
