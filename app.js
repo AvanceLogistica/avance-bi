@@ -8659,7 +8659,9 @@ window.nfeBaixar = async (id, inputId) => {
   if(sb){ const { error } = await sb.from("nf_emitidas").update({ data_pagamento:data, atualizado_por:MEU_EMAIL, atualizado_em:new Date().toISOString() }).eq("id", id);
     if(error){ toast(/data_pagamento/i.test(error.message) ? "⚠ Falta rodar o SQL da baixa de pagamento no Supabase." : /diretoria/i.test(error.message) ? "⚠ A baixa do recebimento é feita pela Diretoria." : "⚠ Não salvou: " + error.message); return; } }
   r.dataPagamento = data; nfeSalvarLocal();
-  toast(`NF ${r.nf} baixada como paga em ${fmtDataBR(data)} · lead time ${nfeDias(r.dataEmissao, data)} dias ✓`); nfeRerender();
+  toast(`NF ${r.nf} baixada como paga em ${fmtDataBR(data)} · lead time ${nfeDias(r.dataEmissao, data)} dias ✓`);
+  const consultando = !!NFG_BUSCA_NF.trim(); if(consultando) NFG_BUSCA_NF = "";   // limpa a consulta para já digitar a próxima NF
+  nfeRerender(); if(consultando) document.getElementById("nfg-busca-nf")?.focus();
 };
 window.nfeEstornar = async (id) => {
   if(!nfePodeBaixar()){ toast("Somente a Diretoria pode desfazer a baixa."); return; }
@@ -9175,6 +9177,17 @@ function nfgPagina(){
    usa o compartilhamento do aparelho/Windows (escolhe o WhatsApp e o PDF vai anexado); onde o
    navegador não permite anexar, baixa o PDF e abre o WhatsApp com o resumo para anexar o arquivo. */
 let NFG_COB_ATIV = "todas";
+// Consulta de NF na lista de recebimentos: esconde as linhas que não batem, sem redesenhar a tela
+// (o texto fica guardado e vale de novo depois de dar baixa, quando a lista é redesenhada)
+let NFG_BUSCA_NF = "";
+const nfgBateNF = (busca) => { const q = nfSemAcento(NFG_BUSCA_NF); return !q || busca.includes(q); };
+window.nfgBuscarNF = (t) => {
+  NFG_BUSCA_NF = t; let n = 0, tot = 0;
+  document.querySelectorAll("#nfg-receber tr[data-busca]").forEach(tr=>{ const ok = nfgBateNF(tr.dataset.busca); tr.style.display = ok ? "" : "none"; if(ok){ n++; tot += Number(tr.dataset.valor)||0; } });
+  const st = document.getElementById("nfg-busca-st");
+  if(st) st.innerHTML = NFG_BUSCA_NF.trim() ? (n ? `${n} NF(s) encontrada(s) · ${fmtBRL2(tot)}` : `<span style="color:var(--red);">Nenhuma NF em aberto com esse número — confira se já não teve baixa.</span>`) : "";
+  const ft = document.getElementById("nfg-receber-tot"); if(ft) ft.innerHTML = `<td colspan="3">Total (${n})</td><td class="num">${fmtBRL2(tot)}</td><td colspan="2"></td>`;
+};
 window.nfgCobAtiv = (v) => { NFG_COB_ATIV = v; nfeRerender(); };
 function nfgCobLista(){ return NFE.lista.filter(r=>!r.dataPagamento && (NFG_COB_ATIV==="todas" || r.atividade===NFG_COB_ATIV)).sort((a,b)=>(a.dataEmissao||"").localeCompare(b.dataEmissao||"") || (a.nf||"").localeCompare(b.nf||"")); }
 let NFG_PDF_LIB = null;
@@ -9284,13 +9297,14 @@ function nfgDetalhe(linhas){
   const e = NFG_SEL ? NFG_ETAPAS.find(x=>x.k===NFG_SEL.etapa) : null;
   const x = L && e ? L.it[e.k] : null;
   const voltar = `<button class="os-btn sm" onclick="nfgSel(null)">← Ver recebimentos para dar baixa</button>`;
-  const tabNF = (ls, pagas) => ls.length ? `<div style="overflow-x:auto;"><table class="nf-tab">
+  const tabNF = (ls, pagas, id) => ls.length ? `<div style="overflow-x:auto;"><table class="nf-tab" ${id ? `id="${id}"` : ""}>
       <thead><tr><th>Operação</th><th>Período / Balsa</th><th>NF</th><th class="num">Valor</th><th>Emissão</th><th>${pagas ? "Recebimento" : "Baixa do recebimento"}</th></tr></thead>
-      <tbody>${ls.map(r=>`<tr><td><span class="nfe-dot" style="--c:${nfeAtiv(r.atividade).cor};"></span>${osEsc(nfeRotulo(r))}</td>
+      <tbody>${ls.map(r=>{ const busca = nfSemAcento(`NF ${r.nf} ${nfeBalsaDe(r)||""} ${r.numero||""} ${nfeRotulo(r)}`), ok = !id || nfgBateNF(busca);
+        return `<tr ${id ? `data-busca="${osEsc(busca)}" data-valor="${Number(r.valor)||0}"` : ""} ${ok ? "" : 'style="display:none;"'}><td><span class="nfe-dot" style="--c:${nfeAtiv(r.atividade).cor};"></span>${osEsc(nfeRotulo(r))}</td>
         <td style="font-size:12px;">${nfeBalsaDe(r) ? `🚢 ${osEsc(nfeBalsaDe(r))}${r.numero ? " – " + osEsc(r.numero) : ""}<br>` : ""}${osEsc(nfePeriodoNF(r))}</td>
         <td><b>${osEsc(r.nf)}</b></td><td class="num"><b>${fmtBRL2(r.valor)}</b></td><td>${fmtDataBR(r.dataEmissao)}</td>
-        <td style="white-space:nowrap;">${r.dataPagamento ? `<span class="badge green">✓ recebido ${fmtDataBR(r.dataPagamento)}</span> <span class="hint" style="margin:0;">${nfeDias(r.dataEmissao, r.dataPagamento)} dias</span>${nfePodeBaixar() ? ` <button class="os-link" onclick="nfeEstornar('${r.id}')">desfazer</button>` : ""}` : nfeBaixaHTML(r)}</td></tr>`).join("")}</tbody>
-      <tfoot><tr style="font-weight:800; background:var(--paper);"><td colspan="3">Total (${ls.length})</td><td class="num">${fmtBRL2(sumArr(ls.map(r=>r.valor)))}</td><td colspan="2"></td></tr></tfoot>
+        <td style="white-space:nowrap;">${r.dataPagamento ? `<span class="badge green">✓ recebido ${fmtDataBR(r.dataPagamento)}</span> <span class="hint" style="margin:0;">${nfeDias(r.dataEmissao, r.dataPagamento)} dias</span>${nfePodeBaixar() ? ` <button class="os-link" onclick="nfeEstornar('${r.id}')">desfazer</button>` : ""}` : nfeBaixaHTML(r)}</td></tr>`; }).join("")}</tbody>
+      <tfoot><tr ${id ? `id="${id}-tot"` : ""} style="font-weight:800; background:var(--paper);"><td colspan="3">Total (${ls.length})</td><td class="num">${fmtBRL2(sumArr(ls.map(r=>r.valor)))}</td><td colspan="2"></td></tr></tfoot>
     </table></div>` : `<div class="empty-state" style="padding:16px;"><p>Nada nesta etapa.</p></div>`;
 
   if(NFG_SEL && NFG_SEL.etapa==="emitidas"){
@@ -9299,16 +9313,18 @@ function nfgDetalhe(linhas){
   }
   if(!x){
     nfgCarregarPDF().catch(()=>{});   // deixa a biblioteca do PDF pronta para o clique
+    if(NFG_BUSCA_NF.trim()) setTimeout(()=>nfgBuscarNF(NFG_BUSCA_NF), 0);   // reaplica a consulta (contagem e total) depois de redesenhar
     const pend = nfgCobLista(), ativs = NFE_ATIVIDADES.filter(a=>NFE.lista.some(r=>!r.dataPagamento && r.atividade===a.chave));
     return `<div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap;">
         <div><h3 style="margin:0;">💵 Recebimentos aguardando baixa (${pend.length})</h3>
           <div class="hint">Da NF mais antiga para a mais nova. Quando o valor cair na conta, escolha a data e clique em "Dar baixa".</div></div>
         <div class="nfg-cob">
+          <label>Consultar NF<input id="nfg-busca-nf" value="${osEsc(NFG_BUSCA_NF)}" placeholder="🔎 nº da NF ou balsa" oninput="nfgBuscarNF(this.value)" style="width:170px;"></label>
           <label>Operação<select onchange="nfgCobAtiv(this.value)"><option value="todas">Todas as operações</option>${ativs.map(a=>`<option value="${a.chave}" ${NFG_COB_ATIV===a.chave?"selected":""}>${a.label}</option>`).join("")}</select></label>
           <button class="os-btn" onclick="nfgCobBaixar()">📄 Baixar PDF</button>
           <button class="os-btn green" onclick="nfgCobWhatsApp()">📲 Enviar no WhatsApp</button>
         </div>
-      </div>${tabNF(pend, false)}`;
+      </div><div id="nfg-busca-st" class="hint" style="margin:6px 0 0; font-weight:700;"></div>${tabNF(pend, false, "nfg-receber")}`;
   }
   const tit = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;"><h3 style="margin:0;"><span class="nfe-dot" style="--c:${e.cor};"></span>${L.a.label} — ${e.label}</h3>${voltar}</div>`;
   if(x.ciclos) return tit + manTabela(x.ciclos);
