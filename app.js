@@ -10417,7 +10417,16 @@ window.oseAtualizarPrecos = () => {
   toast(n ? `${n} preço(s) atualizado(s) pela tabela ✓` : "Os preços já estão iguais à tabela."); oseRedesenhar();
 };
 
+// Trava contra clique duplo: enquanto grava, os botões do editor ficam desligados e um 2º clique é ignorado
+// (dois cliques seguidos em "Validar e gerar a O.S" criavam duas O.S com o mesmo número)
+let OSE_SALVANDO = false;
 window.oseSalvar = async (emitir) => {
+  if(OSE_SALVANDO) return;
+  OSE_SALVANDO = true;
+  const botoes = [...document.querySelectorAll("#ose-form button")]; botoes.forEach(b=>b.disabled = true);
+  try{ await oseSalvarAgora(emitir); } finally { OSE_SALVANDO = false; botoes.forEach(b=>b.disabled = false); }
+};
+async function oseSalvarAgora(emitir){
   const e = OSE_EDIT; if(!e) return;
   const g = (id) => document.getElementById(id);
   ["frota","placa","entrada","entradaHora","saida","saidaHora","obs","referencia"].forEach(k=>{ if(g(`ose-${k}`)) e[k] = g(`ose-${k}`).value; });
@@ -10441,9 +10450,17 @@ window.oseSalvar = async (emitir) => {
     ...(ehOS ? { pre_id:e.preId||null, referencia:(e.referencia||"").trim()||null } : { data_plano:e.dataPlano||e.entrada }),
     ...(emitir && e.status!=="emitida" ? { emitida_em:agora, emitida_por:MEU_EMAIL } : {}) };
   let id = e.id;
+  if(sb && emitir && !id){
+    // confere no banco (outra pessoa pode ter gerado agora): mesmo número ou mesma Pré O.S já virou O.S
+    let q = sb.from("manutencao_os").select("numero").eq("status", "emitida");
+    q = e.preId ? q.or(`numero.eq.${e.numero},pre_id.eq.${e.preId}`) : q.eq("numero", e.numero);
+    const ja = await q.limit(1);
+    if(!ja.error && ja.data.length){ toast(`⚠ Já existe a O.S nº ${oseNum(ja.data[0].numero)} ${Number(ja.data[0].numero)===e.numero ? "com este número" : "gerada desta Pré O.S"} — atualize a tela (F5).`); return; }
+  }
   if(sb){
     const r = id ? await sb.from("manutencao_os").update(reg).eq("id", id).select("id").single()
                  : await sb.from("manutencao_os").insert({ ...reg, criado_por:MEU_EMAIL }).select("id").single();
+    if(r.error && /duplicate|unique/i.test(r.error.message)){ toast(`⚠ Já existe uma O.S com o nº ${oseNum(e.numero)} ou desta Pré O.S — atualize a tela (F5).`); return; }
     if(r.error){ toast(/status|fila_id|pre_id|data_plano|referencia|valor|emitida|numero|lider/i.test(r.error.message) ? "⚠ Falta rodar o SQL da Emissão de O.S no Supabase." : "⚠ Não salvou: " + r.error.message); return; }
     id = r.data.id;
     if(emitir && e.preId){
@@ -10462,7 +10479,7 @@ window.oseSalvar = async (emitir) => {
   toast(emitir && e.status!=="emitida" ? `O.S ${oseNum(local.numero)} emitida ✓${e.preId ? " — Pré O.S validada" : ""}` : ehOS ? "O.S atualizada ✓" : status==="pre" ? "Pré O.S atualizada ✓" : "Pré O.S lançada no plano do dia ✓ — o líder valida no fim do dia");
   if(ehOS) await oseSincronizarCiclo(local.saida || local.entrada);
   oseRedesenhar();
-};
+}
 // Líder da operação: valida cada Pré O.S individualmente (nominal) → ela vai para a administração
 window.oseLiderValidar = async (id) => {
   const o = OSE.lista.find(x=>x.id===id); if(!o || o.status!=="plano") return;
