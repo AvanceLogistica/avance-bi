@@ -419,6 +419,10 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .og-fundo{ position:fixed; inset:0; background:rgba(23,24,28,.45); display:none; z-index:50; } .og-fundo.aberta{ display:block; }
 .og-ficha{ position:fixed; top:0; right:0; bottom:0; width:min(420px,100%); background:var(--card); z-index:51; transform:translateX(100%); transition:transform .2s; overflow-y:auto; box-shadow:-10px 0 30px rgba(0,0,0,.2); }
 .og-ficha.aberta{ transform:none; }
+.qp-grid{ display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:0 12px; align-items:end; }
+.qp-grid input{ width:100%; box-sizing:border-box; }
+.qp-tot{ display:flex; flex-direction:column; gap:4px; padding-bottom:6px; } .qp-tot span{ font-size:11.5px; font-weight:600; color:var(--ink-soft); } .qp-tot b{ font-size:22px; }
+@media (max-width:760px){ .qp-grid{ grid-template-columns:repeat(2, minmax(0,1fr)); } }
 .rh-topo{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
 .rh-pct{ font-size:12px; color:var(--ink-soft); min-width:130px; } .rh-pct b{ font-size:18px; color:var(--ink); }
 .rh-barra{ height:7px; background:var(--paper); border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-top:4px; } .rh-barra i{ display:block; height:100%; }
@@ -852,6 +856,7 @@ body.pending #pendingScreen{display:flex;}
     <button data-page="acidentes"><span class="ic">⚠️</span> Acidentes &amp; Incidentes</button>
 
     <div class="grp-label">Pessoas</div>
+    <button data-page="quadro"><span class="ic">👥</span> Quadro de Pessoal</button>
     <button data-page="folha"><span class="ic">💰</span> Folha (Benefícios+Salário)</button>
     <button data-page="horaextra"><span class="ic">⏱️</span> Hora Extra</button>
     <button data-page="atestados"><span class="ic">🩺</span> Atestados</button>
@@ -899,7 +904,7 @@ body.pending #pendingScreen{display:flex;}
   <main class="content" id="content"></main>
 </div>
 
-<script src="data.js?v=20261111a"></script>
-<script src="app.js?v=20261111a"></script>
+<script src="data.js?v=20261111b"></script>
+<script src="app.js?v=20261111b"></script>
 </body>
 </html>

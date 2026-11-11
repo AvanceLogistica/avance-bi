@@ -440,7 +440,7 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","custos","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","rh","acessos","gerencial"];
+const pages = ["overview","custos","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","rh","quadro","acessos","gerencial"];
 const PAGINAS_SO_DIRETOR = ["custos","gerencial","faturamento","emissaonf","contaspagar","belem","ordens","organograma","rh","acessos"];
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
@@ -457,6 +457,7 @@ const titles = {
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
   organograma: ["Organograma","Colaboradores por local, função e liderança"],
+  quadro: ["Quadro de Pessoal","Quantidade de pessoas por mês e por vínculo"],
   rh: ["Recursos Humanos","Ficha cadastral de cada funcionário — preenchimento pelo RH"],
   gerencial: ["Painel Gerencial","Todas as operações e o status de cada uma — da operação ao recebimento da NF"],
   emissaonf: ["Emissão de NF","Lançamento das notas por contrato, serviço ou balsa, minuta e vencimento"],
@@ -9922,6 +9923,175 @@ renderers.organograma = () => {
     <aside class="og-ficha" id="og-ficha"></aside>`;
 };
 initCharts.organograma = () => { orgDepoisDeDesenhar(); if(ORG_FICHA) orgDesenharFicha(); };
+
+/* -------------------- QUADRO DE PESSOAL (quantidade de pessoas por mês e por vínculo) --------------------
+   Uma linha por mês na tabela quadro_pessoal (CLT, CNPJ, Contrato, Diarista). Carga pela planilha
+   "Quantidade de Funcionário" (linha de cabeçalho com CLT/CNPJ/CONTRATO/DIARISTA e o mês numa coluna de data)
+   ou lançamento mês a mês na própria tela. Importar atualiza só os meses que vêm preenchidos na planilha. */
+const QP_TIPOS = [
+  { k:"clt",      nome:"CLT",      cor:"#D0021B" },
+  { k:"cnpj",     nome:"CNPJ",     cor:"#17181C" },
+  { k:"contrato", nome:"Contrato", cor:"#E1971F" },
+  { k:"diarista", nome:"Diarista", cor:"#2E6DB0" },
+];
+const QP_LOCAL = "avance_quadro_pessoal_v1";
+let QP = { lista:{}, carregado:false, carregando:false, erro:null };
+let QP_ANO = null, QP_EDIT = null;
+
+const qpTotal = (r) => r ? sumArr(QP_TIPOS.map(t=>Number(r[t.k])||0)) : 0;
+const qpLabel = (m) => `${MESES_HE[Number(m.slice(5,7))-1]}/${m.slice(2,4)}`;
+function qpAnos(){ const a = [...new Set(Object.keys(QP.lista).map(m=>m.slice(0,4)))].sort(); return a.length ? a : [frotaHojeISO().slice(0,4)]; }
+
+async function qpCarregar(){
+  QP.carregando = true;
+  if(!sb){ try{ QP.lista = JSON.parse(localStorage.getItem(QP_LOCAL)||"{}"); }catch(e){ QP.lista = {}; } }
+  else {
+    const { data, error } = await sb.from("quadro_pessoal").select("*");
+    if(error){ QP.erro = error.message; QP.carregando = false; QP.carregado = true; qpRerender(); return; }
+    QP.erro = null; QP.lista = {};
+    data.forEach(r=>{ QP.lista[r.mes] = { clt:r.clt||0, cnpj:r.cnpj||0, contrato:r.contrato||0, diarista:r.diarista||0, por:(r.atualizado_por||"").split("@")[0], em:r.atualizado_em }; });
+  }
+  QP.carregando = false; QP.carregado = true; qpRerender();
+}
+function qpRerender(){ if(document.querySelector('nav.menu button.active')?.dataset.page === "quadro") navigate("quadro"); }
+// grava vários meses de uma vez ({ "2026-01": {clt,...}, ... })
+async function qpGravar(meses){
+  const linhas = Object.entries(meses).map(([mes, r])=>({ mes, clt:Number(r.clt)||0, cnpj:Number(r.cnpj)||0, contrato:Number(r.contrato)||0, diarista:Number(r.diarista)||0,
+    atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() }));
+  if(sb && linhas.length){ const { error } = await sb.from("quadro_pessoal").upsert(linhas); if(error){ toast(/quadro_pessoal/i.test(error.message) ? "⚠ Falta rodar o SQL do Quadro de Pessoal no Supabase." : "⚠ Não salvou: " + error.message); return false; } }
+  linhas.forEach(l=>{ QP.lista[l.mes] = { clt:l.clt, cnpj:l.cnpj, contrato:l.contrato, diarista:l.diarista, por:(MEU_EMAIL||"").split("@")[0], em:l.atualizado_em }; });
+  if(!sb) try{ localStorage.setItem(QP_LOCAL, JSON.stringify(QP.lista)); }catch(e){}
+  return true;
+}
+
+window.qpSetAno = (a) => { QP_ANO = a; navigate("quadro"); };
+window.qpEditar = (m) => { QP_EDIT = m; navigate("quadro"); document.getElementById("qp-form")?.scrollIntoView({ behavior:"smooth", block:"center" }); };
+window.qpSomar = () => { const t = sumArr(QP_TIPOS.map(x=>Number(document.getElementById("qp-"+x.k)?.value)||0)); const el = document.getElementById("qp-total"); if(el) el.textContent = t; };
+window.qpSalvar = async () => {
+  const mes = document.getElementById("qp-mes")?.value;
+  if(!mes){ toast("Escolha o mês."); return; }
+  const r = {}; QP_TIPOS.forEach(t=>{ r[t.k] = Math.max(0, parseInt(document.getElementById("qp-"+t.k)?.value, 10) || 0); });
+  if(!qpTotal(r)){ toast("Informe a quantidade de pessoas."); return; }
+  if(QP.lista[mes] && QP_EDIT !== mes && !confirm(`${qpLabel(mes)} já tem lançamento (${qpTotal(QP.lista[mes])} pessoas). Substituir?`)) return;
+  if(await qpGravar({ [mes]:r })){ toast(`✓ ${qpLabel(mes)} salvo — ${qpTotal(r)} pessoas`); QP_EDIT = null; QP_ANO = mes.slice(0,4); navigate("quadro"); }
+};
+window.qpExcluir = async (m) => {
+  if(!confirm(`Excluir o lançamento de ${qpLabel(m)}?`)) return;
+  if(sb){ const { error } = await sb.from("quadro_pessoal").delete().eq("mes", m); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  delete QP.lista[m]; if(!sb) try{ localStorage.setItem(QP_LOCAL, JSON.stringify(QP.lista)); }catch(e){}
+  if(QP_EDIT === m) QP_EDIT = null; navigate("quadro");
+};
+// Planilha: acha a linha com CLT/CNPJ/CONTRATO/DIARISTA; em cada linha abaixo, o mês é a primeira célula que for data
+window.qpImportar = async () => {
+  const file = document.getElementById("qp-arquivo")?.files[0], st = document.getElementById("qp-import-st");
+  if(!file){ st.textContent = "⚠ Escolha o arquivo primeiro."; return; }
+  if(typeof XLSX === "undefined"){ st.textContent = "⚠ Biblioteca de planilhas não carregada."; return; }
+  try{
+    const wb = XLSX.read(await file.arrayBuffer(), { type:"array", cellDates:true }), meses = {};
+    for(const nome of wb.SheetNames){
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[nome], { header:1, defval:null });
+      const iCab = rows.findIndex(r=>r && r.some(c=>nfSemAcento(c)==="CLT") && r.some(c=>nfSemAcento(c)==="DIARISTA"));
+      if(iCab < 0) continue;
+      const col = {}; rows[iCab].forEach((c,j)=>{ const t = QP_TIPOS.find(x=>nfSemAcento(c)===nfSemAcento(x.nome)); if(t) col[t.k] = j; });
+      rows.slice(iCab+1).forEach(r=>{
+        if(!r) return;
+        const d = r.find(c=>c instanceof Date) || (()=>{ const t = r.find(c=>typeof c==="string" && /^\d{1,2}\/\d{4}$|^\d{4}-\d{2}/.test(c.trim())); if(!t) return null; const m = t.trim().match(/^(\d{1,2})\/(\d{4})$/); return m ? new Date(+m[2], +m[1]-1, 15) : new Date(t.trim().slice(0,7) + "-15"); })();
+        if(!d || isNaN(d)) return;
+        // datas do Excel chegam à meia-noite UTC: soma 12h para não cair no mês anterior
+        const dd = new Date(d.getTime() + 12*3600e3), mes = `${dd.getFullYear()}-${String(dd.getMonth()+1).padStart(2,"0")}`;
+        const v = {}; let tem = false; QP_TIPOS.forEach(t=>{ const x = col[t.k]!=null ? r[col[t.k]] : null; if(x!=null && x!=="") tem = true; v[t.k] = Math.max(0, Math.round(Number(x)||0)); });
+        if(tem && qpTotal(v)) meses[mes] = v;
+      });
+      if(Object.keys(meses).length) break;
+    }
+    const ks = Object.keys(meses).sort();
+    if(!ks.length){ st.textContent = "⚠ Não encontrei a linha com CLT, CNPJ, CONTRATO e DIARISTA, ou os meses estão vazios."; return; }
+    st.textContent = `Gravando ${ks.length} mês(es)...`;
+    if(await qpGravar(meses)){ toast(`✓ ${ks.length} mês(es) importados: ${qpLabel(ks[0])} a ${qpLabel(ks[ks.length-1])}`); QP_ANO = ks[ks.length-1].slice(0,4); navigate("quadro"); }
+    else st.textContent = "⚠ Não gravou — veja o aviso acima.";
+  }catch(e){ st.textContent = "⚠ Erro ao ler a planilha: " + (e.message||e); }
+};
+
+renderers.quadro = () => {
+  if(!QP.carregado && !QP.carregando){ QP.carregando = true; setTimeout(()=>qpCarregar(), 0); }
+  const cab = `<div class="page-head"><h2>Quadro de Pessoal</h2><p>Quantidade de pessoas na Avance por mês — CLT, CNPJ, Contrato e Diarista</p></div>`;
+  if(QP.erro) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar o quadro</h4><p>${osEsc(QP.erro)}</p><p>Se falar em tabela inexistente ("quadro_pessoal"), rode o SQL do Quadro de Pessoal no Supabase.</p></div></div>`;
+  if(!QP.carregado) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando...</p></div></div>`;
+  const anos = qpAnos(); if(!QP_ANO || !anos.includes(QP_ANO)) QP_ANO = anos[anos.length-1];
+  const doAno = Object.keys(QP.lista).filter(m=>m.startsWith(QP_ANO)).sort();
+  const ult = doAno[doAno.length-1], ant = doAno[doAno.length-2], rU = QP.lista[ult], rA = QP.lista[ant];
+  const tU = qpTotal(rU), tA = qpTotal(rA), media = doAno.length ? sumArr(doAno.map(m=>qpTotal(QP.lista[m])))/doAno.length : 0;
+  const ini = QP.lista[doAno[0]], var12 = ini && doAno.length > 1 ? tU - qpTotal(ini) : null;
+  const seta = (d, ref) => `<div class="delta flat">${d==null || !ref ? "—" : `${d>0?"▲ +":d<0?"▼ ":""}${d} ${ref}`}</div>`;
+  const editar = QP_EDIT ? QP.lista[QP_EDIT] : null;
+  const proxMes = (() => { if(!ult) return frotaHojeISO().slice(0,7); const [a,m] = ult.split("-").map(Number); return m===12 ? `${a+1}-01` : `${a}-${String(m+1).padStart(2,"0")}`; })();
+  const mesForm = QP_EDIT || proxMes, vForm = editar || {};
+  return cab + `
+    <div class="panel" style="margin-bottom:16px;"><div class="filtro-bar">
+      <label>Ano<select onchange="qpSetAno(this.value)">${anos.map(a=>`<option ${a===QP_ANO?"selected":""}>${a}</option>`).join("")}</select></label>
+    </div></div>
+    ${!doAno.length ? `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">👥</div><p>Nenhum mês lançado em ${QP_ANO}. Importe a planilha ou lance abaixo.</p></div></div>` : `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">👥 Quadro em ${qpLabel(ult)}</div><div class="val">${tU}</div>${seta(ant ? tU - tA : null, ant ? `vs ${qpLabel(ant)}` : "")}</div>
+      ${QP_TIPOS.map(t=>`<div class="kpi"><div class="lbl"><span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:${t.cor}; margin-right:5px;"></span>${t.nome}</div><div class="val">${rU[t.k]||0}</div><div class="delta flat">${tU ? Math.round((rU[t.k]||0)/tU*100) : 0}% do quadro${rA ? ` · ${(rU[t.k]||0)-(rA[t.k]||0)>=0?"+":""}${(rU[t.k]||0)-(rA[t.k]||0)} no mês` : ""}</div></div>`).join("")}
+      <div class="kpi"><div class="lbl">📊 Média do ano</div><div class="val">${media.toFixed(0)}</div>${seta(var12, doAno.length>1 ? `desde ${qpLabel(doAno[0])}` : "")}</div>
+    </div>
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>Pessoas no quadro por mês — ${QP_ANO}</h3>
+      <div class="hint">Colunas empilhadas por tipo de vínculo; o número em cima de cada coluna é o total do mês</div>
+      <div class="chart-wrap" style="height:420px;"><canvas id="ch-qp-mensal"></canvas></div>
+    </div>`}
+    <div class="panel" id="qp-form" style="margin-bottom:16px;">
+      <h3>${QP_EDIT ? `✏️ Editar ${qpLabel(QP_EDIT)}` : "➕ Lançar mês"}</h3>
+      <div class="hint">Informe quantas pessoas havia no quadro em cada vínculo. Se o mês já existir, o lançamento é substituído.</div>
+      <div class="qp-grid os-form">
+        <label>Mês<input type="month" id="qp-mes" value="${mesForm}" ${QP_EDIT ? "disabled" : ""}></label>
+        ${QP_TIPOS.map(t=>`<label>${t.nome}<input type="number" min="0" step="1" id="qp-${t.k}" value="${vForm[t.k] ?? ""}" placeholder="0" oninput="qpSomar()"></label>`).join("")}
+        <div class="qp-tot"><span>Total</span><b id="qp-total">${qpTotal(vForm)}</b></div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button class="entry-submit" style="margin:0;" onclick="qpSalvar()">💾 Salvar mês</button>
+        ${QP_EDIT ? `<button class="os-btn" onclick="QP_EDIT=null; navigate('quadro')">Cancelar</button>` : ""}
+      </div>
+      <details style="margin-top:16px;"><summary style="cursor:pointer; font-weight:700;">📤 Importar planilha (.xlsx)</summary>
+        <div class="hint" style="margin:8px 0;">Planilha <b>"Quantidade de Funcionário"</b>: uma linha por mês, com as colunas <b>CLT, CNPJ, CONTRATO e DIARISTA</b>. Os meses que vierem preenchidos são gravados (substituem o que já existir); meses em branco são ignorados.</div>
+        <input type="file" id="qp-arquivo" accept=".xlsx,.xls" style="font-size:12.5px;"> <button class="entry-submit" style="margin:0 0 0 6px;" onclick="qpImportar()">Importar</button>
+        <div id="qp-import-st" class="hint" style="margin-top:8px;"></div>
+      </details>
+    </div>
+    ${doAno.length ? `<div class="panel"><h3>Lançamentos de ${QP_ANO}</h3><div style="overflow-x:auto;"><table class="nf-tab">
+      <thead><tr><th>Mês</th>${QP_TIPOS.map(t=>`<th class="num">${t.nome}</th>`).join("")}<th class="num">Total</th><th class="num">Variação</th><th>Atualizado</th><th></th></tr></thead>
+      <tbody>${doAno.map((m,i)=>{ const r = QP.lista[m], t = qpTotal(r), d = i ? t - qpTotal(QP.lista[doAno[i-1]]) : null;
+        return `<tr><td><b>${qpLabel(m)}</b></td>${QP_TIPOS.map(x=>`<td class="num">${r[x.k]||0}</td>`).join("")}<td class="num"><b>${t}</b></td>
+          <td class="num">${d==null ? "—" : `${d>0?"▲ +":d<0?"▼ ":""}${d}`}</td><td class="hint" style="margin:0;">${osEsc(r.por||"")}${r.em ? " · " + fmtDataBR(String(r.em).slice(0,10)) : ""}</td>
+          <td style="white-space:nowrap;"><button class="os-btn sm" onclick="qpEditar('${m}')">✏️ Editar</button> <button class="os-link" onclick="qpExcluir('${m}')">excluir</button></td></tr>`; }).join("")}</tbody>
+    </table></div></div>` : ""}`;
+};
+// o número cabe dentro da faixa? (altura em pixels da faixa do gráfico)
+function qpCabe(c){ const el = c.chart.getDatasetMeta(c.datasetIndex).data[c.dataIndex]; if(!el) return false; const { y, base } = el.getProps(["y","base"], true); return Math.abs(base - y) >= 15; }
+initCharts.quadro = () => {
+  const doAno = Object.keys(QP.lista).filter(m=>m.startsWith(QP_ANO)).sort();
+  if(!doAno.length) return;
+  // todos os meses do ano no eixo; os sem lançamento ficam vazios
+  const ks = Array.from({ length:12 }, (_,i)=>`${QP_ANO}-${String(i+1).padStart(2,"0")}`);
+  const eixo = ks;
+  const datasets = QP_TIPOS.map(t=>({ label:t.nome, stack:"q", backgroundColor:t.cor, borderRadius:3, maxBarThickness:46,
+    data:eixo.map(m=>QP.lista[m] ? (QP.lista[m][t.k]||0) : null),
+    // faixa grossa: número dentro (branco); faixa fina: ao lado da coluna, na cor do vínculo — CNPJ à esquerda,
+    // Contrato à direita, Diarista à esquerda (bem acima do CNPJ), para nenhum número encavalar no outro
+    datalabels:{ display:(c)=>(c.dataset.data[c.dataIndex]||0) > 0,
+      align:(c)=>qpCabe(c) ? "center" : (t.k==="contrato" ? "right" : "left"), anchor:"center",
+      offset:(c)=>qpCabe(c) ? 0 : (c.chart.getDatasetMeta(c.datasetIndex).data[c.dataIndex]?.width || 40)/2 + 3,
+      color:(c)=>qpCabe(c) ? "#fff" : t.cor, font:{ size:11, weight:800 }, formatter:(v)=>v } }));
+  // total em cima da coluna (rótulo do último bloco da pilha)
+  datasets.push({ label:"Total", stack:"q", data:eixo.map(m=>QP.lista[m] ? 0.0001 : null), backgroundColor:"transparent",
+    datalabels:{ display:(c)=>!!QP.lista[eixo[c.dataIndex]], anchor:"end", align:"end", offset:2, color:COLORS.ink, font:{ size:13, weight:800 }, formatter:(v,c)=>qpTotal(QP.lista[eixo[c.dataIndex]]) } });
+  mkChart("ch-qp-mensal", { type:"bar", data:{ labels:eixo.map(qpLabel), datasets },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:24 } },
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"circle", filter:(it)=>it.text!=="Total" } },
+        tooltip:{ mode:"index", filter:(it)=>it.dataset.label!=="Total", callbacks:{ label:(it)=>` ${it.dataset.label}: ${it.raw||0}`, footer:(its)=>`Total: ${qpTotal(QP.lista[eixo[its[0].dataIndex]])} pessoas` } } },
+      scales:{ x:{ stacked:true, grid:{ display:false } }, y:{ stacked:true, beginAtZero:true, grid:{ color:COLORS.grid }, ticks:{ precision:0 } } } } });
+};
 
 /* -------------------- RECURSOS HUMANOS (ficha cadastral do funcionário) --------------------
    Uma ficha por colaborador do Organograma, no modelo "Ficha Cadastral do Funcionário" da Avance
