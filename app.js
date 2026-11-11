@@ -445,7 +445,8 @@ const PAGINAS_SO_DIRETOR = ["custos","gerencial","faturamento","emissaonf","cont
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["rh","organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"], patio:["manutencao"] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["rh","organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"], patio:["manutencao"], personalizado:[] };
+// Perfil "personalizado": não tem tela própria — enxerga só as telas extras liberadas para a pessoa (user_paginas_extra)
 // Telas extras liberadas para um usuário específico (tabela user_paginas_extra), somadas às do perfil restrito dele
 let PAGINAS_EXTRA = [];
 // Só a Emissão de O.S: perfil Administrativo ou perfil restrito que recebeu "emissaonf" como tela extra
@@ -495,7 +496,7 @@ function navigate(page){
   // navegador), quem não é Diretor cai de volta no Painel Executivo.
   // Perfis restritos só abrem as telas deles (que podem ser telas da Diretoria, ex: Organograma)
   const restritas = paginasRestritas();
-  if(restritas){ if(!restritas.includes(page)) page = restritas[0]; }
+  if(restritas){ if(!restritas.includes(page)) page = restritas[0] || "overview"; }
   else if(PAGINAS_SO_DIRETOR.includes(page) && MEU_PAPEL !== "diretor" && !PAGINAS_EXTRA.includes(page)) page = "overview";
   document.getElementById("pageTitle").textContent = titles[page][0];
   document.getElementById("pageSub").textContent = titles[page][1];
@@ -5880,6 +5881,11 @@ async function carregarInfracoesDoBanco(){
   const infLanc = await sbFetchAll("infracoes_lancamentos");
   if(infLanc.length){ DATA.infracoes.lancamentos = infLanc.map(r=>({ id:r.id, d:r.data, motorista:r.motorista||"", placa:r.placa||"", turno:r.turno||"", hora:r.hora||"", ocorrencia:r.ocorrencia||"", observacoes:r.observacoes||"" })); deriveInfracoes(); }
 }
+async function carregarHoraExtraDoBanco(){
+  const heLancDb = await sbFetchAll("horaextra_lancamentos");
+  if(heLancDb.length){ DATA.horaExtra.lancamentos = heLancDb.map(r=>({ id:r.id, colaborador:r.colaborador||"", funcao:r.funcao||"", mes:String(r.mes).slice(0,7), total:Number(r.total)||0,
+    he20:Number(r.he20)||0, he50:Number(r.he50)||0, he100:Number(r.he100)||0, dissidio:Number(r.dissidio)||0 })); deriveHoraExtra(); }
+}
 async function carregarFaturamentoDoBanco(){
   const ftLanc = await sbFetchAll("faturamento_lancamentos");
   DATA.faturamento.lancamentos = ftLanc.map(r=>({
@@ -5899,7 +5905,8 @@ async function iniciarPainel(){
   if(MEU_PAPEL === "coordenacao") await carregarFaturamentoDoBanco(); // só os dados da Emissão de NF
   if(paginasRestritas()){   // perfis restritos não carregam nenhum outro dado do sistema
     if(paginasRestritas().includes("infracoes")) await carregarInfracoesDoBanco();
-    navigate(paginasRestritas()[0]); return; }
+    if(paginasRestritas().includes("horaextra")) await carregarHoraExtraDoBanco();
+    navigate(paginasRestritas()[0] || "overview"); return; }
   navigate("overview"); // mostra algo na tela já, com os dados locais/baseline, sem esperar o Supabase
   // loadFromSupabase() é assíncrono e pode demorar (rede lenta no celular, por exemplo). Nesse meio
   // tempo o usuário pode já ter navegado pra outra página, importado uma planilha etc. — navegar de
@@ -12339,6 +12346,7 @@ ${u.papel==="manutencao" ? `<option value="manutencao" selected>Manutenção (te
               <option value="frotaoficina" ${u.papel==="frotaoficina"?"selected":""}>Oficina da frota (só aba Oficina do Status da Frota)</option>
               <option value="oficina" ${u.papel==="oficina"?"selected":""}>Oficina (só Controle de carretas)</option>
               <option value="patio" ${u.papel==="patio"?"selected":""}>Pátio (só o mapa do pátio da Manutenção)</option>
+              <option value="personalizado" ${u.papel==="personalizado"?"selected":""}>Personalizado (só as telas extras liberadas)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
           </td>
