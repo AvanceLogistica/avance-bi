@@ -10075,7 +10075,7 @@ renderers.quadro = () => {
     </table></div></div>` : ""}
     ${anos.length && Object.keys(QP.lista).length ? `<div class="panel" style="margin-top:16px;">
       <h3>Comparativo entre anos — total de pessoas por mês</h3>
-      <div class="hint">Uma linha por ano (${anos.join(" × ")}), com o total do quadro em cada mês</div>
+      <div class="hint">Uma linha por ano (${anos.join(" × ")}), com o total do quadro em cada mês${anos.length > 1 ? ` · entre as linhas: diferença de pessoas e % de crescimento de ${anos[anos.length-1]} sobre ${anos[anos.length-2]}` : ""}</div>
       <div class="chart-wrap" style="height:400px;"><canvas id="ch-qp-anos"></canvas></div>
     </div>` : ""}`;
 };
@@ -10096,7 +10096,33 @@ function qpGraficoAnos(){
       datalabels:{ display:(c)=>c.dataset.data[c.dataIndex]!=null, align:novo ? "top" : "bottom", anchor:"center", offset:6,
         color:"#fff", backgroundColor:cor, borderRadius:6, padding:{ top:3, bottom:3, left:6, right:6 }, font:{ size:11, weight:800 }, formatter:(v)=>v } }; });
   const vals = datasets.flatMap(d=>d.data).filter(v=>v!=null), mn = Math.min(...vals), mx = Math.max(...vals);
-  mkChart("ch-qp-anos", { type:"line", data:{ labels:MESES_HE.map(m=>m), datasets },
+  // entre as duas linhas mais recentes: tracejado ligando os pontos do mês + selo com a diferença e o % de crescimento
+  const qpDifPlugin = { id:"qpDif", afterDatasetsDraw(chart){
+    if(n < 2) return;
+    const iN = n-1, iA = n-2, mN = chart.getDatasetMeta(iN), mA = chart.getDatasetMeta(iA);
+    if(mN.hidden || mA.hidden) return;
+    const ctx = chart.ctx; ctx.save();
+    datasets[iN].data.forEach((vN,k)=>{
+      const vA = datasets[iA].data[k], pN = mN.data[k], pA = mA.data[k];
+      if(vN==null || vA==null || !pN || !pA) return;
+      const d = vN - vA, pct = vA ? d/vA*100 : 0;
+      const cor = d>0 ? "#1E8E3E" : d<0 ? "#D0021B" : "#6B7280";
+      const y1 = Math.min(pN.y, pA.y) + 9, y2 = Math.max(pN.y, pA.y) - 9;
+      ctx.setLineDash([3,3]); ctx.strokeStyle = "rgba(107,114,128,0.45)"; ctx.lineWidth = 1;
+      if(y2 > y1){ ctx.beginPath(); ctx.moveTo(pN.x, y1); ctx.lineTo(pN.x, y2); ctx.stroke(); }
+      ctx.setLineDash([]);
+      const t1 = `${d>0?"▲ +":d<0?"▼ ":""}${d}`, t2 = `${pct>0?"+":""}${pct.toFixed(0)}%`;
+      ctx.font = "800 11px system-ui, sans-serif"; const w1 = ctx.measureText(t1).width;
+      ctx.font = "700 10px system-ui, sans-serif"; const w2 = ctx.measureText(t2).width;
+      const w = Math.max(w1, w2) + 12, h = 30, x = pN.x - w/2, y = (pN.y + pA.y)/2 - h/2;
+      ctx.fillStyle = "#fff"; ctx.strokeStyle = cor; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, 7) : ctx.rect(x, y, w, h); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = cor; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.font = "800 11px system-ui, sans-serif"; ctx.fillText(t1, pN.x, y + 10);
+      ctx.font = "700 10px system-ui, sans-serif"; ctx.fillText(t2, pN.x, y + 21);
+    });
+    ctx.restore(); } };
+  mkChart("ch-qp-anos", { type:"line", data:{ labels:MESES_HE.map(m=>m), datasets }, plugins:[qpDifPlugin],
     options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:16, left:8, right:12 } },
       interaction:{ mode:"index", intersect:false },
       plugins:{ legend:{ position:"top", align:"end", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"circle", font:{ weight:700 } } },
