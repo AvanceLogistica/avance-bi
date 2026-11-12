@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avance · Painel TV</title>
+<link rel="icon" href="img/tv-logo.png">
+<script src="chart.min.js"></script>
+<script src="chartjs-plugin-datalabels.min.js"></script>
+<script src="supabase.min.js"></script>
+<script src="supabase-config.js"></script>
+<style>
+:root{
+  --bg:#070C16; --bg2:#0B1322; --card:#0E1829; --card2:#111D31; --line:rgba(120,160,220,.16);
+  --ink:#F2F5FA; --soft:#9AA8BE; --mute:#62708A;
+  --red:#E3172F; --orange:#F2711C; --green:#22C55E; --blue:#3B82F6; --cyan:#22D3EE; --amber:#F5B921;
+}
+*{ box-sizing:border-box; margin:0; padding:0; }
+html{ font-size:calc(0.52vw + 0.42vh); }
+html,body{ height:100%; background:var(--bg); color:var(--ink); font-family:"Segoe UI", Inter, system-ui, -apple-system, sans-serif; overflow:hidden; }
+body{ background:radial-gradient(1200px 600px at 75% -10%, rgba(242,113,28,.10), transparent 60%), radial-gradient(900px 500px at 0% 110%, rgba(59,130,246,.10), transparent 60%), var(--bg); }
+body.ocioso{ cursor:none; }
+
+.tv{ height:100vh; display:grid; grid-template-rows:12vh 17.5vh 1fr 1fr; gap:1.1vh; padding:1.2vh 1vw 1.4vh; }
+
+/* topo */
+.topo{ display:grid; grid-template-columns:auto auto 1fr auto; align-items:center; gap:1.6vw; position:relative; }
+.topo .logo{ height:8.4vh; }
+.topo .tit{ border-left:2px solid rgba(255,255,255,.18); padding-left:1.6vw; }
+.topo .tit h1{ font-size:3.1rem; font-weight:900; letter-spacing:.06em; line-height:1; }
+.topo .tit p{ font-size:1.25rem; color:var(--cyan); letter-spacing:.14em; text-transform:uppercase; margin-top:.6vh; font-weight:600; }
+.topo .fotos{ height:12vh; display:flex; justify-content:flex-end; gap:.6vw; -webkit-mask-image:linear-gradient(90deg, transparent 0, #000 22%); mask-image:linear-gradient(90deg, transparent 0, #000 22%); }
+.topo .fotos img{ height:100%; object-fit:cover; border-radius:1vh; opacity:.92; }
+.topo .fotos img.pier{ width:24vw; } .topo .fotos img.balsa{ width:12vw; }
+.relogio{ background:rgba(14,24,41,.85); border:1px solid var(--line); border-radius:1.2vh; padding:1vh 1.2vw; display:grid; gap:.5vh; min-width:15vw; }
+.relogio div{ display:flex; align-items:center; gap:.6vw; font-size:1.3rem; font-weight:600; }
+.relogio .hora{ font-size:2.6rem; font-weight:800; letter-spacing:.02em; }
+.relogio .vivo{ color:var(--green); } .relogio .vivo i{ width:1.1vh; height:1.1vh; border-radius:50%; background:currentColor; display:inline-block; box-shadow:0 0 0 0 currentColor; animation:pulso 2s infinite; }
+.relogio .vivo.erro{ color:var(--red); }
+@keyframes pulso{ 0%{ box-shadow:0 0 0 0 rgba(34,197,94,.6);} 70%{ box-shadow:0 0 0 .9vh rgba(34,197,94,0);} 100%{ box-shadow:0 0 0 0 rgba(34,197,94,0);} }
+
+/* cards */
+.kpis{ display:grid; grid-template-columns:repeat(4, 1fr); gap:1vw; }
+.card{ background:linear-gradient(160deg, var(--card2), var(--card)); border:1px solid var(--line); border-radius:1.4vh; padding:1.4vh 1.2vw; position:relative; overflow:hidden; min-height:0; min-width:0; display:flex; flex-direction:column; }
+.card h2{ font-size:1.35rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--ink); display:flex; align-items:center; gap:.6vw; }
+.card h2 small{ font-size:1rem; color:var(--soft); font-weight:600; letter-spacing:.02em; text-transform:none; margin-left:auto; }
+.kpi{ border-width:2px; }
+.kpi.k1{ border-color:rgba(242,113,28,.75); box-shadow:inset 0 0 4vh rgba(242,113,28,.10); }
+.kpi.k2{ border-color:rgba(59,130,246,.75); box-shadow:inset 0 0 4vh rgba(59,130,246,.10); }
+.kpi.k3{ border-color:rgba(34,211,238,.7); box-shadow:inset 0 0 4vh rgba(34,211,238,.08); }
+.kpi.k4{ border-color:rgba(34,197,94,.7); box-shadow:inset 0 0 4vh rgba(34,197,94,.08); }
+.kpi .cab{ display:flex; align-items:center; gap:.8vw; }
+.kpi .cab .ic{ font-size:3rem; line-height:1; }
+.kpi .cab h3{ font-size:1.45rem; font-weight:800; text-transform:uppercase; letter-spacing:.04em; line-height:1.15; }
+.kpi .corpo{ flex:1; display:flex; align-items:center; gap:1.4vw; }
+.kpi .big{ font-size:6.6rem; font-weight:900; line-height:1; font-variant-numeric:tabular-nums; }
+.kpi .sep{ width:2px; align-self:stretch; margin:1.2vh 0; background:rgba(255,255,255,.18); }
+.kpi .pct{ font-size:3.2rem; font-weight:900; line-height:1; }
+.kpi .sub{ font-size:1.2rem; color:var(--soft); margin-top:.4vh; line-height:1.25; }
+.kpi .duo{ flex:1; display:grid; grid-template-columns:1fr 2px 1fr; gap:1vw; align-items:center; }
+.kpi .duo .lb{ font-size:1.15rem; font-weight:700; color:var(--soft); text-transform:uppercase; letter-spacing:.04em; }
+.kpi .duo .big{ font-size:5rem; }
+.kpi .duo .un{ font-size:1.05rem; color:var(--mute); }
+.gauge{ display:flex; align-items:center; gap:1vw; flex:1; }
+.gauge .g{ position:relative; width:13vw; height:12vh; }
+.gauge .g canvas{ width:100% !important; height:100% !important; }
+.gauge .g b{ position:absolute; left:0; right:0; bottom:0; text-align:center; font-size:4.4rem; font-weight:900; line-height:1; }
+.selo{ display:inline-block; padding:.7vh .9vw; border-radius:99px; font-size:1.25rem; font-weight:900; letter-spacing:.04em; text-transform:uppercase; }
+.gauge .info .sub{ margin-top:1vh; }
+
+.linha{ display:grid; gap:1vw; min-height:0; }
+.l1{ grid-template-columns:1fr 1.45fr 1.3fr; }
+.l2{ grid-template-columns:1fr 1.1fr 1fr 1.05fr; }
+.chart{ position:relative; flex:1; min-height:0; margin-top:1vh; }
+
+/* disponibilidade */
+.disp{ flex:1; display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:1vw; min-height:0; }
+.disp .dn{ position:relative; height:19vh; width:19vh; }
+.disp .dn b{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:1rem; font-weight:900; line-height:1; }
+.disp .dn b span{ font-size:1.1rem; color:var(--soft); font-weight:600; margin-top:.5vh; }
+.disp ul{ list-style:none; display:grid; gap:.2vh; }
+.disp li{ display:flex; align-items:center; gap:.8vw; padding:.7vh 0; white-space:nowrap; border-bottom:1px solid var(--line); font-size:1.25rem; color:var(--soft); }
+.disp li:last-child{ border:0; }
+.disp li b{ font-size:2.1rem; color:var(--ink); min-width:3vw; font-variant-numeric:tabular-nums; }
+.disp li i{ width:1.4vh; height:1.4vh; border-radius:50%; display:inline-block; }
+
+/* oficina */
+.of-chips{ display:flex; gap:.6vw; flex-wrap:wrap; margin-top:1vh; }
+.of-chip{ display:flex; align-items:center; gap:.5vw; padding:.6vh .8vw; border-radius:.9vh; background:rgba(255,255,255,.05); border:1px solid var(--line); font-size:1.1rem; color:var(--soft); }
+.of-chip b{ font-size:1.6rem; color:var(--ink); }
+.of-chip i{ width:1.2vh; height:1.2vh; border-radius:3px; display:inline-block; }
+.of-lista{ flex:1; min-height:0; margin-top:1vh; display:grid; grid-auto-rows:min-content; gap:.6vh; overflow:hidden; align-content:start; }
+.of-row{ display:grid; grid-template-columns:4.2vw 1fr auto auto; align-items:center; gap:.8vw; padding:.7vh .8vw; background:rgba(255,255,255,.035); border-radius:.9vh; border-left:.45vh solid var(--c, var(--amber)); }
+.of-row .n{ font-size:1.25rem; font-weight:800; color:var(--soft); }
+.of-row .p{ font-size:1.5rem; font-weight:800; letter-spacing:.03em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.of-row .p small{ display:block; font-size:1rem; font-weight:500; color:var(--mute); letter-spacing:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.of-row .s{ font-size:1.05rem; font-weight:700; padding:.4vh .6vw; border-radius:.7vh; white-space:nowrap; }
+.of-row .d{ font-size:1.9rem; font-weight:900; min-width:4.6vw; text-align:right; font-variant-numeric:tabular-nums; }
+.of-row .d small{ font-size:1rem; font-weight:600; color:var(--soft); margin-left:.2vw; }
+.of-row.critico .d{ color:var(--red); }
+.of-pag{ font-size:1rem; color:var(--mute); text-align:right; margin-top:.4vh; }
+.vazio{ flex:1; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:1vh; color:var(--soft); font-size:1.4rem; text-align:center; }
+.vazio b{ font-size:3rem; }
+
+/* evolução */
+.evo{ flex:1; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:1vw; min-height:0; }
+.evo .boxes{ display:grid; gap:1vh; align-content:center; }
+.evo .box{ border:2px solid var(--line); border-radius:1.2vh; padding:.8vh .8vw; text-align:center; min-width:7.5vw; }
+.evo .box b{ display:block; font-size:3rem; font-weight:900; line-height:1; }
+.evo .box span{ font-size:1.1rem; color:var(--soft); }
+.evo .box.real{ border-color:rgba(59,130,246,.75); } .evo .box.meta{ border-color:rgba(255,255,255,.3); }
+
+/* balsas */
+.bal{ flex:1; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:.8vw; min-height:0; }
+.bal .tot{ display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding-left:.8vw; border-left:1px solid var(--line); width:7.5vw; }
+.bal .tot b{ font-size:4rem; font-weight:900; line-height:1; } .bal .tot span{ font-size:1.05rem; color:var(--soft); }
+.bal .tot img{ width:5.6vw; border-radius:.8vh; margin-bottom:1vh; opacity:.9; }
+.bal-lista{ font-size:1.05rem; color:var(--soft); margin-top:.6vh; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bal-lista b{ color:var(--ink); }
+
+/* realizado x meta */
+.rm{ flex:1; display:grid; align-content:space-evenly; gap:.6vh; }
+.rm-i{ display:grid; grid-template-columns:2.6vw minmax(0,1fr) auto; align-items:center; gap:.8vw; }
+.rm-i .ic{ font-size:2.4rem; text-align:center; }
+.rm-i .t span{ flex-shrink:0; } .rm-i .t{ overflow:hidden; display:flex; justify-content:space-between; gap:.6vw; white-space:nowrap; font-size:1.25rem; font-weight:700; margin-bottom:.6vh; }
+.rm-i .t span{ color:var(--soft); font-weight:600; }
+.rm-i .bar{ height:1.9vh; background:rgba(255,255,255,.09); border-radius:99px; overflow:hidden; }
+.rm-i .bar i{ display:block; height:100%; border-radius:99px; background:linear-gradient(90deg, #16A34A, #4ADE80); transition:width 1s; }
+.rm-i .p{ font-size:2.1rem; font-weight:900; min-width:4.6vw; text-align:right; }
+
+/* alertas */
+.card.alertas{ border-color:rgba(227,23,47,.55); background:linear-gradient(160deg, rgba(60,10,18,.75), var(--card)); }
+.al-lista{ flex:1; display:grid; align-content:start; gap:.4vh; margin-top:1vh; overflow:hidden; }
+.al{ display:grid; grid-template-columns:3vw 1fr; align-items:center; gap:.6vw; padding:.9vh 0; border-bottom:1px solid var(--line); font-size:1.3rem; line-height:1.25; }
+.al:last-child{ border:0; } .al .ic{ font-size:2rem; text-align:center; }
+.al b{ color:var(--red); } .al.ok b{ color:var(--green); } .al.info b{ color:var(--amber); }
+
+/* login */
+.login{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(4,8,15,.92); z-index:10; }
+.login.on{ display:flex; }
+.login form{ width:min(92vw, 420px); background:var(--card2); border:1px solid var(--line); border-radius:16px; padding:28px; display:grid; gap:12px; font-size:15px; }
+.login img{ width:200px; margin:0 auto 6px; }
+.login h3{ font-size:18px; text-align:center; }
+.login input{ padding:12px; border-radius:10px; border:1px solid var(--line); background:#0A1220; color:var(--ink); font-size:16px; }
+.login button{ padding:12px; border-radius:10px; border:0; background:var(--red); color:#fff; font-weight:800; font-size:16px; cursor:pointer; }
+.login .err{ color:#FF6B7A; font-size:14px; min-height:18px; text-align:center; }
+.login p{ color:var(--soft); font-size:13px; text-align:center; }
+.aviso{ position:fixed; left:50%; bottom:1.5vh; transform:translateX(-50%); background:rgba(227,23,47,.92); color:#fff; padding:.8vh 1.4vw; border-radius:99px; font-size:1.2rem; font-weight:700; display:none; z-index:5; }
+.aviso.on{ display:block; }
+</style>
+</head>
+<body>
+<div class="tv" id="tv">
+  <header class="topo">
+    <img class="logo" src="img/tv-logo.png" alt="Avance Logística Integrada">
+    <div class="tit"><h1>CONTROL TOWER</h1><p>Centro de Controle Operacional</p></div>
+    <div class="fotos"><img class="pier" src="img/tv-pier.jpg" alt=""><img class="balsa" src="img/tv-balsa.jpg" alt=""></div>
+    <div class="relogio">
+      <div class="hora" id="tv-hora">--:--</div>
+      <div id="tv-data">—</div>
+      <div class="vivo" id="tv-vivo"><i></i><span>Conectando...</span></div>
+    </div>
+  </header>
+
+  <section class="kpis">
+    <div class="card kpi k1"><div class="cab"><span class="ic">🔧</span><h3>Veículos em<br>manutenção</h3></div>
+      <div class="corpo"><div class="big" id="k-man">—</div><div class="sep"></div><div><div class="pct" id="k-man-pct" style="color:var(--amber);">—</div><div class="sub" id="k-man-sub">da frota</div></div></div></div>
+    <div class="card kpi k2"><div class="cab"><span class="ic">🚚</span><h3>Viagens de<br>entrega (hoje)</h3></div>
+      <div class="corpo"><div class="big" id="k-ent">—</div><div class="sep"></div><div><div class="pct" id="k-ent-pct" style="color:var(--green);">—</div><div class="sub" id="k-ent-sub">da meta</div></div></div></div>
+    <div class="card kpi k3"><div class="cab"><span class="ic">🚢</span><h3>Operações de<br>balsas (hoje)</h3></div>
+      <div class="duo">
+        <div><div class="lb" style="color:var(--green);">⬇ Descarga</div><div class="big" id="k-desc">—</div><div class="un">viagens</div></div>
+        <div class="sep" style="margin:0;"></div>
+        <div><div class="lb" style="color:var(--cyan);">⬆ Carregamento</div><div class="big" id="k-carr">—</div><div class="un">viagens</div></div>
+      </div></div>
+    <div class="card kpi k4"><div class="gauge">
+      <div class="g"><canvas id="ch-gauge"></canvas><b id="k-saude">—</b></div>
+      <div class="info"><h3 style="font-size:1.6rem; font-weight:900; text-transform:uppercase; letter-spacing:.04em; line-height:1.15;">Saúde<br>operacional</h3>
+        <div style="margin-top:1.2vh;"><span class="selo" id="k-saude-selo">—</span></div>
+        <div class="sub" id="k-saude-sub" style="font-size:1rem;">entregas no ritmo + frota disponível</div></div>
+    </div></div>
+  </section>
+
+  <section class="linha l1">
+    <div class="card"><h2>Disponibilidade da frota <small id="disp-sub"></small></h2>
+      <div class="disp"><div class="dn"><canvas id="ch-disp"></canvas><b><span id="disp-pct" style="font-size:3.4rem; color:var(--ink); font-weight:900; margin:0;">—</span><span>disponível</span></b></div>
+        <ul id="disp-lista"></ul></div></div>
+    <div class="card"><h2>🔧 Veículos parados na oficina <small id="of-sub"></small></h2>
+      <div class="of-chips" id="of-chips"></div>
+      <div class="of-lista" id="of-lista"></div>
+      <div class="of-pag" id="of-pag"></div></div>
+    <div class="card"><h2>Viagens de entrega — evolução do dia</h2>
+      <div class="evo"><div class="chart"><canvas id="ch-evo"></canvas></div>
+        <div class="boxes"><div class="box real"><b id="evo-real">—</b><span>Realizadas</span></div><div class="box meta"><b id="evo-meta">—</b><span>Meta do dia</span></div><div class="box" style="border-color:rgba(245,185,33,.5);"><b id="evo-prog" style="font-size:2.6rem;">—</b><span>Programadas</span></div></div></div></div>
+  </section>
+
+  <section class="linha l2">
+    <div class="card"><h2>🚢 Balsas hoje — por pier</h2>
+      <div class="bal"><div class="chart"><canvas id="ch-bal"></canvas></div>
+        <div class="tot"><img src="img/tv-balsa.jpg" alt=""><b id="bal-tot">—</b><span>viagens<br>no dia</span></div></div>
+      <div class="bal-lista" id="bal-lista"></div></div>
+    <div class="card"><h2>Histórico — últimos 7 dias</h2><div class="chart"><canvas id="ch-hist"></canvas></div></div>
+    <div class="card"><h2>Realizado × meta (hoje)</h2><div class="rm" id="rm"></div></div>
+    <div class="card alertas"><h2>⚠️ Alertas operacionais</h2><div class="al-lista" id="alertas"></div></div>
+  </section>
+</div>
+
+<div class="login" id="login"><form onsubmit="tvEntrar(event)">
+  <img src="img/tv-logo.png" alt="Avance">
+  <h3>Painel TV — entrar</h3>
+  <input type="email" id="lg-email" placeholder="E-mail" autocomplete="username" required>
+  <input type="password" id="lg-senha" placeholder="Senha" autocomplete="current-password" required>
+  <button type="submit" id="lg-btn">Entrar</button>
+  <div class="err" id="lg-err"></div>
+  <p>Depois de entrar, a TV fica conectada e o painel atualiza sozinho a cada minuto.</p>
+</form></div>
+<div class="aviso" id="aviso"></div>
+<script src="tv.js?v=20261112c"></script>
+</body>
+</html>

@@ -440,12 +440,12 @@ function insightComposicao(items, nomeKey, valorKey){
 }
 
 /* ---------- Navegação ---------- */
-const pages = ["overview","custos","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","rh","quadro","acessos","gerencial"];
+const pages = ["overview","custos","entrada","entregas","manutencao","diesel","folha","horaextra","compras","atestados","infracoes","acidentes","contaspagar","faturamento","emissaonf","belem","ordens","frota","organograma","rh","quadro","acessos","gerencial","pier"];
 const PAGINAS_SO_DIRETOR = ["custos","gerencial","faturamento","emissaonf","contaspagar","belem","ordens","organograma","rh","acessos"];
 // Perfil "lider": entra no sistema e só enxerga o Status da Frota
 const PAGINAS_LIDER = ["frota"];
 // Perfis que enxergam só uma tela: líder → Status da Frota; monitoramento → Programação de Entregas
-const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["rh","organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"], patio:["manutencao"], personalizado:[] };
+const PAGINAS_RESTRITAS = { lider:["frota"], monitoramento:["entregas"], coordenacao:["emissaonf","frota"], manutencao:["emissaonf"], rh:["rh","organograma"], oficina:["manutencao"], administrativo:["emissaonf","organograma"], preos:["emissaonf"], frotaoficina:["frota"], patio:["manutencao"], personalizado:[], tv:[] };
 // Perfil "personalizado": não tem tela própria — enxerga só as telas extras liberadas para a pessoa (user_paginas_extra)
 // Telas extras liberadas para um usuário específico (tabela user_paginas_extra), somadas às do perfil restrito dele
 let PAGINAS_EXTRA = [];
@@ -458,6 +458,7 @@ const titles = {
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
   organograma: ["Organograma","Colaboradores por local, função e liderança"],
+  pier: ["Operação no Pier","Descarga e carregamento das balsas — viagens por pier"],
   quadro: ["Quadro de Pessoal","Quantidade de pessoas por mês e por vínculo"],
   rh: ["Recursos Humanos","Ficha cadastral de cada funcionário — preenchimento pelo RH"],
   gerencial: ["Painel Gerencial","Todas as operações e o status de cada uma — da operação ao recebimento da NF"],
@@ -5903,6 +5904,7 @@ async function iniciarPainel(){
   recomputeFolha();
   carregarSessionLogLocal();
   if(MEU_PAPEL === "coordenacao") await carregarFaturamentoDoBanco(); // só os dados da Emissão de NF
+  if(MEU_PAPEL === "tv"){ location.replace("tv.html"); return; }   // usuário da TV vai direto para o Painel TV
   if(paginasRestritas()){   // perfis restritos não carregam nenhum outro dado do sistema
     if(paginasRestritas().includes("infracoes")) await carregarInfracoesDoBanco();
     if(paginasRestritas().includes("horaextra")) await carregarHoraExtraDoBanco();
@@ -9931,6 +9933,127 @@ renderers.organograma = () => {
 };
 initCharts.organograma = () => { orgDepoisDeDesenhar(); if(ORG_FICHA) orgDesenharFicha(); };
 
+/* -------------------- OPERAÇÃO NO PIER (descarga e carregamento de balsas) --------------------
+   Uma linha por balsa operada no dia, no pier Panamá ou Luiza: tipo (descarga ou carregamento),
+   quantidade de viagens e horário. Alimenta o Painel TV (tv.html). Tabela: balsa_operacoes. */
+const PIER_PIERS = [ { k:"panama", nome:"Panamá" }, { k:"luiza", nome:"Luiza" } ];
+const PIER_TIPOS = [ { k:"descarga", nome:"Descarga", ic:"⬇️", cor:"#1E8E3E" }, { k:"carregamento", nome:"Carregamento", ic:"⬆️", cor:"#2E6DB0" } ];
+const PIER_LOCAL = "avance_balsa_operacoes_v1";
+let PIER = { lista:[], carregado:false, carregando:false, erro:null };
+let PIER_DATA = null, PIER_EDIT = null;
+
+const pierNome = (k) => (PIER_PIERS.find(p=>p.k===k)||{nome:k||"—"}).nome;
+const pierTipo = (k) => PIER_TIPOS.find(t=>t.k===k) || { k, nome:k||"—", ic:"", cor:"#5B5F6B" };
+
+async function pierCarregar(){
+  PIER.carregando = true;
+  const desde = (()=>{ const d = new Date(); d.setDate(d.getDate()-60); return d.toISOString().slice(0,10); })();
+  if(!sb){ try{ PIER.lista = JSON.parse(localStorage.getItem(PIER_LOCAL)||"[]"); }catch(e){ PIER.lista = []; } }
+  else {
+    const { data, error } = await sb.from("balsa_operacoes").select("*").gte("data", desde).order("data", { ascending:false }).order("hora_inicio", { ascending:true });
+    if(error){ PIER.erro = error.message; PIER.carregando = false; PIER.carregado = true; pierRerender(); return; }
+    PIER.erro = null;
+    PIER.lista = data.map(r=>({ id:r.id, data:r.data, pier:r.pier, balsa:r.balsa||"", tipo:r.tipo, viagens:Number(r.viagens)||0, ini:r.hora_inicio||"", fim:r.hora_fim||"", obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+  }
+  PIER.carregando = false; PIER.carregado = true; pierRerender();
+}
+function pierRerender(){ if(document.querySelector('nav.menu button.active')?.dataset.page === "pier") navigate("pier"); }
+function pierSalvarLocal(){ if(!sb) try{ localStorage.setItem(PIER_LOCAL, JSON.stringify(PIER.lista)); }catch(e){} }
+
+window.pierSetData = (d) => { PIER_DATA = d; PIER_EDIT = null; navigate("pier"); };
+window.pierEditar = (id) => { PIER_EDIT = id; navigate("pier"); document.getElementById("pier-form")?.scrollIntoView({ behavior:"smooth", block:"center" }); };
+window.pierEscolher = (campo, v) => { const el = document.getElementById("pier-"+campo); if(el) el.value = v;
+  document.querySelectorAll(`[data-pier-${campo}]`).forEach(b=>b.classList.toggle("on", b.dataset["pier"+campo[0].toUpperCase()+campo.slice(1)]===v)); };
+window.pierSalvar = async () => {
+  const g = (id) => (document.getElementById("pier-"+id)?.value||"").trim();
+  const reg = { data:g("data"), pier:g("pier"), tipo:g("tipo"), balsa:g("balsa").toUpperCase(), viagens:parseInt(g("viagens"),10)||0, ini:g("ini"), fim:g("fim"), obs:g("obs") };
+  if(!reg.data){ toast("Informe a data."); return; }
+  if(!reg.pier){ toast("Escolha o pier: Panamá ou Luiza."); return; }
+  if(!reg.tipo){ toast("Escolha: Descarga ou Carregamento."); return; }
+  if(!reg.balsa){ toast("Informe a balsa."); return; }
+  if(reg.viagens <= 0){ toast("Informe a quantidade de viagens."); return; }
+  const banco = { data:reg.data, pier:reg.pier, tipo:reg.tipo, balsa:reg.balsa, viagens:reg.viagens, hora_inicio:reg.ini||null, hora_fim:reg.fim||null, obs:reg.obs||null,
+    atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() };
+  if(sb){
+    const q = PIER_EDIT ? sb.from("balsa_operacoes").update(banco).eq("id", PIER_EDIT) : sb.from("balsa_operacoes").insert({ ...banco, criado_por:MEU_EMAIL||null });
+    const { error } = await q;
+    if(error){ toast(/balsa_operacoes/i.test(error.message) ? "⚠ Falta rodar o SQL do Painel TV no Supabase." : "⚠ Não salvou: " + error.message); return; }
+  } else {
+    if(PIER_EDIT) PIER.lista = PIER.lista.map(r=>r.id===PIER_EDIT ? { ...r, ...reg } : r);
+    else PIER.lista.unshift({ id:"l"+Date.now(), ...reg, por:"" });
+    pierSalvarLocal();
+  }
+  toast(`✓ ${pierTipo(reg.tipo).nome} da ${reg.balsa} salva — ${reg.viagens} viagem(ns)`);
+  PIER_EDIT = null; PIER_DATA = reg.data;
+  if(sb) await pierCarregar(); else navigate("pier");
+};
+window.pierExcluir = async (id) => {
+  const r = PIER.lista.find(x=>x.id===id); if(!r) return;
+  if(!confirm(`Excluir ${pierTipo(r.tipo).nome} da ${r.balsa} (${r.viagens} viagens)?`)) return;
+  if(sb){ const { error } = await sb.from("balsa_operacoes").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  PIER.lista = PIER.lista.filter(x=>x.id!==id); pierSalvarLocal();
+  if(PIER_EDIT === id) PIER_EDIT = null; navigate("pier");
+};
+
+renderers.pier = () => {
+  if(!PIER.carregado && !PIER.carregando){ PIER.carregando = true; setTimeout(()=>pierCarregar(), 0); }
+  const cab = `<div class="page-head"><h2>Operação no Pier</h2><p>Descarga e carregamento das balsas nos piers Panamá e Luiza — viagens por balsa (vai para o Painel TV)</p></div>`;
+  if(PIER.erro) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar</h4><p>${osEsc(PIER.erro)}</p><p>Se falar em tabela inexistente ("balsa_operacoes"), rode o SQL do Painel TV no Supabase.</p></div></div>`;
+  if(!PIER.carregado) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando...</p></div></div>`;
+  const hoje = frotaHojeISO(); if(!PIER_DATA) PIER_DATA = hoje;
+  const doDia = PIER.lista.filter(r=>r.data===PIER_DATA);
+  const soma = (ls, f) => ls.filter(f).reduce((s,r)=>s+r.viagens, 0);
+  const ed = PIER_EDIT ? PIER.lista.find(r=>r.id===PIER_EDIT) : null;
+  const v = ed || { data:PIER_DATA, pier:"", tipo:"", balsa:"", viagens:"", ini:"", fim:"", obs:"" };
+  let balsas = []; try{ balsas = nfBalsasConhecidas(); }catch(e){ balsas = NF_BALSAS_PADRAO; }
+  const card = (rot, val, sub) => `<div class="kpi"><div class="lbl">${rot}</div><div class="val">${val}</div><div class="delta flat">${sub}</div></div>`;
+  // últimos 7 dias
+  const dias = Array.from({ length:7 }, (_,i)=>{ const d = new Date(PIER_DATA+"T12:00:00"); d.setDate(d.getDate()-6+i); return d.toISOString().slice(0,10); });
+  return cab + `
+    <div class="panel" style="margin-bottom:16px;"><div class="filtro-bar">
+      <label>Dia<input type="date" value="${PIER_DATA}" onchange="pierSetData(this.value)"></label>
+      ${PIER_DATA!==hoje ? `<button class="os-btn" onclick="pierSetData('${hoje}')">Hoje</button>` : ""}
+      <a class="os-btn" href="tv.html" target="_blank" style="margin-left:auto; text-decoration:none;">📺 Abrir Painel TV</a>
+    </div></div>
+    <div class="kpi-grid">
+      ${card("⬇️ Descargas — viagens", soma(doDia, r=>r.tipo==="descarga"), `${fmtDataBR(PIER_DATA)}`)}
+      ${card("⬆️ Carregamentos — viagens", soma(doDia, r=>r.tipo==="carregamento"), `${fmtDataBR(PIER_DATA)}`)}
+      ${PIER_PIERS.map(p=>card(`⚓ Pier ${p.nome}`, soma(doDia, r=>r.pier===p.k), `${doDia.filter(r=>r.pier===p.k).length} balsa(s) no dia`)).join("")}
+    </div>
+    <div class="panel" id="pier-form" style="margin-bottom:16px;">
+      <h3>${ed ? "✏️ Editar operação" : "➕ Lançar operação de balsa"}</h3>
+      <div class="hint">Um lançamento por balsa e por tipo. Se a mesma balsa descarregou e carregou, faça dois lançamentos.</div>
+      <div class="os-form pier-grid">
+        <label>Data<input type="date" id="pier-data" value="${v.data}"></label>
+        <label>Pier<input type="hidden" id="pier-pier" value="${v.pier}"><div class="pier-opc">${PIER_PIERS.map(p=>`<button type="button" class="pier-b ${v.pier===p.k?"on":""}" data-pier-pier="${p.k}" onclick="pierEscolher('pier','${p.k}')">⚓ ${p.nome}</button>`).join("")}</div></label>
+        <label>Operação<input type="hidden" id="pier-tipo" value="${v.tipo}"><div class="pier-opc">${PIER_TIPOS.map(t=>`<button type="button" class="pier-b ${v.tipo===t.k?"on":""}" data-pier-tipo="${t.k}" onclick="pierEscolher('tipo','${t.k}')">${t.ic} ${t.nome}</button>`).join("")}</div></label>
+        <label>Balsa<input id="pier-balsa" list="pier-balsas" value="${osEsc(v.balsa)}" placeholder="Digite ou escolha" autocomplete="off"><datalist id="pier-balsas">${balsas.map(b=>`<option value="${osEsc(b)}">`).join("")}</datalist></label>
+        <label>Viagens<input type="number" min="1" step="1" id="pier-viagens" value="${v.viagens}" placeholder="0"></label>
+        <label>Início<input type="time" id="pier-ini" value="${v.ini}"></label>
+        <label>Fim<input type="time" id="pier-fim" value="${v.fim}"></label>
+        <label style="grid-column:span 2;">Observação<input id="pier-obs" value="${osEsc(v.obs)}" placeholder="opcional"></label>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button class="entry-submit" style="margin:0;" onclick="pierSalvar()">💾 Salvar</button>
+        ${ed ? `<button class="os-btn" onclick="PIER_EDIT=null; navigate('pier')">Cancelar</button>` : ""}
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:16px;"><h3>Operações de ${fmtDataBR(PIER_DATA)}</h3>
+      ${!doDia.length ? `<div class="hint">Nenhuma operação lançada neste dia.</div>` : `<div style="overflow-x:auto;"><table class="nf-tab">
+        <thead><tr><th>Pier</th><th>Balsa</th><th>Operação</th><th class="num">Viagens</th><th>Horário</th><th>Obs.</th><th>Lançado por</th><th></th></tr></thead>
+        <tbody>${doDia.map(r=>`<tr><td><b>${pierNome(r.pier)}</b></td><td>${osEsc(r.balsa)}</td><td><span style="color:${pierTipo(r.tipo).cor}; font-weight:700;">${pierTipo(r.tipo).ic} ${pierTipo(r.tipo).nome}</span></td>
+          <td class="num"><b>${r.viagens}</b></td><td>${r.ini||"—"}${r.fim ? " às " + r.fim : ""}</td><td>${osEsc(r.obs)}</td><td class="hint" style="margin:0;">${osEsc(r.por)}</td>
+          <td style="white-space:nowrap;"><button class="os-btn sm" onclick="pierEditar('${r.id}')">✏️ Editar</button> <button class="os-link" onclick="pierExcluir('${r.id}')">excluir</button></td></tr>`).join("")}</tbody>
+      </table></div>`}
+    </div>
+    <div class="panel"><h3>Últimos 7 dias — viagens</h3><div style="overflow-x:auto;"><table class="nf-tab">
+      <thead><tr><th>Dia</th><th class="num">⬇️ Descarga</th><th class="num">⬆️ Carregamento</th>${PIER_PIERS.map(p=>`<th class="num">Pier ${p.nome}</th>`).join("")}<th class="num">Total</th></tr></thead>
+      <tbody>${dias.slice().reverse().map(d=>{ const ls = PIER.lista.filter(r=>r.data===d);
+        return `<tr style="cursor:pointer;" onclick="pierSetData('${d}')"><td><b>${fmtDataBR(d)}</b></td><td class="num">${soma(ls, r=>r.tipo==="descarga")}</td><td class="num">${soma(ls, r=>r.tipo==="carregamento")}</td>
+          ${PIER_PIERS.map(p=>`<td class="num">${soma(ls, r=>r.pier===p.k)}</td>`).join("")}<td class="num"><b>${soma(ls, ()=>true)}</b></td></tr>`; }).join("")}</tbody>
+    </table></div></div>`;
+};
+
 /* -------------------- QUADRO DE PESSOAL (quantidade de pessoas por mês e por vínculo) --------------------
    Uma linha por mês na tabela quadro_pessoal (CLT, CNPJ, Contrato, Diarista). Carga pela planilha
    "Quantidade de Funcionário" (linha de cabeçalho com CLT/CNPJ/CONTRATO/DIARISTA e o mês numa coluna de data)
@@ -12407,6 +12530,7 @@ ${u.papel==="manutencao" ? `<option value="manutencao" selected>Manutenção (te
               <option value="oficina" ${u.papel==="oficina"?"selected":""}>Oficina (só Controle de carretas)</option>
               <option value="patio" ${u.papel==="patio"?"selected":""}>Pátio (só o mapa do pátio da Manutenção)</option>
               <option value="personalizado" ${u.papel==="personalizado"?"selected":""}>Personalizado (só as telas extras liberadas)</option>
+              <option value="tv" ${u.papel==="tv"?"selected":""}>TV (só o Painel TV, para a televisão)</option>
               <option value="diretor" ${u.papel==="diretor"?"selected":""}>Diretor</option>
             </select>
           </td>
