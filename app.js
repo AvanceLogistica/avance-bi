@@ -10072,11 +10072,45 @@ renderers.quadro = () => {
         return `<tr><td><b>${qpLabel(m)}</b></td>${QP_TIPOS.map(x=>`<td class="num">${r[x.k]||0}</td>`).join("")}<td class="num"><b>${t}</b></td>
           <td class="num">${d==null ? "—" : `${d>0?"▲ +":d<0?"▼ ":""}${d}`}</td><td class="hint" style="margin:0;">${osEsc(r.por||"")}${r.em ? " · " + fmtDataBR(String(r.em).slice(0,10)) : ""}</td>
           <td style="white-space:nowrap;"><button class="os-btn sm" onclick="qpEditar('${m}')">✏️ Editar</button> <button class="os-link" onclick="qpExcluir('${m}')">excluir</button></td></tr>`; }).join("")}</tbody>
-    </table></div></div>` : ""}`;
+    </table></div></div>` : ""}
+    ${anos.length && Object.keys(QP.lista).length ? `<div class="panel" style="margin-top:16px;">
+      <h3>Comparativo entre anos — total de pessoas por mês</h3>
+      <div class="hint">Uma linha por ano (${anos.join(" × ")}), com o total do quadro em cada mês</div>
+      <div class="chart-wrap" style="height:400px;"><canvas id="ch-qp-anos"></canvas></div>
+    </div>` : ""}`;
 };
+// cor de cada ano no comparativo: o mais recente em vermelho, o anterior em azul, os mais antigos em tons de cinza
+function qpCorAno(i, n){ const r = n - 1 - i; return r===0 ? "#D0021B" : r===1 ? "#2E6DB0" : ["#8A94A3","#B5BCC6","#D3D8DE"][Math.min(r-2, 2)]; }
+function qpGraficoAnos(){
+  const anos = [...new Set(Object.keys(QP.lista).map(m=>m.slice(0,4)))].sort();
+  if(!anos.length || !document.getElementById("ch-qp-anos")) return;
+  const n = anos.length;
+  const datasets = anos.map((a,i)=>{ const cor = qpCorAno(i, n), novo = i===n-1;
+    return { label:a, data:MESES_HE.map((_,k)=>{ const r = QP.lista[`${a}-${String(k+1).padStart(2,"0")}`]; return r ? qpTotal(r) : null; }),
+      borderColor:cor, borderWidth:novo ? 3.5 : 2.5, tension:0.4, spanGaps:false,
+      pointRadius:5, pointHoverRadius:7, pointBackgroundColor:"#fff", pointBorderColor:cor, pointBorderWidth:2.5,
+      fill:novo ? "start" : false,
+      backgroundColor:(c)=>{ const { ctx, chartArea } = c.chart; if(!chartArea || !novo) return "transparent";
+        const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom); g.addColorStop(0, "rgba(208,2,27,0.20)"); g.addColorStop(1, "rgba(208,2,27,0)"); return g; },
+      // ano mais recente: número acima do ponto; anos anteriores: abaixo — assim não encavalam
+      datalabels:{ display:(c)=>c.dataset.data[c.dataIndex]!=null, align:novo ? "top" : "bottom", anchor:"center", offset:6,
+        color:"#fff", backgroundColor:cor, borderRadius:6, padding:{ top:3, bottom:3, left:6, right:6 }, font:{ size:11, weight:800 }, formatter:(v)=>v } }; });
+  const vals = datasets.flatMap(d=>d.data).filter(v=>v!=null), mn = Math.min(...vals), mx = Math.max(...vals);
+  mkChart("ch-qp-anos", { type:"line", data:{ labels:MESES_HE.map(m=>m), datasets },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:16, left:8, right:12 } },
+      interaction:{ mode:"index", intersect:false },
+      plugins:{ legend:{ position:"top", align:"end", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"circle", font:{ weight:700 } } },
+        tooltip:{ callbacks:{ label:(it)=>` ${it.dataset.label}: ${it.raw==null ? "—" : it.raw + " pessoas"}`,
+          footer:(its)=>{ const v = its.filter(i=>i.raw!=null); if(v.length < 2) return ""; const d = v[v.length-1].raw - v[v.length-2].raw;
+            return `${v[v.length-1].dataset.label} vs ${v[v.length-2].dataset.label}: ${d>0?"+":""}${d} (${v[v.length-2].raw ? (d/v[v.length-2].raw*100).toFixed(0) : 0}%)`; } } } },
+      scales:{ x:{ grid:{ display:false } },
+        y:{ suggestedMin:Math.max(0, Math.floor((mn - (mx-mn)*0.35 - 4)/5)*5), suggestedMax:Math.ceil((mx + (mx-mn)*0.2 + 4)/5)*5,
+          grid:{ color:COLORS.grid }, border:{ display:false }, ticks:{ precision:0 } } } } });
+}
 // o número cabe dentro da faixa? (altura em pixels da faixa do gráfico)
 function qpCabe(c){ const el = c.chart.getDatasetMeta(c.datasetIndex).data[c.dataIndex]; if(!el) return false; const { y, base } = el.getProps(["y","base"], true); return Math.abs(base - y) >= 15; }
 initCharts.quadro = () => {
+  qpGraficoAnos();
   const doAno = Object.keys(QP.lista).filter(m=>m.startsWith(QP_ANO)).sort();
   if(!doAno.length) return;
   // todos os meses do ano no eixo; os sem lançamento ficam vazios
