@@ -70,7 +70,8 @@ async function buscar(){
     q(sbTv.from("carretas_fila").select("frota,placa,data_entrada").is("data_conclusao", null)),
   ]);
   const erros = [["Frota", veic], ["Status da frota", st], ["Oficina", of], ["Entregas", prog], ["Balsas", bal], ["Carretas", fila]].filter(([,r])=>r.error).map(([n,r])=>`${n}: ${r.error.message}`);
-  return { hoje, agora:new Date(), erros,
+  let email = ""; try{ email = (await sbTv.auth.getUser()).data.user?.email || ""; }catch(e){}
+  return { hoje, agora:new Date(), erros, email,
     veiculos: veic.data||[], status: st.data||[], oficina: of.data||[], programacao: prog.data||[], balsas: bal.data||[], fila: fila.data||[],
     semAcesso:{ frota:!!veic.error, entregas:!!prog.error, balsas:!!bal.error } };
 }
@@ -234,6 +235,7 @@ function renderizar(D){
   if(C.semMot.length) al.push({ ic:"👤", h:`<b>${C.semMot.length}</b> veículo(s) sem motorista hoje`, cls:"info" });
   if(!D.semAcesso.balsas && !C.balHoje.length && C.minAgora >= 10*60) al.push({ ic:"🚢", h:`<b>Nenhuma</b> operação de balsa lançada hoje`, cls:"info" });
   if(C.fila.length) al.push({ ic:"🔩", h:`<b>${C.fila.length}</b> carreta(s) do cliente na fila de manutenção`, cls:"info" });
+  if(!D.veiculos.length && !D.semAcesso.frota) al.unshift({ ic:"🔒", h:`<b>Sem permissão para ver os dados.</b> O usuário ${esc(D.email||"")} precisa do perfil <b>TV</b> (Gestão de Acessos)` });
   if(D.erros.length) al.push({ ic:"🔒", h:`<b>Sem acesso</b> a: ${esc(D.erros.map(e=>e.split(":")[0]).join(", "))}`, cls:"info" });
   if(!al.length) al.push({ ic:"✅", h:`<b>Operação sem alertas</b> no momento`, cls:"ok" });
   $("alertas").innerHTML = al.slice(0,6).map(a=>`<div class="al ${a.cls||""}"><div class="ic">${a.ic}</div><div>${a.h}</div></div>`).join("");
