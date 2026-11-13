@@ -458,7 +458,7 @@ const titles = {
   entrada: ["Entrada de Dados","Lance valores por dia, semana ou mês — os gráficos atualizam na hora"],
   contaspagar: ["Contas a Pagar","Prestadores de serviço — vencimentos, status e forma de pagamento"],
   organograma: ["Organograma","Colaboradores por local, função e liderança"],
-  pier: ["Operação no Pier","Descarga e carregamento das balsas — viagens por pier"],
+  pier: ["Balsas","Abertura e fechamento das operações nos piers Panamá e Luiza — viagens Plano × Real"],
   quadro: ["Quadro de Pessoal","Quantidade de pessoas por mês e por vínculo"],
   rh: ["Recursos Humanos","Ficha cadastral de cada funcionário — preenchimento pelo RH"],
   gerencial: ["Painel Gerencial","Todas as operações e o status de cada uma — da operação ao recebimento da NF"],
@@ -9933,63 +9933,112 @@ renderers.organograma = () => {
 };
 initCharts.organograma = () => { orgDepoisDeDesenhar(); if(ORG_FICHA) orgDesenharFicha(); };
 
-/* -------------------- OPERAÇÃO NO PIER (descarga e carregamento de balsas) --------------------
-   Uma linha por balsa operada no dia, no pier Panamá ou Luiza: tipo (descarga ou carregamento),
-   quantidade de viagens e horário. Alimenta o Painel TV (tv.html). Tabela: balsa_operacoes. */
+/* -------------------- BALSAS (abertura e fechamento das operações nos piers) --------------------
+   Cada operação = uma balsa (nome do Faturamento + nº da viagem) operando num pier (Panamá ou Luiza),
+   em Carregamento ou Descarga, com dia/hora de abertura e de fechamento e as viagens Plano × Real.
+   Tabela balsa_operacoes: data = dia da abertura, hora_inicio = hora da abertura, data_fechamento / hora_fim
+   = fechamento, viagens_plano = plano, viagens = real. Alimenta o Painel TV (tv.html). */
 const PIER_PIERS = [ { k:"panama", nome:"Panamá" }, { k:"luiza", nome:"Luiza" } ];
-const PIER_TIPOS = [ { k:"descarga", nome:"Descarga", ic:"⬇️", cor:"#1E8E3E" }, { k:"carregamento", nome:"Carregamento", ic:"⬆️", cor:"#2E6DB0" } ];
-const PIER_LOCAL = "avance_balsa_operacoes_v1";
+const PIER_TIPOS = [ { k:"carregamento", nome:"Carregamento", ic:"⬆️", cor:"#2E6DB0" }, { k:"descarga", nome:"Descarga", ic:"⬇️", cor:"#1E8E3E" } ];
+const PIER_LOCAL = "avance_balsa_operacoes_v2";
 let PIER = { lista:[], carregado:false, carregando:false, erro:null };
-let PIER_DATA = null, PIER_EDIT = null;
+let PIER_MES = null, PIER_EDIT = null, PIER_SALVANDO = false;
 
 const pierNome = (k) => (PIER_PIERS.find(p=>p.k===k)||{nome:k||"—"}).nome;
 const pierTipo = (k) => PIER_TIPOS.find(t=>t.k===k) || { k, nome:k||"—", ic:"", cor:"#5B5F6B" };
+const pierAgoraHora = () => { const d = new Date(); return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
+const pierBalsaRot = (r) => `${r.balsa}${r.numero ? " - " + r.numero : ""}`;
+const pierAberta = (r) => !r.dataFim;
+// duração entre abertura e fechamento (ou até agora, se ainda aberta)
+function pierDuracao(r){
+  const ini = new Date(`${r.data}T${r.ini||"00:00"}:00`), fim = r.dataFim ? new Date(`${r.dataFim}T${r.fim||"00:00"}:00`) : new Date();
+  const min = Math.max(0, Math.round((fim - ini)/60000)); if(isNaN(min)) return "—";
+  const d = Math.floor(min/1440), h = Math.floor((min%1440)/60), m = min%60;
+  return d ? `${d}d ${h}h` : `${h}h${String(m).padStart(2,"0")}`;
+}
+const pierPct = (r) => r.plano ? Math.round(r.real/r.plano*100) : null;
+const pierCorPct = (p) => p==null ? "var(--ink-soft)" : p>=100 ? "var(--green)" : p>=80 ? "#B7791F" : "var(--red)";
 
 async function pierCarregar(){
   PIER.carregando = true;
-  const desde = (()=>{ const d = new Date(); d.setDate(d.getDate()-60); return d.toISOString().slice(0,10); })();
   if(!sb){ try{ PIER.lista = JSON.parse(localStorage.getItem(PIER_LOCAL)||"[]"); }catch(e){ PIER.lista = []; } }
   else {
-    const { data, error } = await sb.from("balsa_operacoes").select("*").gte("data", desde).order("data", { ascending:false }).order("hora_inicio", { ascending:true });
+    const { data, error } = await sb.from("balsa_operacoes").select("*").order("data", { ascending:false }).order("hora_inicio", { ascending:false });
     if(error){ PIER.erro = error.message; PIER.carregando = false; PIER.carregado = true; pierRerender(); return; }
     PIER.erro = null;
-    PIER.lista = data.map(r=>({ id:r.id, data:r.data, pier:r.pier, balsa:r.balsa||"", tipo:r.tipo, viagens:Number(r.viagens)||0, ini:r.hora_inicio||"", fim:r.hora_fim||"", obs:r.obs||"", por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
+    PIER.lista = data.map(r=>({ id:r.id, pier:r.pier, tipo:r.tipo, balsa:r.balsa||"", numero:r.numero||"", data:r.data, ini:r.hora_inicio||"",
+      dataFim:r.data_fechamento||"", fim:r.hora_fim||"", plano:Number(r.viagens_plano)||0, real:Number(r.viagens)||0, obs:r.obs||"",
+      por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
   }
   PIER.carregando = false; PIER.carregado = true; pierRerender();
 }
-function pierRerender(){ if(document.querySelector('nav.menu button.active')?.dataset.page === "pier") navigate("pier"); }
+function pierRerender(){ if(document.querySelector('nav.menu button.active')?.dataset.page === "pier"){ const y = window.scrollY; navigate("pier"); window.scrollTo(0,y); } }
 function pierSalvarLocal(){ if(!sb) try{ localStorage.setItem(PIER_LOCAL, JSON.stringify(PIER.lista)); }catch(e){} }
-
-window.pierSetData = (d) => { PIER_DATA = d; PIER_EDIT = null; navigate("pier"); };
-window.pierEditar = (id) => { PIER_EDIT = id; navigate("pier"); document.getElementById("pier-form")?.scrollIntoView({ behavior:"smooth", block:"center" }); };
-window.pierEscolher = (campo, v) => { const el = document.getElementById("pier-"+campo); if(el) el.value = v;
-  document.querySelectorAll(`[data-pier-${campo}]`).forEach(b=>b.classList.toggle("on", b.dataset["pier"+campo[0].toUpperCase()+campo.slice(1)]===v)); };
-window.pierSalvar = async () => {
-  const g = (id) => (document.getElementById("pier-"+id)?.value||"").trim();
-  const reg = { data:g("data"), pier:g("pier"), tipo:g("tipo"), balsa:g("balsa").toUpperCase(), viagens:parseInt(g("viagens"),10)||0, ini:g("ini"), fim:g("fim"), obs:g("obs") };
-  if(!reg.data){ toast("Informe a data."); return; }
-  if(!reg.pier){ toast("Escolha o pier: Panamá ou Luiza."); return; }
-  if(!reg.tipo){ toast("Escolha: Descarga ou Carregamento."); return; }
-  if(!reg.balsa){ toast("Informe a balsa."); return; }
-  if(reg.viagens <= 0){ toast("Informe a quantidade de viagens."); return; }
-  const banco = { data:reg.data, pier:reg.pier, tipo:reg.tipo, balsa:reg.balsa, viagens:reg.viagens, hora_inicio:reg.ini||null, hora_fim:reg.fim||null, obs:reg.obs||null,
-    atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() };
+const pierBanco = (r) => ({ pier:r.pier, tipo:r.tipo, balsa:r.balsa, numero:r.numero||null, data:r.data, hora_inicio:r.ini||null,
+  data_fechamento:r.dataFim||null, hora_fim:r.dataFim ? (r.fim||null) : null, viagens_plano:r.plano||0, viagens:r.real||0, obs:r.obs||null,
+  atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() });
+async function pierGravar(r, novo){
   if(sb){
-    const q = PIER_EDIT ? sb.from("balsa_operacoes").update(banco).eq("id", PIER_EDIT) : sb.from("balsa_operacoes").insert({ ...banco, criado_por:MEU_EMAIL||null });
-    const { error } = await q;
-    if(error){ toast(/balsa_operacoes/i.test(error.message) ? "⚠ Falta rodar o SQL do Painel TV no Supabase." : "⚠ Não salvou: " + error.message); return; }
-  } else {
-    if(PIER_EDIT) PIER.lista = PIER.lista.map(r=>r.id===PIER_EDIT ? { ...r, ...reg } : r);
-    else PIER.lista.unshift({ id:"l"+Date.now(), ...reg, por:"" });
-    pierSalvarLocal();
-  }
-  toast(`✓ ${pierTipo(reg.tipo).nome} da ${reg.balsa} salva — ${reg.viagens} viagem(ns)`);
-  PIER_EDIT = null; PIER_DATA = reg.data;
-  if(sb) await pierCarregar(); else navigate("pier");
+    const q = novo ? sb.from("balsa_operacoes").insert({ ...pierBanco(r), criado_por:MEU_EMAIL||null }).select("id").single() : sb.from("balsa_operacoes").update(pierBanco(r)).eq("id", r.id);
+    const { data, error } = await q;
+    if(error){ toast(/balsa_operacoes|numero|viagens_plano|data_fechamento/i.test(error.message) ? "⚠ Falta rodar o SQL das Balsas no Supabase." : "⚠ Não salvou: " + error.message); return false; }
+    if(novo && data) r.id = data.id;
+  } else if(novo) r.id = "l" + Date.now();
+  if(novo) PIER.lista.unshift(r); else PIER.lista = PIER.lista.map(x=>x.id===r.id ? r : x);
+  pierSalvarLocal(); return true;
+}
+
+window.pierEscolher = (campo, v) => { const el = document.getElementById("pier-"+campo); if(el) el.value = v;
+  document.querySelectorAll(`[data-pier-${campo}]`).forEach(b=>b.classList.toggle("on", b.getAttribute(`data-pier-${campo}`)===v)); };
+window.pierSetMes = (m) => { PIER_MES = m; navigate("pier"); };
+window.pierEditar = (id) => { PIER_EDIT = id; navigate("pier"); document.getElementById("pier-form")?.scrollIntoView({ behavior:"smooth", block:"center" }); };
+window.pierCancelar = () => { PIER_EDIT = null; navigate("pier"); };
+
+// Abrir (ou salvar a edição de) uma operação
+window.pierSalvar = async () => {
+  if(PIER_SALVANDO) return;
+  const g = (id) => (document.getElementById("pier-"+id)?.value||"").trim();
+  const ed = PIER_EDIT ? PIER.lista.find(r=>r.id===PIER_EDIT) : null;
+  const r = { ...(ed||{}), pier:g("pier"), tipo:g("tipo"), balsa:g("balsa").toUpperCase(), numero:g("numero"), data:g("data"), ini:g("ini"),
+    plano:Math.max(0, parseInt(g("plano"),10)||0), obs:g("obs") };
+  if(ed){ r.dataFim = g("datafim"); r.fim = g("fim"); r.real = Math.max(0, parseInt(g("real"),10)||0); } else { r.dataFim = ""; r.fim = ""; r.real = 0; }
+  if(!r.pier){ toast("Escolha o pier: Panamá ou Luiza."); return; }
+  if(!r.tipo){ toast("Escolha a operação: Carregamento ou Descarga."); return; }
+  if(!r.balsa){ toast("Informe a balsa."); return; }
+  if(!r.data || !r.ini){ toast("Informe o dia e a hora da abertura."); return; }
+  if(!r.plano){ toast("Informe o plano de viagens."); return; }
+  if(r.dataFim && `${r.dataFim} ${r.fim}` < `${r.data} ${r.ini}`){ toast("O fechamento não pode ser antes da abertura."); return; }
+  if(!ed){ const outra = PIER.lista.find(x=>pierAberta(x) && x.pier===r.pier);
+    if(outra && !confirm(`O pier ${pierNome(r.pier)} já tem a ${pierBalsaRot(outra)} aberta (${pierTipo(outra.tipo).nome}). Abrir mesmo assim?`)) return; }
+  PIER_SALVANDO = true;
+  try{
+    if(await pierGravar(r, !ed)){ toast(ed ? "✓ Operação atualizada" : `✓ ${pierBalsaRot(r)} aberta no pier ${pierNome(r.pier)}`); PIER_EDIT = null; navigate("pier"); }
+  } finally { PIER_SALVANDO = false; }
+};
+// viagens reais (+1 / −1 / digitado) numa operação aberta
+window.pierReal = async (id, delta, valor) => {
+  const r = PIER.lista.find(x=>x.id===id); if(!r) return;
+  const novo = { ...r, real: valor!=null ? Math.max(0, parseInt(valor,10)||0) : Math.max(0, r.real + delta) };
+  if(novo.real === r.real) return;
+  if(await pierGravar(novo, false)) pierRerender();
+};
+window.pierFechar = async (id) => {
+  const r = PIER.lista.find(x=>x.id===id); if(!r) return;
+  const dataFim = document.getElementById("pf-d-"+id)?.value, fim = document.getElementById("pf-h-"+id)?.value;
+  const real = parseInt(document.getElementById("pf-r-"+id)?.value, 10);
+  if(!dataFim || !fim){ toast("Informe o dia e a hora do fechamento."); return; }
+  if(`${dataFim} ${fim}` < `${r.data} ${r.ini}`){ toast("O fechamento não pode ser antes da abertura."); return; }
+  const novo = { ...r, dataFim, fim, real: isNaN(real) ? r.real : Math.max(0, real) };
+  if(!confirm(`Fechar ${pierBalsaRot(r)} (${pierTipo(r.tipo).nome}, pier ${pierNome(r.pier)}) com ${novo.real} de ${r.plano} viagens?`)) return;
+  if(await pierGravar(novo, false)){ toast(`✓ ${pierBalsaRot(r)} fechada — ${novo.real}/${r.plano} viagens`); pierRerender(); }
+};
+window.pierReabrir = async (id) => {
+  const r = PIER.lista.find(x=>x.id===id); if(!r || !confirm(`Reabrir ${pierBalsaRot(r)}?`)) return;
+  if(await pierGravar({ ...r, dataFim:"", fim:"" }, false)) pierRerender();
 };
 window.pierExcluir = async (id) => {
   const r = PIER.lista.find(x=>x.id===id); if(!r) return;
-  if(!confirm(`Excluir ${pierTipo(r.tipo).nome} da ${r.balsa} (${r.viagens} viagens)?`)) return;
+  if(!confirm(`Excluir a operação ${pierBalsaRot(r)} (${pierTipo(r.tipo).nome}, pier ${pierNome(r.pier)})?`)) return;
   if(sb){ const { error } = await sb.from("balsa_operacoes").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
   PIER.lista = PIER.lista.filter(x=>x.id!==id); pierSalvarLocal();
   if(PIER_EDIT === id) PIER_EDIT = null; navigate("pier");
@@ -9997,61 +10046,88 @@ window.pierExcluir = async (id) => {
 
 renderers.pier = () => {
   if(!PIER.carregado && !PIER.carregando){ PIER.carregando = true; setTimeout(()=>pierCarregar(), 0); }
-  const cab = `<div class="page-head"><h2>Operação no Pier</h2><p>Descarga e carregamento das balsas nos piers Panamá e Luiza — viagens por balsa (vai para o Painel TV)</p></div>`;
-  if(PIER.erro) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar</h4><p>${osEsc(PIER.erro)}</p><p>Se falar em tabela inexistente ("balsa_operacoes"), rode o SQL do Painel TV no Supabase.</p></div></div>`;
+  const cab = `<div class="page-head"><h2>Balsas</h2><p>Abertura e fechamento das operações nos piers Panamá e Luiza — viagens Plano × Real por balsa (vai para o Painel TV)</p></div>`;
+  if(PIER.erro) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar</h4><p>${osEsc(PIER.erro)}</p><p>Se falar em tabela ou coluna inexistente, rode o SQL das Balsas no Supabase.</p></div></div>`;
   if(!PIER.carregado) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando...</p></div></div>`;
-  const hoje = frotaHojeISO(); if(!PIER_DATA) PIER_DATA = hoje;
-  const doDia = PIER.lista.filter(r=>r.data===PIER_DATA);
-  const soma = (ls, f) => ls.filter(f).reduce((s,r)=>s+r.viagens, 0);
+  const hoje = frotaHojeISO(); if(!PIER_MES) PIER_MES = hoje.slice(0,7);
+  const abertas = PIER.lista.filter(pierAberta).sort((a,b)=>a.pier.localeCompare(b.pier) || `${a.data}${a.ini}`.localeCompare(`${b.data}${b.ini}`));
+  const doMes = PIER.lista.filter(r=>r.data.startsWith(PIER_MES));
+  const fechMes = doMes.filter(r=>!pierAberta(r));
+  const soma = (ls, k) => ls.reduce((s,r)=>s+(r[k]||0), 0);
   const ed = PIER_EDIT ? PIER.lista.find(r=>r.id===PIER_EDIT) : null;
-  const v = ed || { data:PIER_DATA, pier:"", tipo:"", balsa:"", viagens:"", ini:"", fim:"", obs:"" };
+  const v = ed || { pier:"", tipo:"", balsa:"", numero:"", data:hoje, ini:pierAgoraHora(), plano:"", obs:"" };
   let balsas = []; try{ balsas = nfBalsasConhecidas(); }catch(e){ balsas = NF_BALSAS_PADRAO; }
-  const card = (rot, val, sub) => `<div class="kpi"><div class="lbl">${rot}</div><div class="val">${val}</div><div class="delta flat">${sub}</div></div>`;
-  // últimos 7 dias
-  const dias = Array.from({ length:7 }, (_,i)=>{ const d = new Date(PIER_DATA+"T12:00:00"); d.setDate(d.getDate()-6+i); return d.toISOString().slice(0,10); });
+  const meses = [...new Set([hoje.slice(0,7), ...PIER.lista.map(r=>r.data.slice(0,7))])].sort().reverse();
+  const nomeMes = (m) => `${MOS_MESES[Number(m.slice(5,7))-1]}/${m.slice(0,4)}`;
+  const kpi = (rot, val, sub, cor) => `<div class="kpi"><div class="lbl">${rot}</div><div class="val" ${cor ? `style="color:${cor}"` : ""}>${val}</div><div class="delta flat">${sub}</div></div>`;
+  const pMes = soma(doMes, "plano"), rMes = soma(doMes, "real"), pctMes = pMes ? Math.round(rMes/pMes*100) : null;
+  const barra = (r) => { const p = pierPct(r); return `<div class="pier-bar"><i style="width:${Math.min(100, p||0)}%; background:${pierCorPct(p)}"></i></div>`; };
+
   return cab + `
-    <div class="panel" style="margin-bottom:16px;"><div class="filtro-bar">
-      <label>Dia<input type="date" value="${PIER_DATA}" onchange="pierSetData(this.value)"></label>
-      ${PIER_DATA!==hoje ? `<button class="os-btn" onclick="pierSetData('${hoje}')">Hoje</button>` : ""}
-      <a class="os-btn" href="tv.html" target="_blank" style="margin-left:auto; text-decoration:none;">📺 Abrir Painel TV</a>
-    </div></div>
     <div class="kpi-grid">
-      ${card("⬇️ Descargas — viagens", soma(doDia, r=>r.tipo==="descarga"), `${fmtDataBR(PIER_DATA)}`)}
-      ${card("⬆️ Carregamentos — viagens", soma(doDia, r=>r.tipo==="carregamento"), `${fmtDataBR(PIER_DATA)}`)}
-      ${PIER_PIERS.map(p=>card(`⚓ Pier ${p.nome}`, soma(doDia, r=>r.pier===p.k), `${doDia.filter(r=>r.pier===p.k).length} balsa(s) no dia`)).join("")}
+      ${kpi("🟢 Operações abertas agora", abertas.length, PIER_PIERS.map(p=>`${p.nome}: ${abertas.filter(r=>r.pier===p.k).length}`).join(" · "))}
+      ${kpi(`📋 Viagens plano — ${nomeMes(PIER_MES)}`, pMes, `${doMes.length} operação(ões) no mês`)}
+      ${kpi(`✅ Viagens real — ${nomeMes(PIER_MES)}`, rMes, `${fechMes.length} fechada(s)`)}
+      ${kpi("🎯 Real × Plano", pctMes==null ? "—" : pctMes + "%", "aderência ao plano no mês", pierCorPct(pctMes))}
     </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>🟢 Em operação agora (${abertas.length})</h3>
+      ${!abertas.length ? `<div class="hint">Nenhuma balsa aberta nos piers. Abra uma operação abaixo.</div>` : `<div class="pier-cards">${abertas.map(r=>{ const t = pierTipo(r.tipo), p = pierPct(r);
+        return `<div class="pier-card" style="--c:${t.cor}">
+          <div class="pier-card-top"><span class="pier-tag">⚓ Pier ${pierNome(r.pier)}</span><span class="pier-tipo" style="color:${t.cor}">${t.ic} ${t.nome}</span></div>
+          <div class="pier-balsa">${osEsc(pierBalsaRot(r))}</div>
+          <div class="hint" style="margin:2px 0 8px;">Aberta em ${fmtDataBR(r.data)} às ${r.ini||"—"} · há ${pierDuracao(r)}</div>
+          <div class="pier-pr"><div><span>Plano</span><b>${r.plano}</b></div><div><span>Real</span><b style="color:${pierCorPct(p)}">${r.real}</b></div><div><span>Real × Plano</span><b style="color:${pierCorPct(p)}">${p==null?"—":p+"%"}</b></div></div>
+          ${barra(r)}
+          <div class="pier-mais"><button class="os-btn" onclick="pierReal('${r.id}',-1)">−1</button><input type="number" min="0" value="${r.real}" onchange="pierReal('${r.id}',0,this.value)" title="Viagens realizadas"><button class="os-btn green" onclick="pierReal('${r.id}',1)">+1 viagem</button></div>
+          <div class="pier-fechar">
+            <label>Fechamento<input type="date" id="pf-d-${r.id}" value="${hoje}"></label>
+            <label>Hora<input type="time" id="pf-h-${r.id}" value="${pierAgoraHora()}"></label>
+            <label>Real<input type="number" min="0" id="pf-r-${r.id}" value="${r.real}"></label>
+            <button class="entry-submit" style="margin:0; background:#B0001A;" onclick="pierFechar('${r.id}')">🔴 Fechar</button>
+          </div>
+          <div style="display:flex; gap:10px; margin-top:6px;"><button class="os-link" onclick="pierEditar('${r.id}')">✏️ editar</button><button class="os-link" onclick="pierExcluir('${r.id}')">excluir</button></div>
+        </div>`; }).join("")}</div>`}
+    </div>
+
     <div class="panel" id="pier-form" style="margin-bottom:16px;">
-      <h3>${ed ? "✏️ Editar operação" : "➕ Lançar operação de balsa"}</h3>
-      <div class="hint">Um lançamento por balsa e por tipo. Se a mesma balsa descarregou e carregou, faça dois lançamentos.</div>
+      <h3>${ed ? `✏️ Editar operação — ${osEsc(pierBalsaRot(ed))}` : "➕ Abrir operação de balsa"}</h3>
+      <div class="hint">Escolha o pier e a operação, a balsa (mesmos nomes do Faturamento) com o nº da viagem, o dia/hora da abertura e o plano de viagens. O real é lançado durante a operação e no fechamento.</div>
       <div class="os-form pier-grid">
-        <label>Data<input type="date" id="pier-data" value="${v.data}"></label>
         <label>Pier<input type="hidden" id="pier-pier" value="${v.pier}"><div class="pier-opc">${PIER_PIERS.map(p=>`<button type="button" class="pier-b ${v.pier===p.k?"on":""}" data-pier-pier="${p.k}" onclick="pierEscolher('pier','${p.k}')">⚓ ${p.nome}</button>`).join("")}</div></label>
         <label>Operação<input type="hidden" id="pier-tipo" value="${v.tipo}"><div class="pier-opc">${PIER_TIPOS.map(t=>`<button type="button" class="pier-b ${v.tipo===t.k?"on":""}" data-pier-tipo="${t.k}" onclick="pierEscolher('tipo','${t.k}')">${t.ic} ${t.nome}</button>`).join("")}</div></label>
         <label>Balsa<input id="pier-balsa" list="pier-balsas" value="${osEsc(v.balsa)}" placeholder="Digite ou escolha" autocomplete="off"><datalist id="pier-balsas">${balsas.map(b=>`<option value="${osEsc(b)}">`).join("")}</datalist></label>
-        <label>Viagens<input type="number" min="1" step="1" id="pier-viagens" value="${v.viagens}" placeholder="0"></label>
-        <label>Início<input type="time" id="pier-ini" value="${v.ini}"></label>
-        <label>Fim<input type="time" id="pier-fim" value="${v.fim}"></label>
+        <label>Nº da viagem<input id="pier-numero" value="${osEsc(v.numero)}" placeholder="ex: 1234"></label>
+        <label>Dia da abertura<input type="date" id="pier-data" value="${v.data}"></label>
+        <label>Hora da abertura<input type="time" id="pier-ini" value="${v.ini}"></label>
+        <label>Viagens — plano<input type="number" min="0" step="1" id="pier-plano" value="${v.plano}" placeholder="0"></label>
+        ${ed ? `<label>Viagens — real<input type="number" min="0" step="1" id="pier-real" value="${ed.real}"></label>
+        <label>Dia do fechamento<input type="date" id="pier-datafim" value="${ed.dataFim||""}"></label>
+        <label>Hora do fechamento<input type="time" id="pier-fim" value="${ed.fim||""}"></label>` : ""}
         <label style="grid-column:span 2;">Observação<input id="pier-obs" value="${osEsc(v.obs)}" placeholder="opcional"></label>
       </div>
       <div style="display:flex; gap:8px; margin-top:12px;">
-        <button class="entry-submit" style="margin:0;" onclick="pierSalvar()">💾 Salvar</button>
-        ${ed ? `<button class="os-btn" onclick="PIER_EDIT=null; navigate('pier')">Cancelar</button>` : ""}
+        <button class="entry-submit" style="margin:0;" onclick="pierSalvar()">${ed ? "💾 Salvar alterações" : "🟢 Abrir operação"}</button>
+        ${ed ? `<button class="os-btn" onclick="pierCancelar()">Cancelar</button>` : ""}
       </div>
+      ${ed ? `<div class="hint" style="margin-top:8px;">Para reabrir uma operação fechada, apague o dia e a hora do fechamento e salve.</div>` : ""}
     </div>
-    <div class="panel" style="margin-bottom:16px;"><h3>Operações de ${fmtDataBR(PIER_DATA)}</h3>
-      ${!doDia.length ? `<div class="hint">Nenhuma operação lançada neste dia.</div>` : `<div style="overflow-x:auto;"><table class="nf-tab">
-        <thead><tr><th>Pier</th><th>Balsa</th><th>Operação</th><th class="num">Viagens</th><th>Horário</th><th>Obs.</th><th>Lançado por</th><th></th></tr></thead>
-        <tbody>${doDia.map(r=>`<tr><td><b>${pierNome(r.pier)}</b></td><td>${osEsc(r.balsa)}</td><td><span style="color:${pierTipo(r.tipo).cor}; font-weight:700;">${pierTipo(r.tipo).ic} ${pierTipo(r.tipo).nome}</span></td>
-          <td class="num"><b>${r.viagens}</b></td><td>${r.ini||"—"}${r.fim ? " às " + r.fim : ""}</td><td>${osEsc(r.obs)}</td><td class="hint" style="margin:0;">${osEsc(r.por)}</td>
-          <td style="white-space:nowrap;"><button class="os-btn sm" onclick="pierEditar('${r.id}')">✏️ Editar</button> <button class="os-link" onclick="pierExcluir('${r.id}')">excluir</button></td></tr>`).join("")}</tbody>
+
+    <div class="panel">
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">📋 Operações de ${nomeMes(PIER_MES)}</h3><div class="hint">Pela data de abertura. Plano ${pMes} · Real ${rMes}${pctMes!=null ? ` · ${pctMes}%` : ""}</div></div>
+        <label class="frota-data">Mês <select onchange="pierSetMes(this.value)">${meses.map(m=>`<option value="${m}" ${m===PIER_MES?"selected":""}>${nomeMes(m)}</option>`).join("")}</select></label>
+      </div>
+      ${!doMes.length ? `<div class="hint" style="margin-top:10px;">Nenhuma operação aberta neste mês.</div>` : `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
+        <thead><tr><th>Pier</th><th>Operação</th><th>Balsa</th><th>Abertura</th><th>Fechamento</th><th class="num">Duração</th><th class="num">Plano</th><th class="num">Real</th><th class="num">Real × Plano</th><th></th></tr></thead>
+        <tbody>${doMes.map(r=>{ const t = pierTipo(r.tipo), p = pierPct(r);
+          return `<tr><td><b>${pierNome(r.pier)}</b></td><td><span style="color:${t.cor}; font-weight:700;">${t.ic} ${t.nome}</span></td><td><b>${osEsc(pierBalsaRot(r))}</b>${r.obs ? `<div class="hint" style="margin:0;">${osEsc(r.obs)}</div>` : ""}</td>
+            <td>${fmtDataBR(r.data)} ${r.ini||""}</td><td>${pierAberta(r) ? `<span class="badge green">aberta</span>` : `${fmtDataBR(r.dataFim)} ${r.fim||""}`}</td>
+            <td class="num">${pierDuracao(r)}</td><td class="num">${r.plano}</td><td class="num"><b>${r.real}</b></td><td class="num" style="color:${pierCorPct(p)}; font-weight:800;">${p==null?"—":p+"%"}</td>
+            <td style="white-space:nowrap;">${pierAberta(r) ? "" : `<button class="os-link" onclick="pierReabrir('${r.id}')">reabrir</button> `}<button class="os-btn sm" onclick="pierEditar('${r.id}')">✏️ Editar</button> <button class="os-link" onclick="pierExcluir('${r.id}')">excluir</button></td></tr>`; }).join("")}</tbody>
       </table></div>`}
-    </div>
-    <div class="panel"><h3>Últimos 7 dias — viagens</h3><div style="overflow-x:auto;"><table class="nf-tab">
-      <thead><tr><th>Dia</th><th class="num">⬇️ Descarga</th><th class="num">⬆️ Carregamento</th>${PIER_PIERS.map(p=>`<th class="num">Pier ${p.nome}</th>`).join("")}<th class="num">Total</th></tr></thead>
-      <tbody>${dias.slice().reverse().map(d=>{ const ls = PIER.lista.filter(r=>r.data===d);
-        return `<tr style="cursor:pointer;" onclick="pierSetData('${d}')"><td><b>${fmtDataBR(d)}</b></td><td class="num">${soma(ls, r=>r.tipo==="descarga")}</td><td class="num">${soma(ls, r=>r.tipo==="carregamento")}</td>
-          ${PIER_PIERS.map(p=>`<td class="num">${soma(ls, r=>r.pier===p.k)}</td>`).join("")}<td class="num"><b>${soma(ls, ()=>true)}</b></td></tr>`; }).join("")}</tbody>
-    </table></div></div>`;
+    </div>`;
 };
 
 /* -------------------- QUADRO DE PESSOAL (quantidade de pessoas por mês e por vínculo) --------------------

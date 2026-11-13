@@ -424,6 +424,20 @@ table td.rank{font-weight:700; color:var(--red-dark);}
 .pier-opc{ display:flex; gap:6px; margin-top:4px; } .pier-b{ flex:1; padding:9px 8px; border:1.5px solid var(--line, #d9dce1); border-radius:8px; background:var(--card, #fff); font-weight:700; cursor:pointer; font-size:13px; color:inherit; }
 .pier-b.on{ border-color:#D0021B; background:#D0021B; color:#fff; }
 @media (max-width:760px){ .pier-grid{ grid-template-columns:repeat(2, minmax(0,1fr)); } }
+.pier-cards{ display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:12px; margin-top:8px; }
+.pier-card{ border:1px solid var(--line, #e3e5ea); border-left:5px solid var(--c); border-radius:12px; padding:12px 14px; background:var(--card, #fff); }
+.pier-card-top{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.pier-tag{ font-size:11.5px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; background:#17181C; color:#fff; padding:3px 8px; border-radius:99px; }
+.pier-tipo{ font-weight:800; font-size:13px; }
+.pier-balsa{ font-size:20px; font-weight:900; margin-top:6px; }
+.pier-pr{ display:grid; grid-template-columns:repeat(3,1fr); gap:6px; text-align:center; }
+.pier-pr span{ display:block; font-size:11px; color:var(--ink-soft); font-weight:600; } .pier-pr b{ font-size:24px; }
+.pier-bar{ height:8px; border-radius:99px; background:rgba(0,0,0,.08); overflow:hidden; margin:6px 0 10px; } .pier-bar i{ display:block; height:100%; border-radius:99px; }
+.pier-mais{ display:flex; gap:6px; align-items:center; } .pier-mais input{ width:70px; text-align:center; font-weight:800; font-size:15px; padding:7px; border:1px solid var(--line, #d9dce1); border-radius:8px; }
+.pier-mais .os-btn.green{ flex:1; }
+.pier-fechar .entry-submit{ grid-column:1 / -1; } .pier-fechar{ display:grid; grid-template-columns:1.4fr 1fr .8fr; gap:6px; align-items:end; margin-top:10px; padding-top:10px; border-top:1px dashed var(--line, #d9dce1); }
+.pier-fechar label{ font-size:11px; font-weight:700; color:var(--ink-soft); display:flex; flex-direction:column; gap:3px; }
+.pier-fechar input{ width:100%; box-sizing:border-box; padding:6px; border:1px solid var(--line, #d9dce1); border-radius:7px; font-size:13px; }
 .qp-grid{ display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:0 12px; align-items:end; }
 .qp-grid input{ width:100%; box-sizing:border-box; }
 .qp-tot{ display:flex; flex-direction:column; gap:4px; padding-bottom:6px; } .qp-tot span{ font-size:11.5px; font-weight:600; color:var(--ink-soft); } .qp-tot b{ font-size:22px; }
@@ -855,7 +869,7 @@ body.pending #pendingScreen{display:flex;}
     <button data-page="frota"><span class="ic">🚛</span> Status da Frota</button>
     <button data-page="entregas"><span class="ic">🚚</span> Entregas</button>
     <button data-page="manutencao"><span class="ic">🔩</span> Manutenção de Carreta</button>
-    <button data-page="pier"><span class="ic">⚓</span> Operação no Pier</button>
+    <button data-page="pier"><span class="ic">🚢</span> Balsas</button>
     <button data-page="diesel"><span class="ic">⛽</span> Diesel</button>
     <button data-page="compras"><span class="ic">🧰</span> Compras de Peças</button>
     <button data-page="infracoes"><span class="ic">🚨</span> Infrações</button>
@@ -910,7 +924,7 @@ body.pending #pendingScreen{display:flex;}
   <main class="content" id="content"></main>
 </div>
 
-<script src="data.js?v=20261112c"></script>
-<script src="app.js?v=20261112c"></script>
+<script src="data.js?v=20261113a"></script>
+<script src="app.js?v=20261113a"></script>
 </body>
 </html>

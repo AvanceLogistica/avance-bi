@@ -72,7 +72,7 @@ async function buscar(){
     q(sbTv.from("frota_status").select("data,veiculo_id,atividade,status,motorista,obs").gte("data", desde45).lte("data", hoje)),
     q(sbTv.from("frota_oficina").select("veiculo_id,placa,data_parada,observacao,aprovacao,inicio_execucao,conclusao").is("conclusao", null)),
     q(sbTv.from("entregas_programacao").select("data,situacao,horario,hora_real,servico,frota,cliente,planejado").gte("data", desdeProg).lte("data", fimMes)),
-    q(sbTv.from("balsa_operacoes").select("data,pier,balsa,tipo,viagens,hora_inicio,hora_fim").gte("data", desde13).lte("data", hoje)),
+    q(sbTv.from("balsa_operacoes").select("data,pier,balsa,numero,tipo,viagens,viagens_plano,hora_inicio,hora_fim,data_fechamento").or(`data_fechamento.is.null,data_fechamento.gte.${desde13}`).lte("data", hoje)),
     q(sbTv.from("carretas_fila").select("frota,placa,data_entrada").is("data_conclusao", null)),
     q(sbTv.from("manutencao_os").select("status,saida_data,frota").gte("saida_data", iniMes).lte("saida_data", hoje)),
   ]);
@@ -130,9 +130,14 @@ function calcular(D){
   const evoMeta = horas.map(h=> meta ? Math.min(meta, Math.max(0, meta*((h+1-TV_HORA_INI)/(TV_HORA_FIM-TV_HORA_INI+1)))) : null);
 
   // balsas
-  const balHoje = D.balsas.filter(r=>r.data===hoje);
+  // operações de balsa do dia: abertas agora ou que abriram/fecharam hoje (Plano × Real de cada balsa)
+  const balHoje = D.balsas.filter(r=>r.data<=hoje && (!r.data_fechamento || r.data_fechamento>=hoje))
+    .sort((a,b)=>(a.data_fechamento?1:0)-(b.data_fechamento?1:0) || a.pier.localeCompare(b.pier));
+  const svp = (ls, f) => ls.filter(f).reduce((s,r)=>s+(Number(r.viagens_plano)||0), 0);
   const sv = (ls, f) => ls.filter(f).reduce((s,r)=>s+(Number(r.viagens)||0), 0);
   const desc = sv(balHoje, r=>r.tipo==="descarga"), carr = sv(balHoje, r=>r.tipo==="carregamento");
+  const descP = svp(balHoje, r=>r.tipo==="descarga"), carrP = svp(balHoje, r=>r.tipo==="carregamento");
+  const balAbertas = balHoje.filter(r=>!r.data_fechamento);
 
   // mês corrente, dia a dia até hoje: entregas planejado × realizado e carretas (O.S emitidas pela data de saída)
   const diasMes = [], diasCar = [];
@@ -152,7 +157,7 @@ function calcular(D){
   const saude = total ? Math.round(partes.reduce((s,x)=>s+x,0)/partes.length) : null;
 
   return { hoje, minAgora, frota, total, man, parado, semMot, operando, dispPct, progHoje, realizadas, meta, esperado, atrasadas,
-    horas, evoReal, evoMeta, balHoje, desc, carr, planReal, planMes, realMes, realPlanMes, carDia, carHoje, carMes, porAtiv, ritmo, saude, fila:D.fila, D };
+    horas, evoReal, evoMeta, balHoje, desc, carr, descP, carrP, balAbertas, planReal, planMes, realMes, realPlanMes, carDia, carHoje, carMes, porAtiv, ritmo, saude, fila:D.fila, D };
 }
 
 /* ---------------- desenho ---------------- */
@@ -171,6 +176,8 @@ function renderizar(D){
   $("k-ent-sub").innerHTML = C.meta ? `da meta<br>(${C.meta} viagens)` : "fim de semana<br>(sem meta)";
   $("k-desc").textContent = D.semAcesso.balsas ? "—" : nf(C.desc);
   $("k-carr").textContent = D.semAcesso.balsas ? "—" : nf(C.carr);
+  $("k-desc").nextElementSibling.textContent = C.descP ? `viagens · plano ${C.descP}` : "viagens";
+  $("k-carr").nextElementSibling.textContent = C.carrP ? `viagens · plano ${C.carrP}` : "viagens";
 
   // saúde (meia-lua)
   const s = C.saude, corS = s==null ? COR.cinza : s>=85 ? COR.verde : s>=70 ? COR.ambar : COR.vermelho;
@@ -237,18 +244,24 @@ function renderizar(D){
       scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:{ size:fs(.8) } } },
         y:{ beginAtZero:true, suggestedMax:Math.max(4, ...CD.map(x=>x.n))*1.2, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, font:{ size:fs(.9) } } } } } });
 
-  // balsas por pier
-  const porPier = PIERS.map(p=>({ p, desc:C.balHoje.filter(r=>r.pier===p.k && r.tipo==="descarga").reduce((s,r)=>s+(+r.viagens||0),0), carr:C.balHoje.filter(r=>r.pier===p.k && r.tipo==="carregamento").reduce((s,r)=>s+(+r.viagens||0),0) }));
-  $("bal-tot").textContent = D.semAcesso.balsas ? "—" : nf(C.desc + C.carr);
-  const lb = { display:(c)=>c.dataset.data[c.dataIndex] > 0, anchor:"end", align:"top", offset:2, color:"#fff", font:{ size:fs(1.25), weight:900 } };
-  grafico("ch-bal", { type:"bar", data:{ labels:PIERS.map(p=>`Pier ${p.nome}`), datasets:[
-      { label:"Descarga", data:porPier.map(x=>x.desc), backgroundColor:COR.verde, borderRadius:6, maxBarThickness:fs(4), datalabels:lb },
-      { label:"Carregamento", data:porPier.map(x=>x.carr), backgroundColor:COR.ciano, borderRadius:6, maxBarThickness:fs(4), datalabels:lb } ] },
-    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.6) } },
-      plugins:{ legend:{ position:"top", labels:{ boxWidth:fs(1), font:{ size:fs(1) }, color:COR.soft } }, tooltip:{ enabled:false } },
-      scales:{ x:{ grid:{ display:false }, ticks:{ font:{ size:fs(1.1), weight:700 }, color:COR.ink } }, y:{ beginAtZero:true, suggestedMax:Math.max(4, ...porPier.flatMap(x=>[x.desc,x.carr]))*1.3, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, font:{ size:fs(.95) } } } } } });
-  const balsasDia = {}; C.balHoje.forEach(r=>{ const k = r.balsa||"—"; balsasDia[k] = balsasDia[k] || []; balsasDia[k].push(`${r.tipo==="descarga" ? "⬇" : "⬆"}${r.viagens}`); });
-  $("bal-lista").innerHTML = Object.keys(balsasDia).length ? "Balsas: " + Object.entries(balsasDia).map(([b,t])=>`<b>${esc(b)}</b> ${t.join(" ")}`).join(" · ") : (D.semAcesso.balsas ? "Sem acesso às operações de balsa" : "Nenhuma operação de balsa lançada hoje");
+  // balsas em operação: uma coluna por balsa — plano (barra clara) × real (barra na cor da operação)
+  const BL = C.balHoje.slice(0, 6);
+  $("bal-tot").textContent = D.semAcesso.balsas ? "—" : nf(C.balAbertas.length);
+  const corTipo = (r) => r.tipo==="descarga" ? COR.verde : COR.ciano;
+  const pctB = (r) => (+r.viagens_plano) ? Math.round((+r.viagens||0)/(+r.viagens_plano)*100) : null;
+  grafico("ch-bal", { type:"bar", data:{ labels:BL.map(r=>[`${r.balsa}${r.numero ? " " + r.numero : ""}`, `${r.tipo==="descarga" ? "⬇" : "⬆"} ${PIERS.find(p=>p.k===r.pier)?.nome||""}${r.data_fechamento ? " ✓" : ""}`]), datasets:[
+      { label:"Plano", data:BL.map(r=>+r.viagens_plano||0), grouped:false, order:2, barPercentage:.78, categoryPercentage:.9, backgroundColor:"rgba(255,255,255,.10)",
+        borderColor:"rgba(255,255,255,.4)", borderWidth:1.5, borderRadius:6, borderSkipped:false,
+        datalabels:{ display:true, formatter:(_v,c)=>{ const r = BL[c.dataIndex]; return `${+r.viagens||0}/${+r.viagens_plano||0}`; },
+          color:(c)=>{ const p = pctB(BL[c.dataIndex]); return p==null ? COR.soft : p>=100 ? "#4ADE80" : COR.ink; }, anchor:"end", align:"top", offset:2, font:{ size:fs(1.15), weight:900 } } },
+      { label:"Real", data:BL.map(r=>+r.viagens||0), grouped:false, order:1, barPercentage:.46, categoryPercentage:.9, borderRadius:5, borderSkipped:false, backgroundColor:BL.map(corTipo) } ] },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.8) } },
+      plugins:{ legend:{ display:false }, tooltip:{ enabled:false } },
+      scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:(c)=>({ size:fs(c.index!=null ? .95 : .95), weight:700 }), color:COR.ink } },
+        y:{ beginAtZero:true, suggestedMax:Math.max(4, ...BL.map(r=>Math.max(+r.viagens_plano||0, +r.viagens||0)))*1.25, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, maxTicksLimit:5, font:{ size:fs(.9) } } } } } });
+  $("bal-lista").innerHTML = D.semAcesso.balsas ? "Sem acesso às operações de balsa"
+    : !C.balHoje.length ? "Nenhuma balsa em operação nos piers"
+    : PIERS.map(p=>{ const ab = C.balAbertas.filter(r=>r.pier===p.k); return `<b>Pier ${p.nome}:</b> ${ab.length ? ab.map(r=>`${esc(r.balsa)}${r.numero ? " " + esc(r.numero) : ""} desde ${r.data===C.hoje ? "" : r.data.slice(8,10)+"/"+r.data.slice(5,7)+" "}${esc(r.hora_inicio||"")}`).join(", ") : "livre"}`; }).join(" · ");
 
   // realizado x meta
   const linhaRM = (ic, t, a, b, sufixo) => { const p = b ? Math.round(a/b*100) : null; const cor = p==null ? COR.soft : p>=90 ? COR.verde : p>=70 ? COR.ambar : COR.vermelho;
@@ -267,7 +280,7 @@ function renderizar(D){
   if(C.meta && C.esperado >= 2 && C.realizadas.length < C.esperado - 1) al.push({ ic:"🎯", h:`Entregas abaixo do ritmo: <b>${C.realizadas.length}</b> de ${Math.round(C.esperado)} esperadas até agora` });
   if(C.parado.length) al.push({ ic:"⛔", h:`<b>${C.parado.length}</b> veículo(s) com status Parado` });
   if(C.semMot.length) al.push({ ic:"👤", h:`<b>${C.semMot.length}</b> veículo(s) sem motorista hoje`, cls:"info" });
-  if(!D.semAcesso.balsas && !C.balHoje.length && C.minAgora >= 10*60) al.push({ ic:"🚢", h:`<b>Nenhuma</b> operação de balsa lançada hoje`, cls:"info" });
+  if(!D.semAcesso.balsas && !C.balAbertas.length) al.push({ ic:"🚢", h:`<b>Nenhuma</b> balsa em operação nos piers agora`, cls:"info" });
   if(C.fila.length) al.push({ ic:"🔩", h:`<b>${C.fila.length}</b> carreta(s) do cliente na fila de manutenção`, cls:"info" });
   if(!D.veiculos.length && !D.semAcesso.frota) al.unshift({ ic:"🔒", h:`<b>Sem permissão para ver os dados.</b> O usuário ${esc(D.email||"")} precisa do perfil <b>TV</b> (Gestão de Acessos)` });
   if(D.erros.length) al.push({ ic:"🔒", h:`<b>Sem acesso</b> a: ${esc(D.erros.map(e=>e.split(":")[0]).join(", "))}`, cls:"info" });
