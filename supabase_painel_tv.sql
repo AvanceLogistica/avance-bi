@@ -50,6 +50,8 @@ drop policy if exists "prog_select_tv" on entregas_programacao;
 create policy "prog_select_tv" on entregas_programacao for select to authenticated using (eh_tv());
 drop policy if exists "carretas_fila_select_tv" on carretas_fila;
 create policy "carretas_fila_select_tv" on carretas_fila for select to authenticated using (eh_tv());
+drop policy if exists "manutencao_os_select_tv" on manutencao_os;
+create policy "manutencao_os_select_tv" on manutencao_os for select to authenticated using (eh_tv());
 
 notify pgrst, 'reload schema';
 

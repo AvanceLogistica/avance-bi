@@ -10,6 +10,9 @@ const TV_META_ENTREGAS = 10;            // meta de segunda a sexta
 const TV_HORA_INI = 7, TV_HORA_FIM = 17; // janela da meta acumulada (07h → 17h)
 const TV_DIAS_ALERTA = 3;               // parado há mais de 3 dias = alerta
 const TV_ATUALIZA_MS = 60000;
+// atividades do Status da Frota (mesmas cores do sistema)
+const ATIVIDADES = [ { k:"honda", t:"Operação Honda", c:"#E3172F" }, { k:"reserva", t:"Disponível", c:"#8A94A3" }, { k:"entregas", t:"Entregas e Coletas", c:"#3B82F6" },
+  { k:"manobra", t:"Manobra Pátio Externo", c:"#A855F7" }, { k:"porto", t:"Porto", c:"#22C55E" }, { k:"oficina", t:"Oficina", c:"#F5B921" } ];
 const PIERS = [ { k:"panama", nome:"Panamá" }, { k:"luiza", nome:"Luiza" } ];
 const COR = { verde:"#22C55E", azul:"#3B82F6", ciano:"#22D3EE", ambar:"#F5B921", vermelho:"#E3172F", laranja:"#F2711C", cinza:"#62708A", ink:"#F2F5FA", soft:"#9AA8BE", grade:"rgba(120,160,220,.12)" };
 const SEM = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
@@ -59,21 +62,23 @@ window.tvEntrar = async (ev) => {
 
 /* ---------------- busca no banco ---------------- */
 async function buscar(){
-  const hoje = hojeISO(), desde45 = somaDias(hoje, -45), desde13 = somaDias(hoje, -13);
+  const hoje = hojeISO(), desde45 = somaDias(hoje, -45), desde13 = somaDias(hoje, -13), iniMes = hoje.slice(0,8) + "01";
+  const desdeProg = iniMes < desde13 ? iniMes : desde13;
   const q = (p) => p.then(r=>r, e=>({ error:{ message:String(e) } }));
-  const [veic, st, of, prog, bal, fila] = await Promise.all([
+  const [veic, st, of, prog, bal, fila, os] = await Promise.all([
     q(sbTv.from("frota_veiculos").select("id,ordem,placa,motorista,atividade_padrao,obs").order("ordem")),
     q(sbTv.from("frota_status").select("data,veiculo_id,atividade,status,motorista,obs").gte("data", desde45).lte("data", hoje)),
     q(sbTv.from("frota_oficina").select("veiculo_id,placa,data_parada,observacao,aprovacao,inicio_execucao,conclusao").is("conclusao", null)),
-    q(sbTv.from("entregas_programacao").select("data,situacao,horario,hora_real,servico,frota,cliente,planejado").gte("data", desde13).lte("data", hoje)),
+    q(sbTv.from("entregas_programacao").select("data,situacao,horario,hora_real,servico,frota,cliente,planejado").gte("data", desdeProg).lte("data", hoje)),
     q(sbTv.from("balsa_operacoes").select("data,pier,balsa,tipo,viagens,hora_inicio,hora_fim").gte("data", desde13).lte("data", hoje)),
     q(sbTv.from("carretas_fila").select("frota,placa,data_entrada").is("data_conclusao", null)),
+    q(sbTv.from("manutencao_os").select("status,saida_data,frota").gte("saida_data", iniMes).lte("saida_data", hoje)),
   ]);
-  const erros = [["Frota", veic], ["Status da frota", st], ["Oficina", of], ["Entregas", prog], ["Balsas", bal], ["Carretas", fila]].filter(([,r])=>r.error).map(([n,r])=>`${n}: ${r.error.message}`);
+  const erros = [["Frota", veic], ["Status da frota", st], ["Oficina", of], ["Entregas", prog], ["Balsas", bal], ["Carretas", fila], ["O.S de carretas", os]].filter(([,r])=>r.error).map(([n,r])=>`${n}: ${r.error.message}`);
   let email = ""; try{ email = (await sbTv.auth.getUser()).data.user?.email || ""; }catch(e){}
   return { hoje, agora:new Date(), erros, email,
-    veiculos: veic.data||[], status: st.data||[], oficina: of.data||[], programacao: prog.data||[], balsas: bal.data||[], fila: fila.data||[],
-    semAcesso:{ frota:!!veic.error, entregas:!!prog.error, balsas:!!bal.error } };
+    veiculos: veic.data||[], status: st.data||[], oficina: of.data||[], programacao: prog.data||[], balsas: bal.data||[], fila: fila.data||[], os: (os.data||[]).filter(o=>(o.status||"emitida")==="emitida"),
+    semAcesso:{ os:!!os.error, frota:!!veic.error, entregas:!!prog.error, balsas:!!bal.error } };
 }
 
 /* ---------------- cálculos ---------------- */
@@ -125,10 +130,16 @@ function calcular(D){
   const sv = (ls, f) => ls.filter(f).reduce((s,r)=>s+(Number(r.viagens)||0), 0);
   const desc = sv(balHoje, r=>r.tipo==="descarga"), carr = sv(balHoje, r=>r.tipo==="carregamento");
 
-  // 7 dias
-  const dias7 = Array.from({ length:7 }, (_,i)=>somaDias(hoje, i-6));
-  const hist = dias7.map(d=>({ d, ent:D.programacao.filter(r=>r.data===d && r.situacao==="realizada").length,
-    desc:sv(D.balsas, r=>r.data===d && r.tipo==="descarga"), carr:sv(D.balsas, r=>r.data===d && r.tipo==="carregamento") }));
+  // mês corrente, dia a dia até hoje: entregas planejado × realizado e carretas (O.S emitidas pela data de saída)
+  const diasMes = []; for(let d = hoje.slice(0,8) + "01"; d <= hoje; d = somaDias(d, 1)) diasMes.push(d);
+  const progMes = D.programacao.filter(r=>r.data.slice(0,7)===hoje.slice(0,7));
+  const planReal = diasMes.map(d=>{ const ls = progMes.filter(r=>r.data===d); return { d, plan:ls.filter(r=>r.planejado!==false).length, real:ls.filter(r=>r.situacao==="realizada").length }; });
+  const planMes = planReal.reduce((s,x)=>s+x.plan,0), realMes = planReal.reduce((s,x)=>s+x.real,0);
+  const realPlanMes = progMes.filter(r=>r.planejado!==false && r.situacao==="realizada").length;
+  const carDia = diasMes.map(d=>({ d, n:(D.os||[]).filter(o=>o.saida_data===d).length }));
+  const carHoje = (D.os||[]).filter(o=>o.saida_data===hoje).length, carMes = (D.os||[]).length;
+  // frota por atividade (Status da Frota)
+  const porAtiv = ATIVIDADES.map(a=>({ ...a, n:frota.filter(f=>(f.r.atividade||"reserva")===a.k).length }));
 
   // saúde: entregas no ritmo do horário (dia útil) + frota disponível
   const ritmo = esperado >= 1 ? Math.min(100, realizadas.length/esperado*100) : null;
@@ -136,7 +147,7 @@ function calcular(D){
   const saude = total ? Math.round(partes.reduce((s,x)=>s+x,0)/partes.length) : null;
 
   return { hoje, minAgora, frota, total, man, parado, semMot, operando, dispPct, progHoje, realizadas, meta, esperado, atrasadas,
-    horas, evoReal, evoMeta, balHoje, desc, carr, hist, ritmo, saude, fila:D.fila, D };
+    horas, evoReal, evoMeta, balHoje, desc, carr, planReal, planMes, realMes, realPlanMes, carDia, carHoje, carMes, porAtiv, ritmo, saude, fila:D.fila, D };
 }
 
 /* ---------------- desenho ---------------- */
@@ -146,9 +157,9 @@ function renderizar(D){
   const nf = (n) => n==null ? "—" : String(n).padStart(2,"0");
 
   // KPIs
-  $("k-man").textContent = D.semAcesso.frota ? "—" : nf(C.man.length);
-  $("k-man-pct").textContent = C.total ? `${Math.round(C.man.length/C.total*100)}%` : "—";
-  $("k-man-sub").textContent = C.total ? `da frota (${C.man.length} de ${C.total})` : "sem dados da frota";
+  $("k-car-dia").textContent = D.semAcesso.os ? "—" : nf(C.carHoje);
+  $("k-car-mes").textContent = D.semAcesso.os ? "—" : nf(C.carMes);
+  $("k-car-mes-sub").textContent = `em ${MES[Number(C.hoje.slice(5,7))-1].toLowerCase()}/${C.hoje.slice(2,4)}`;
   $("k-ent").textContent = D.semAcesso.entregas ? "—" : nf(C.realizadas.length);
   $("k-ent-pct").textContent = C.meta ? `${Math.round(C.realizadas.length/C.meta*100)}%` : "—";
   $("k-ent-pct").style.color = !C.meta ? COR.soft : C.realizadas.length >= C.meta ? COR.verde : C.realizadas.length + 0.5 >= C.esperado ? COR.verde : COR.ambar;
@@ -166,11 +177,10 @@ function renderizar(D){
     options:{ responsive:true, maintainAspectRatio:false, rotation:-90, circumference:180, cutout:"74%", plugins:{ legend:{ display:false }, tooltip:{ enabled:false } } } });
 
   // disponibilidade
-  const itens = [ { t:"Disponíveis", n:C.operando, c:COR.verde }, { t:"Em manutenção", n:C.man.length, c:COR.ambar },
-    { t:"Parados", n:C.parado.length, c:COR.vermelho }, { t:"Sem motorista", n:C.semMot.length, c:COR.cinza } ];
-  $("disp-pct").textContent = C.total ? `${C.dispPct}%` : "—";
-  $("disp-sub").textContent = C.total ? `${C.total} veículos` : (D.semAcesso.frota ? "sem acesso" : "");
-  $("disp-lista").innerHTML = itens.map(i=>`<li><i style="background:${i.c}"></i><b>${nf(i.n)}</b>${i.t}</li>`).join("") + `<li><i style="background:transparent; border:2px solid ${COR.soft}"></i><b>${nf(C.total)}</b>Total da frota</li>`;
+  const itens = C.porAtiv.map(a=>({ t:a.t, n:a.n, c:a.c }));
+  $("disp-pct").textContent = C.total ? nf(C.total) : "—";
+  $("disp-sub").textContent = C.total ? `disponibilidade ${C.dispPct}%` : (D.semAcesso.frota ? "sem acesso" : "");
+  $("disp-lista").innerHTML = itens.map(i=>`<li><i style="background:${i.c}"></i><b>${nf(i.n)}</b>${i.t}</li>`).join("") + `<li><i style="background:transparent; border:2px solid ${COR.soft}"></i><b>${nf(C.total)}</b>Total</li>`;
   grafico("ch-disp", { type:"doughnut", data:{ labels:itens.map(i=>i.t), datasets:[{ data:itens.map(i=>i.n), backgroundColor:itens.map(i=>i.c), borderColor:"#0E1829", borderWidth:3 }] },
     options:{ responsive:true, maintainAspectRatio:false, cutout:"72%", plugins:{ legend:{ display:false }, tooltip:{ enabled:false } } } });
 
@@ -178,20 +188,35 @@ function renderizar(D){
   const cont = {}; C.man.forEach(f=>{ const k = f.st.t; cont[k] = cont[k] || { n:0, c:f.st.c }; cont[k].n++; });
   const criticos = C.man.filter(f=>f.dias!=null && f.dias > TV_DIAS_ALERTA);
   $("of-sub").textContent = C.man.length ? `${C.man.length} veículo(s)${criticos.length ? ` · ${criticos.length} há + de ${TV_DIAS_ALERTA} dias` : ""}` : "";
-  $("of-chips").innerHTML = Object.entries(cont).map(([t,o])=>`<div class="of-chip"><i style="background:${o.c}"></i><b>${o.n}</b>${t}</div>`).join("")
-    + (C.fila.length ? `<div class="of-chip" title="Manutenção de Carreta"><i style="background:${COR.ciano}"></i><b>${C.fila.length}</b>carretas na fila (cliente)</div>` : "");
+  $("of-chips").innerHTML = Object.entries(cont).map(([t,o])=>`<div class="of-chip"><i style="background:${o.c}"></i><b>${o.n}</b>${t}</div>`).join("");
   desenharOficina(C);
 
-  // evolução
-  $("evo-real").textContent = nf(C.realizadas.length); $("evo-meta").textContent = C.meta ? nf(C.meta) : "—"; $("evo-prog").textContent = nf(C.progHoje.length);
-  grafico("ch-evo", { type:"line", data:{ labels:C.horas.map(h=>`${String(h).padStart(2,"0")}h`), datasets:[
-      { label:"Realizado", data:C.evoReal, borderColor:COR.azul, borderWidth:3, tension:.35, pointRadius:fs(.35), pointBackgroundColor:"#fff", pointBorderColor:COR.azul, pointBorderWidth:2, fill:"start",
-        backgroundColor:(c)=>{ const { ctx, chartArea } = c.chart; if(!chartArea) return "transparent"; const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom); g.addColorStop(0, "rgba(59,130,246,.45)"); g.addColorStop(1, "rgba(59,130,246,0)"); return g; },
-        datalabels:{ display:(c)=>{ const v = c.dataset.data; const i = c.dataIndex; return v[i]!=null && (i===v.length-1 || v[i+1]==null || v[i]!==v[i-1]); }, align:"top", offset:4, color:"#fff", font:{ size:fs(1), weight:800 } } },
-      { label:"Meta acumulada", data:C.evoMeta, borderColor:"rgba(255,255,255,.6)", borderDash:[6,5], borderWidth:2, pointRadius:0, fill:false } ] },
+  // entregas: planejado (barra cinza larga) × realizado (barra vermelha por dentro), dia a dia no mês
+  const PR = C.planReal, SEMc = ["D","S","T","Q","Q","S","S"];
+  $("plan-plan").textContent = nf(C.planMes); $("plan-real").textContent = nf(C.realMes);
+  $("plan-pct").textContent = C.planMes ? `${Math.round(C.realPlanMes/C.planMes*100)}%` : "—";
+  $("plan-mes").textContent = `${MES[Number(C.hoje.slice(5,7))-1]}/${C.hoje.slice(0,4)}`;
+  const corPR = (x) => !x.plan ? COR.soft : x.real >= x.plan ? COR.verde : "#FF5A6A";
+  grafico("ch-plan", { type:"bar", data:{ labels:PR.map(x=>x.d.slice(8,10)), datasets:[
+      { label:"Planejado", data:PR.map(x=>x.plan), backgroundColor:"rgba(213,215,223,.28)", borderRadius:4, grouped:false, order:2, barPercentage:.9, categoryPercentage:.9,
+        datalabels:{ display:(c)=>{ const x = PR[c.dataIndex]; return !!(x.plan||x.real); }, formatter:(_v,c)=>{ const x = PR[c.dataIndex]; return `${x.real}/${x.plan}`; },
+          color:(c)=>corPR(PR[c.dataIndex]), anchor:(c)=>"end", align:"top", offset:1, clamp:true, font:{ size:fs(.85), weight:800 } } },
+      { label:"Realizado", data:PR.map(x=>x.real), backgroundColor:COR.vermelho, borderRadius:3, grouped:false, order:1, barPercentage:.5, categoryPercentage:.9 } ] },
     options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.4) } },
-      plugins:{ legend:{ position:"top", align:"end", labels:{ boxWidth:fs(1.4), boxHeight:2, font:{ size:fs(1) }, color:COR.soft } }, tooltip:{ enabled:false } },
-      scales:{ x:{ grid:{ display:false }, ticks:{ font:{ size:fs(1) } } }, y:{ beginAtZero:true, suggestedMax:Math.max(C.meta, C.realizadas.length, 4)+1, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, font:{ size:fs(1) } } } } } });
+      plugins:{ legend:{ position:"top", align:"end", labels:{ boxWidth:fs(1), font:{ size:fs(1) }, color:COR.soft } }, tooltip:{ enabled:false } },
+      scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:(c)=>({ size:fs(.8), weight: PR[c.index]?.d===C.hoje ? 900 : 500 }), color:(c)=>PR[c.index]?.d===C.hoje ? COR.ink : COR.soft } },
+        y:{ beginAtZero:true, suggestedMax:Math.max(4, ...PR.map(x=>Math.max(x.plan,x.real)))*1.2, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, font:{ size:fs(.9) } } } } } });
+
+  // carretas por dia (O.S emitidas pela data de saída)
+  const CD = C.carDia;
+  $("carr-sub").textContent = `${C.carMes} no mês`;
+  grafico("ch-carretas", { type:"bar", data:{ labels:CD.map(x=>x.d.slice(8,10)), datasets:[
+      { label:"Carretas", data:CD.map(x=>x.n), backgroundColor:CD.map(x=>x.d===C.hoje ? COR.laranja : "#C9D1DE"), borderRadius:4, maxBarThickness:fs(2.6),
+        datalabels:{ display:(c)=>c.dataset.data[c.dataIndex] > 0, anchor:"end", align:"top", offset:1, color:COR.ink, font:{ size:fs(.95), weight:800 } } } ] },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.4) } },
+      plugins:{ legend:{ display:false }, tooltip:{ enabled:false } },
+      scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:{ size:fs(.8) } } },
+        y:{ beginAtZero:true, suggestedMax:Math.max(4, ...CD.map(x=>x.n))*1.2, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, font:{ size:fs(.9) } } } } } });
 
   // balsas por pier
   const porPier = PIERS.map(p=>({ p, desc:C.balHoje.filter(r=>r.pier===p.k && r.tipo==="descarga").reduce((s,r)=>s+(+r.viagens||0),0), carr:C.balHoje.filter(r=>r.pier===p.k && r.tipo==="carregamento").reduce((s,r)=>s+(+r.viagens||0),0) }));
@@ -206,24 +231,14 @@ function renderizar(D){
   const balsasDia = {}; C.balHoje.forEach(r=>{ const k = r.balsa||"—"; balsasDia[k] = balsasDia[k] || []; balsasDia[k].push(`${r.tipo==="descarga" ? "⬇" : "⬆"}${r.viagens}`); });
   $("bal-lista").innerHTML = Object.keys(balsasDia).length ? "Balsas: " + Object.entries(balsasDia).map(([b,t])=>`<b>${esc(b)}</b> ${t.join(" ")}`).join(" · ") : (D.semAcesso.balsas ? "Sem acesso às operações de balsa" : "Nenhuma operação de balsa lançada hoje");
 
-  // histórico 7 dias
-  const lh = { display:(c)=>c.dataset.data[c.dataIndex] > 0, anchor:"end", align:"top", offset:1, color:COR.ink, font:{ size:fs(.95), weight:800 } };
-  grafico("ch-hist", { type:"bar", data:{ labels:C.hist.map(h=>{ const d = new Date(h.d+"T12:00:00"); return h.d===C.hoje ? "Hoje" : SEM[d.getDay()]; }), datasets:[
-      { label:"Entregas", data:C.hist.map(h=>h.ent), backgroundColor:COR.azul, borderRadius:4, datalabels:lh },
-      { label:"Descargas", data:C.hist.map(h=>h.desc), backgroundColor:COR.verde, borderRadius:4, datalabels:lh },
-      { label:"Carregamentos", data:C.hist.map(h=>h.carr), backgroundColor:COR.ciano, borderRadius:4, datalabels:lh } ] },
-    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.2) } }, datasets:{ bar:{ categoryPercentage:.78, barPercentage:.9 } },
-      plugins:{ legend:{ position:"top", labels:{ boxWidth:fs(1), font:{ size:fs(1) }, color:COR.soft } }, tooltip:{ enabled:false } },
-      scales:{ x:{ grid:{ display:false }, ticks:{ font:(c)=>({ size:fs(1.05), weight: c.index===6 ? 800 : 500 }) } }, y:{ beginAtZero:true, suggestedMax:Math.max(4, ...C.hist.flatMap(h=>[h.ent,h.desc,h.carr]))*1.25, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, font:{ size:fs(.95) } } } } } });
-
   // realizado x meta
   const linhaRM = (ic, t, a, b, sufixo) => { const p = b ? Math.round(a/b*100) : null; const cor = p==null ? COR.soft : p>=90 ? COR.verde : p>=70 ? COR.ambar : COR.vermelho;
     return `<div class="rm-i"><div class="ic">${ic}</div><div><div class="t">${t}<span>${a} / ${b||"—"}${sufixo||""}</span></div><div class="bar"><i style="width:${p==null?0:Math.min(100,p)}%; background:linear-gradient(90deg, ${cor}, ${cor}cc);"></i></div></div><div class="p" style="color:${cor}">${p==null?"—":p+"%"}</div></div>`; };
   $("rm").innerHTML = [
-    linhaRM("🚚", "Entregas × meta", C.realizadas.length, C.meta),
-    linhaRM("📋", "Entregas × programa", C.realizadas.length, C.progHoje.length),
-    linhaRM("⏱️", "Ritmo até agora", C.realizadas.length, C.esperado >= 1 ? Math.round(C.esperado) : 0),
-    linhaRM("🚛", "Frota disponível", C.total - C.man.length - C.parado.length, C.total),
+    linhaRM("🚚", "Meta do dia", C.realizadas.length, C.meta),
+    linhaRM("📋", "Programadas", C.realizadas.length, C.progHoje.length),
+    linhaRM("⏱️", "Ritmo", C.realizadas.length, C.esperado >= 1 ? Math.round(C.esperado) : 0),
+    linhaRM("🚛", "Frota disp.", C.total - C.man.length - C.parado.length, C.total),
   ].join("");
 
   // alertas
@@ -269,7 +284,7 @@ async function atualizar(){
   const vivo = $("tv-vivo");
   try{
     const D = await buscar();
-    if(D.erros.length === 6){ throw new Error(D.erros[0]); }
+    if(D.erros.length >= 7){ throw new Error(D.erros[0]); }
     renderizar(D);
     const d = new Date();
     vivo.classList.remove("erro"); vivo.querySelector("span").textContent = `Ao vivo · ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;

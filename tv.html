@@ -43,7 +43,7 @@ body.ocioso{ cursor:none; }
 .kpis{ display:grid; grid-template-columns:repeat(4, 1fr); gap:1vw; }
 .card{ background:linear-gradient(160deg, var(--card2), var(--card)); border:1px solid var(--line); border-radius:1.4vh; padding:1.4vh 1.2vw; position:relative; overflow:hidden; min-height:0; min-width:0; display:flex; flex-direction:column; }
 .card h2{ font-size:1.35rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--ink); display:flex; align-items:center; gap:.6vw; }
-.card h2 small{ font-size:1rem; color:var(--soft); font-weight:600; letter-spacing:.02em; text-transform:none; margin-left:auto; }
+.card h2{ white-space:nowrap; } .card h2 small{ overflow:hidden; text-overflow:ellipsis; min-width:0; font-size:1rem; color:var(--soft); font-weight:600; letter-spacing:.02em; text-transform:none; margin-left:auto; }
 .kpi{ border-width:2px; }
 .kpi.k1{ border-color:rgba(242,113,28,.75); box-shadow:inset 0 0 4vh rgba(242,113,28,.10); }
 .kpi.k2{ border-color:rgba(59,130,246,.75); box-shadow:inset 0 0 4vh rgba(59,130,246,.10); }
@@ -69,25 +69,25 @@ body.ocioso{ cursor:none; }
 .gauge .info .sub{ margin-top:1vh; }
 
 .linha{ display:grid; gap:1vw; min-height:0; }
-.l1{ grid-template-columns:1fr 1.45fr 1.3fr; }
-.l2{ grid-template-columns:1fr 1.1fr 1fr 1.05fr; }
+.l1{ grid-template-columns:1.05fr 1fr 1.6fr; }
+.l2{ grid-template-columns:1.45fr 1.05fr 0.95fr 1fr; }
 .chart{ position:relative; flex:1; min-height:0; margin-top:1vh; }
 
 /* disponibilidade */
 .disp{ flex:1; display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:1vw; min-height:0; }
-.disp .dn{ position:relative; height:19vh; width:19vh; }
+.disp .dn{ position:relative; height:18vh; width:18vh; }
 .disp .dn b{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:1rem; font-weight:900; line-height:1; }
 .disp .dn b span{ font-size:1.1rem; color:var(--soft); font-weight:600; margin-top:.5vh; }
 .disp ul{ list-style:none; display:grid; gap:.2vh; }
-.disp li{ display:flex; align-items:center; gap:.8vw; padding:.7vh 0; white-space:nowrap; border-bottom:1px solid var(--line); font-size:1.25rem; color:var(--soft); }
+.disp li{ display:flex; align-items:center; gap:.7vw; padding:.1vh 0; font-size:1.15rem; white-space:nowrap; border-bottom:1px solid var(--line); font-size:1.25rem; color:var(--soft); }
 .disp li:last-child{ border:0; }
-.disp li b{ font-size:2.1rem; color:var(--ink); min-width:3vw; font-variant-numeric:tabular-nums; }
+.disp li b{ font-size:1.55rem; color:var(--ink); min-width:3vw; font-variant-numeric:tabular-nums; }
 .disp li i{ width:1.4vh; height:1.4vh; border-radius:50%; display:inline-block; }
 
 /* oficina */
 .of-chips{ display:flex; gap:.6vw; flex-wrap:wrap; margin-top:1vh; }
-.of-chip{ display:flex; align-items:center; gap:.5vw; padding:.6vh .8vw; border-radius:.9vh; background:rgba(255,255,255,.05); border:1px solid var(--line); font-size:1.1rem; color:var(--soft); }
-.of-chip b{ font-size:1.6rem; color:var(--ink); }
+.of-chip{ display:flex; align-items:center; gap:.4vw; padding:.4vh .6vw; border-radius:.9vh; background:rgba(255,255,255,.05); border:1px solid var(--line); font-size:1rem; color:var(--soft); }
+.of-chip b{ font-size:1.35rem; color:var(--ink); }
 .of-chip i{ width:1.2vh; height:1.2vh; border-radius:3px; display:inline-block; }
 .of-lista{ flex:1; min-height:0; margin-top:1vh; display:grid; grid-auto-rows:min-content; gap:.6vh; overflow:hidden; align-content:start; }
 .of-row{ display:grid; grid-template-columns:4.2vw 1fr auto auto; align-items:center; gap:.8vw; padding:.7vh .8vw; background:rgba(255,255,255,.035); border-radius:.9vh; border-left:.45vh solid var(--c, var(--amber)); }
@@ -105,8 +105,8 @@ body.ocioso{ cursor:none; }
 /* evolução */
 .evo{ flex:1; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:1vw; min-height:0; }
 .evo .boxes{ display:grid; gap:1vh; align-content:center; }
-.evo .box{ border:2px solid var(--line); border-radius:1.2vh; padding:.8vh .8vw; text-align:center; min-width:7.5vw; }
-.evo .box b{ display:block; font-size:3rem; font-weight:900; line-height:1; }
+.evo .box{ border:2px solid var(--line); border-radius:1.2vh; padding:.5vh .7vw; text-align:center; min-width:7vw; }
+.evo .box b{ display:block; font-size:2.6rem; font-weight:900; line-height:1; }
 .evo .box span{ font-size:1.1rem; color:var(--soft); }
 .evo .box.real{ border-color:rgba(59,130,246,.75); } .evo .box.meta{ border-color:rgba(255,255,255,.3); }
 
@@ -163,8 +163,12 @@ body.ocioso{ cursor:none; }
   </header>
 
   <section class="kpis">
-    <div class="card kpi k1"><div class="cab"><span class="ic">🔧</span><h3>Veículos em<br>manutenção</h3></div>
-      <div class="corpo"><div class="big" id="k-man">—</div><div class="sep"></div><div><div class="pct" id="k-man-pct" style="color:var(--amber);">—</div><div class="sub" id="k-man-sub">da frota</div></div></div></div>
+    <div class="card kpi k1"><div class="cab"><span class="ic">🔧</span><h3>Carretas em<br>manutenção</h3></div>
+      <div class="duo">
+        <div><div class="lb" style="color:var(--amber);">No dia</div><div class="big" id="k-car-dia">—</div><div class="un" id="k-car-dia-sub">carretas hoje</div></div>
+        <div class="sep" style="margin:0;"></div>
+        <div><div class="lb" style="color:var(--orange);">No mês</div><div class="big" id="k-car-mes">—</div><div class="un" id="k-car-mes-sub">carretas</div></div>
+      </div></div>
     <div class="card kpi k2"><div class="cab"><span class="ic">🚚</span><h3>Viagens de<br>entrega (hoje)</h3></div>
       <div class="corpo"><div class="big" id="k-ent">—</div><div class="sep"></div><div><div class="pct" id="k-ent-pct" style="color:var(--green);">—</div><div class="sub" id="k-ent-sub">da meta</div></div></div></div>
     <div class="card kpi k3"><div class="cab"><span class="ic">🚢</span><h3>Operações de<br>balsas (hoje)</h3></div>
@@ -182,24 +186,24 @@ body.ocioso{ cursor:none; }
   </section>
 
   <section class="linha l1">
-    <div class="card"><h2>Disponibilidade da frota <small id="disp-sub"></small></h2>
-      <div class="disp"><div class="dn"><canvas id="ch-disp"></canvas><b><span id="disp-pct" style="font-size:3.4rem; color:var(--ink); font-weight:900; margin:0;">—</span><span>disponível</span></b></div>
+    <div class="card"><h2>🚛 Status da frota <small id="disp-sub"></small></h2>
+      <div class="disp"><div class="dn"><canvas id="ch-disp"></canvas><b><span id="disp-pct" style="font-size:3.4rem; color:var(--ink); font-weight:900; margin:0;">—</span><span>veículos</span></b></div>
         <ul id="disp-lista"></ul></div></div>
-    <div class="card"><h2>🔧 Veículos parados na oficina <small id="of-sub"></small></h2>
-      <div class="of-chips" id="of-chips"></div>
-      <div class="of-lista" id="of-lista"></div>
-      <div class="of-pag" id="of-pag"></div></div>
-    <div class="card"><h2>Viagens de entrega — evolução do dia</h2>
-      <div class="evo"><div class="chart"><canvas id="ch-evo"></canvas></div>
-        <div class="boxes"><div class="box real"><b id="evo-real">—</b><span>Realizadas</span></div><div class="box meta"><b id="evo-meta">—</b><span>Meta do dia</span></div><div class="box" style="border-color:rgba(245,185,33,.5);"><b id="evo-prog" style="font-size:2.6rem;">—</b><span>Programadas</span></div></div></div></div>
-  </section>
-
-  <section class="linha l2">
     <div class="card"><h2>🚢 Balsas hoje — por pier</h2>
       <div class="bal"><div class="chart"><canvas id="ch-bal"></canvas></div>
         <div class="tot"><img src="img/tv-balsa.jpg" alt=""><b id="bal-tot">—</b><span>viagens<br>no dia</span></div></div>
       <div class="bal-lista" id="bal-lista"></div></div>
-    <div class="card"><h2>Histórico — últimos 7 dias</h2><div class="chart"><canvas id="ch-hist"></canvas></div></div>
+    <div class="card"><h2>📊 Entregas — planejado × realizado por dia <small id="plan-mes"></small></h2>
+      <div class="evo"><div class="chart"><canvas id="ch-plan"></canvas></div>
+        <div class="boxes"><div class="box meta"><b id="plan-plan">—</b><span>Planejado<br>no mês</span></div><div class="box real" style="border-color:rgba(227,23,47,.75);"><b id="plan-real">—</b><span>Realizado<br>no mês</span></div><div class="box" style="border-color:rgba(34,197,94,.55);"><b id="plan-pct" style="font-size:2.6rem;">—</b><span>Atendimento</span></div></div></div></div>
+  </section>
+
+  <section class="linha l2">
+    <div class="card"><h2>🔧 Veículos na oficina <small id="of-sub"></small></h2>
+      <div class="of-chips" id="of-chips"></div>
+      <div class="of-lista" id="of-lista"></div>
+      <div class="of-pag" id="of-pag"></div></div>
+    <div class="card"><h2>🔩 Carretas por dia <small id="carr-sub"></small></h2><div class="chart"><canvas id="ch-carretas"></canvas></div></div>
     <div class="card"><h2>Realizado × meta (hoje)</h2><div class="rm" id="rm"></div></div>
     <div class="card alertas"><h2>⚠️ Alertas operacionais</h2><div class="al-lista" id="alertas"></div></div>
   </section>
@@ -215,6 +219,6 @@ body.ocioso{ cursor:none; }
   <p>Depois de entrar, a TV fica conectada e o painel atualiza sozinho a cada minuto.</p>
 </form></div>
 <div class="aviso" id="aviso"></div>
-<script src="tv.js?v=20261112d"></script>
+<script src="tv.js?v=20261113b"></script>
 </body>
 </html>
