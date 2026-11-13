@@ -7636,7 +7636,13 @@ let PROG = { linhas:[], carregando:false, mesCarregado:null, erro:null, veiculos
 let PROG_FORM = { servico:"ENTREGA", horario:"", planejado:true };
 let PROG_ASSINATURA = "";
 
-window.setEntAba = (a) => { ENT_ABA = a; navigate("entregas"); };
+// Ao abrir "Receita e viagens", relê do banco as entregas realizadas da Programação diária —
+// assim o que foi lançado/marcado como realizado nesta sessão já aparece nos gráficos mensais.
+window.setEntAba = async (a) => {
+  ENT_ABA = a;
+  if(a === "receita"){ try{ await entCarregarProgReceita(); deriveEntregas(); }catch(e){ console.warn(e); } }
+  navigate("entregas");
+};
 function progMesesOpcoes(){
   const out = [], d = new Date(); d.setDate(1);
   for(let i=0;i<12;i++){ out.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`); d.setMonth(d.getMonth()-1); }
