@@ -110,6 +110,12 @@ body.ocioso{ cursor:none; }
 .evo .box span{ font-size:1.1rem; color:var(--soft); }
 .evo .box.real{ border-color:rgba(59,130,246,.75); } .evo .box.meta{ border-color:rgba(255,255,255,.3); }
 
+/* planejado x realizado */
+.pr-top{ display:flex; gap:.8vw; margin-top:1vh; }
+.pr-k{ flex:1; display:flex; align-items:center; gap:.6vw; background:rgba(255,255,255,.04); border:1px solid var(--line); border-radius:1vh; padding:.6vh .9vw; }
+.pr-k i{ width:1.6vh; height:1.6vh; border-radius:4px; flex-shrink:0; }
+.pr-k span{ font-size:1.05rem; color:var(--soft); flex:1; white-space:nowrap; }
+.pr-k b{ font-size:2.2rem; font-weight:900; line-height:1; font-variant-numeric:tabular-nums; }
 /* balsas */
 .bal{ flex:1; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:.8vw; min-height:0; }
 .bal .tot{ display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding-left:.8vw; border-left:1px solid var(--line); width:7.5vw; }
@@ -194,8 +200,12 @@ body.ocioso{ cursor:none; }
         <div class="tot"><img src="img/tv-balsa.jpg" alt=""><b id="bal-tot">—</b><span>viagens<br>no dia</span></div></div>
       <div class="bal-lista" id="bal-lista"></div></div>
     <div class="card"><h2>📊 Entregas — planejado × realizado por dia <small id="plan-mes"></small></h2>
-      <div class="evo"><div class="chart"><canvas id="ch-plan"></canvas></div>
-        <div class="boxes"><div class="box meta"><b id="plan-plan">—</b><span>Planejado<br>no mês</span></div><div class="box real" style="border-color:rgba(227,23,47,.75);"><b id="plan-real">—</b><span>Realizado<br>no mês</span></div><div class="box" style="border-color:rgba(34,197,94,.55);"><b id="plan-pct" style="font-size:2.6rem;">—</b><span>Atendimento</span></div></div></div></div>
+      <div class="pr-top">
+        <div class="pr-k"><i style="background:rgba(255,255,255,.18); border:1.5px solid rgba(255,255,255,.45);"></i><span>Planejado no mês</span><b id="plan-plan">—</b></div>
+        <div class="pr-k"><i style="background:linear-gradient(180deg,#FF4A5C,#B0001A);"></i><span>Realizado no mês</span><b id="plan-real">—</b></div>
+        <div class="pr-k"><span>Atendimento</span><b id="plan-pct" style="color:var(--green);">—</b></div>
+      </div>
+      <div class="chart"><canvas id="ch-plan"></canvas></div></div>
   </section>
 
   <section class="linha l2">
@@ -219,6 +229,6 @@ body.ocioso{ cursor:none; }
   <p>Depois de entrar, a TV fica conectada e o painel atualiza sozinho a cada minuto.</p>
 </form></div>
 <div class="aviso" id="aviso"></div>
-<script src="tv.js?v=20261113b"></script>
+<script src="tv.js?v=20261113c"></script>
 </body>
 </html>

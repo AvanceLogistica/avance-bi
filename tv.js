@@ -38,6 +38,7 @@ if(typeof Chart !== "undefined"){
 const fs = (rem) => parseFloat(getComputedStyle(document.documentElement).fontSize) * rem;
 function grafico(id, cfg){
   const el = $(id); if(!el || typeof Chart === "undefined") return;
+  if(charts[id] && cfg.plugins){ charts[id].destroy(); delete charts[id]; }
   if(charts[id]){ charts[id].data = cfg.data; charts[id].options = cfg.options; charts[id].update(); return; }
   charts[id] = new Chart(el.getContext("2d"), cfg);
 }
@@ -64,12 +65,13 @@ window.tvEntrar = async (ev) => {
 async function buscar(){
   const hoje = hojeISO(), desde45 = somaDias(hoje, -45), desde13 = somaDias(hoje, -13), iniMes = hoje.slice(0,8) + "01";
   const desdeProg = iniMes < desde13 ? iniMes : desde13;
+  const fimMes = (()=>{ const d = new Date(Number(hoje.slice(0,4)), Number(hoje.slice(5,7)), 0); return iso(d); })();
   const q = (p) => p.then(r=>r, e=>({ error:{ message:String(e) } }));
   const [veic, st, of, prog, bal, fila, os] = await Promise.all([
     q(sbTv.from("frota_veiculos").select("id,ordem,placa,motorista,atividade_padrao,obs").order("ordem")),
     q(sbTv.from("frota_status").select("data,veiculo_id,atividade,status,motorista,obs").gte("data", desde45).lte("data", hoje)),
     q(sbTv.from("frota_oficina").select("veiculo_id,placa,data_parada,observacao,aprovacao,inicio_execucao,conclusao").is("conclusao", null)),
-    q(sbTv.from("entregas_programacao").select("data,situacao,horario,hora_real,servico,frota,cliente,planejado").gte("data", desdeProg).lte("data", hoje)),
+    q(sbTv.from("entregas_programacao").select("data,situacao,horario,hora_real,servico,frota,cliente,planejado").gte("data", desdeProg).lte("data", fimMes)),
     q(sbTv.from("balsa_operacoes").select("data,pier,balsa,tipo,viagens,hora_inicio,hora_fim").gte("data", desde13).lte("data", hoje)),
     q(sbTv.from("carretas_fila").select("frota,placa,data_entrada").is("data_conclusao", null)),
     q(sbTv.from("manutencao_os").select("status,saida_data,frota").gte("saida_data", iniMes).lte("saida_data", hoje)),
@@ -113,6 +115,8 @@ function calcular(D){
 
   // entregas
   const progHoje = D.programacao.filter(r=>r.data===hoje);
+  const ultimoProg = D.programacao.filter(r=>r.data.slice(0,7)===hoje.slice(0,7)).map(r=>r.data).sort().pop() || hoje;
+  const ateDia = ultimoProg > hoje ? ultimoProg : hoje;
   const realizadas = progHoje.filter(r=>r.situacao==="realizada");
   const meta = ehDiaUtil(hoje) ? TV_META_ENTREGAS : 0;
   const fracDia = Math.min(1, Math.max(0, (minAgora - TV_HORA_INI*60) / ((TV_HORA_FIM-TV_HORA_INI)*60)));
@@ -131,12 +135,13 @@ function calcular(D){
   const desc = sv(balHoje, r=>r.tipo==="descarga"), carr = sv(balHoje, r=>r.tipo==="carregamento");
 
   // mês corrente, dia a dia até hoje: entregas planejado × realizado e carretas (O.S emitidas pela data de saída)
-  const diasMes = []; for(let d = hoje.slice(0,8) + "01"; d <= hoje; d = somaDias(d, 1)) diasMes.push(d);
+  const diasMes = [], diasCar = [];
+  for(let d = hoje.slice(0,8) + "01"; d <= ateDia; d = somaDias(d, 1)){ diasMes.push(d); if(d <= hoje) diasCar.push(d); }
   const progMes = D.programacao.filter(r=>r.data.slice(0,7)===hoje.slice(0,7));
   const planReal = diasMes.map(d=>{ const ls = progMes.filter(r=>r.data===d); return { d, plan:ls.filter(r=>r.planejado!==false).length, real:ls.filter(r=>r.situacao==="realizada").length }; });
-  const planMes = planReal.reduce((s,x)=>s+x.plan,0), realMes = planReal.reduce((s,x)=>s+x.real,0);
-  const realPlanMes = progMes.filter(r=>r.planejado!==false && r.situacao==="realizada").length;
-  const carDia = diasMes.map(d=>({ d, n:(D.os||[]).filter(o=>o.saida_data===d).length }));
+  const planMes = planReal.filter(x=>x.d<=hoje).reduce((s,x)=>s+x.plan,0), realMes = planReal.reduce((s,x)=>s+x.real,0);
+  const realPlanMes = progMes.filter(r=>r.data<=hoje && r.planejado!==false && r.situacao==="realizada").length;
+  const carDia = diasCar.map(d=>({ d, n:(D.os||[]).filter(o=>o.saida_data===d).length }));
   const carHoje = (D.os||[]).filter(o=>o.saida_data===hoje).length, carMes = (D.os||[]).length;
   // frota por atividade (Status da Frota)
   const porAtiv = ATIVIDADES.map(a=>({ ...a, n:frota.filter(f=>(f.r.atividade||"reserva")===a.k).length }));
@@ -196,16 +201,30 @@ function renderizar(D){
   $("plan-plan").textContent = nf(C.planMes); $("plan-real").textContent = nf(C.realMes);
   $("plan-pct").textContent = C.planMes ? `${Math.round(C.realPlanMes/C.planMes*100)}%` : "—";
   $("plan-mes").textContent = `${MES[Number(C.hoje.slice(5,7))-1]}/${C.hoje.slice(0,4)}`;
-  const corPR = (x) => !x.plan ? COR.soft : x.real >= x.plan ? COR.verde : "#FF5A6A";
+  const corPR = (x) => !x.plan ? COR.soft : x.real >= x.plan ? "#4ADE80" : "#FF6B7A";
+  const futuro = (x) => x.d > C.hoje;
+  const SEMl = ["dom","seg","ter","qua","qui","sex","sáb"];
   grafico("ch-plan", { type:"bar", data:{ labels:PR.map(x=>x.d.slice(8,10)), datasets:[
-      { label:"Planejado", data:PR.map(x=>x.plan), backgroundColor:"rgba(213,215,223,.28)", borderRadius:4, grouped:false, order:2, barPercentage:.9, categoryPercentage:.9,
-        datalabels:{ display:(c)=>{ const x = PR[c.dataIndex]; return !!(x.plan||x.real); }, formatter:(_v,c)=>{ const x = PR[c.dataIndex]; return `${x.real}/${x.plan}`; },
-          color:(c)=>corPR(PR[c.dataIndex]), anchor:(c)=>"end", align:"top", offset:1, clamp:true, font:{ size:fs(.85), weight:800 } } },
-      { label:"Realizado", data:PR.map(x=>x.real), backgroundColor:COR.vermelho, borderRadius:3, grouped:false, order:1, barPercentage:.5, categoryPercentage:.9 } ] },
-    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.4) } },
-      plugins:{ legend:{ position:"top", align:"end", labels:{ boxWidth:fs(1), font:{ size:fs(1) }, color:COR.soft } }, tooltip:{ enabled:false } },
-      scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:(c)=>({ size:fs(.8), weight: PR[c.index]?.d===C.hoje ? 900 : 500 }), color:(c)=>PR[c.index]?.d===C.hoje ? COR.ink : COR.soft } },
-        y:{ beginAtZero:true, suggestedMax:Math.max(4, ...PR.map(x=>Math.max(x.plan,x.real)))*1.2, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, font:{ size:fs(.9) } } } } } });
+      { label:"Planejado", data:PR.map(x=>x.plan||null), grouped:false, order:2, barPercentage:.82, categoryPercentage:.92,
+        backgroundColor:PR.map(x=>futuro(x) ? "rgba(59,130,246,.16)" : "rgba(255,255,255,.10)"),
+        borderColor:PR.map(x=>futuro(x) ? "rgba(96,165,250,.8)" : "rgba(255,255,255,.38)"), borderWidth:1.5, borderDash:[4,3], borderRadius:6, borderSkipped:false,
+        datalabels:{ display:(c)=>!!PR[c.dataIndex].plan || !!PR[c.dataIndex].real,
+          formatter:(_v,c)=>{ const x = PR[c.dataIndex]; return futuro(x) ? `${x.plan}` : `${x.real}/${x.plan}`; },
+          color:(c)=>futuro(PR[c.dataIndex]) ? "#93C5FD" : corPR(PR[c.dataIndex]), anchor:"end", align:"top", offset:2, clamp:true, font:{ size:fs(1), weight:900 } } },
+      { label:"Realizado", data:PR.map(x=>futuro(x) ? null : x.real), grouped:false, order:1, barPercentage:.5, categoryPercentage:.92, borderRadius:5, borderSkipped:false,
+        backgroundColor:(c)=>{ const { ctx, chartArea } = c.chart; if(!chartArea) return COR.vermelho;
+          const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom); g.addColorStop(0, "#FF4A5C"); g.addColorStop(1, "#B0001A"); return g; } } ] },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.6), left:0, right:fs(.4) } },
+      plugins:{ legend:{ display:false }, tooltip:{ enabled:false } },
+      scales:{
+        x:{ grid:{ display:false }, border:{ color:"rgba(255,255,255,.18)" },
+          ticks:{ autoSkip:false, maxRotation:0, padding:fs(.3), font:(c)=>({ size:fs(1.05), weight: PR[c.index]?.d===C.hoje ? 900 : 600 }),
+            color:(c)=>{ const x = PR[c.index]; if(!x) return COR.soft; if(x.d===C.hoje) return COR.laranja; const w = new Date(x.d+"T12:00:00").getDay(); return futuro(x) ? "#93C5FD" : (w===0||w===6) ? COR.cinza : COR.ink; } } },
+        y:{ beginAtZero:true, suggestedMax:Math.max(4, ...PR.map(x=>Math.max(x.plan,x.real)))*1.22, grid:{ color:"rgba(120,160,220,.08)" }, border:{ display:false },
+          ticks:{ precision:0, maxTicksLimit:5, font:{ size:fs(.9) } } } } },
+    plugins:[{ id:"hojeMarca", beforeDatasetsDraw(chart){ const i = PR.findIndex(x=>x.d===C.hoje); if(i<0) return;
+      const { ctx, chartArea } = chart, x = chart.scales.x.getPixelForValue(i), w = (chart.scales.x.width / PR.length);
+      ctx.save(); ctx.fillStyle = "rgba(242,113,28,.10)"; ctx.fillRect(x - w/2, chartArea.top, w, chartArea.bottom - chartArea.top); ctx.restore(); } }] });
 
   // carretas por dia (O.S emitidas pela data de saída)
   const CD = C.carDia;
