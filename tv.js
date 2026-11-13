@@ -235,7 +235,7 @@ function renderizar(D){
 
   // carretas por dia (O.S emitidas pela data de saída)
   const CD = C.carDia;
-  $("carr-sub").textContent = `${C.carMes} no mês`;
+  $("carr-sub").textContent = ` · ${C.carMes} no mês`;
   grafico("ch-carretas", { type:"bar", data:{ labels:CD.map(x=>x.d.slice(8,10)), datasets:[
       { label:"Carretas", data:CD.map(x=>x.n), backgroundColor:CD.map(x=>x.d===C.hoje ? COR.laranja : "#C9D1DE"), borderRadius:4, maxBarThickness:fs(2.6),
         datalabels:{ display:(c)=>c.dataset.data[c.dataIndex] > 0, anchor:"end", align:"top", offset:1, color:COR.ink, font:{ size:fs(.95), weight:800 } } } ] },

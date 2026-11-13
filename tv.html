@@ -31,7 +31,7 @@ body.ocioso{ cursor:none; }
 .topo .tit p{ font-size:1.25rem; color:var(--cyan); letter-spacing:.14em; text-transform:uppercase; margin-top:.6vh; font-weight:600; }
 .topo .fotos{ height:12vh; display:flex; justify-content:flex-end; gap:.6vw; -webkit-mask-image:linear-gradient(90deg, transparent 0, #000 22%); mask-image:linear-gradient(90deg, transparent 0, #000 22%); }
 .topo .fotos img{ height:100%; object-fit:cover; border-radius:1vh; opacity:.92; }
-.topo .fotos img.pier{ width:24vw; } .topo .fotos img.balsa{ width:12vw; }
+.topo .fotos img.pier{ width:24vw; object-position:center 60%; } .topo .fotos img.balsa{ width:12vw; }
 .relogio{ background:rgba(14,24,41,.85); border:1px solid var(--line); border-radius:1.2vh; padding:1vh 1.2vw; display:grid; gap:.5vh; min-width:15vw; }
 .relogio div{ display:flex; align-items:center; gap:.6vw; font-size:1.3rem; font-weight:600; }
 .relogio .hora{ font-size:2.6rem; font-weight:800; letter-spacing:.02em; }
@@ -110,6 +110,11 @@ body.ocioso{ cursor:none; }
 .evo .box span{ font-size:1.1rem; color:var(--soft); }
 .evo .box.real{ border-color:rgba(59,130,246,.75); } .evo .box.meta{ border-color:rgba(255,255,255,.3); }
 
+/* título com ícone e subtítulo */
+.card h2.h2-ic{ align-items:center; }
+.ic-carreta{ height:3.4vh; width:auto; flex-shrink:0; }
+.h2-t{ display:flex; flex-direction:column; line-height:1.05; } .card h2.h2-ic small{ flex-shrink:0; }
+.h2-t em{ font-style:normal; font-size:1rem; font-weight:700; letter-spacing:.08em; color:var(--orange); text-transform:uppercase; margin-top:.3vh; }
 /* planejado x realizado */
 .pr-top{ display:flex; gap:.8vw; margin-top:1vh; }
 .pr-k{ flex:1; display:flex; align-items:center; gap:.6vw; background:rgba(255,255,255,.04); border:1px solid var(--line); border-radius:1vh; padding:.6vh .9vw; }
@@ -160,7 +165,7 @@ body.ocioso{ cursor:none; }
   <header class="topo">
     <img class="logo" src="img/tv-logo.png" alt="Avance Logística Integrada">
     <div class="tit"><h1>CONTROL TOWER</h1><p>Centro de Controle Operacional</p></div>
-    <div class="fotos"><img class="pier" src="img/tv-pier.jpg" alt=""><img class="balsa" src="img/tv-balsa.jpg" alt=""></div>
+    <div class="fotos"><img class="pier" src="img/tv-carreta.jpg" alt=""><img class="balsa" src="img/tv-balsa.jpg" alt=""></div>
     <div class="relogio">
       <div class="hora" id="tv-hora">--:--</div>
       <div id="tv-data">—</div>
@@ -213,7 +218,7 @@ body.ocioso{ cursor:none; }
       <div class="of-chips" id="of-chips"></div>
       <div class="of-lista" id="of-lista"></div>
       <div class="of-pag" id="of-pag"></div></div>
-    <div class="card"><h2>🔩 Carretas por dia <small id="carr-sub"></small></h2><div class="chart"><canvas id="ch-carretas"></canvas></div></div>
+    <div class="card"><h2 class="h2-ic"><svg class="ic-carreta" viewBox="0 0 64 40" aria-hidden="true"><rect x="2" y="6" width="40" height="20" rx="2" fill="#C9D1DE" stroke="#F2F5FA" stroke-width="1.5"/><line x1="10" y1="9" x2="10" y2="23" stroke="#8A94A3" stroke-width="1.2"/><line x1="18" y1="9" x2="18" y2="23" stroke="#8A94A3" stroke-width="1.2"/><line x1="26" y1="9" x2="26" y2="23" stroke="#8A94A3" stroke-width="1.2"/><line x1="34" y1="9" x2="34" y2="23" stroke="#8A94A3" stroke-width="1.2"/><rect x="42" y="22" width="8" height="3" fill="#C9D1DE"/><circle cx="28" cy="31" r="4.5" fill="#1B2436" stroke="#F2F5FA" stroke-width="1.5"/><circle cx="38" cy="31" r="4.5" fill="#1B2436" stroke="#F2F5FA" stroke-width="1.5"/><line x1="4" y1="26" x2="4" y2="34" stroke="#C9D1DE" stroke-width="2"/><circle cx="52" cy="14" r="11" fill="#F2711C"/><path d="M57.5 9.2a4.6 4.6 0 0 1-5.9 5.9l-5.2 5.2a1.6 1.6 0 0 1-2.3-2.3l5.2-5.2a4.6 4.6 0 0 1 5.9-5.9l-2.7 2.7.5 1.8 1.8.5z" fill="#fff"/></svg><span class="h2-t">Carretas em manutenção<em>Pátio Externo<span id="carr-sub" style="color:var(--soft); letter-spacing:.02em; text-transform:none;"></span></em></span></h2><div class="chart"><canvas id="ch-carretas"></canvas></div></div>
     <div class="card"><h2>Realizado × meta (hoje)</h2><div class="rm" id="rm"></div></div>
     <div class="card alertas"><h2>⚠️ Alertas operacionais</h2><div class="al-lista" id="alertas"></div></div>
   </section>
@@ -229,6 +234,6 @@ body.ocioso{ cursor:none; }
   <p>Depois de entrar, a TV fica conectada e o painel atualiza sozinho a cada minuto.</p>
 </form></div>
 <div class="aviso" id="aviso"></div>
-<script src="tv.js?v=20261113d"></script>
+<script src="tv.js?v=20261113e"></script>
 </body>
 </html>
