@@ -61,6 +61,13 @@ window.tvEntrar = async (ev) => {
   $("login").classList.remove("on"); atualizar();
 };
 
+// sair do usuário da TV (ex.: celular que ficou logado com a conta da TV) e voltar ao sistema
+window.tvSair = async () => {
+  if(!confirm("Sair do usuário da TV e voltar para a tela de login do sistema?")) return;
+  try{ if(sbTv) await sbTv.auth.signOut(); }catch(e){}
+  location.replace("index.html");
+};
+
 /* ---------------- busca no banco ---------------- */
 async function buscar(){
   const hoje = hojeISO(), desde45 = somaDias(hoje, -45), desde13 = somaDias(hoje, -13), iniMes = hoje.slice(0,8) + "01";

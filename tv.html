@@ -158,6 +158,9 @@ body.ocioso{ cursor:none; }
 .login p{ color:var(--soft); font-size:13px; text-align:center; }
 .aviso{ position:fixed; left:50%; bottom:1.5vh; transform:translateX(-50%); background:rgba(227,23,47,.92); color:#fff; padding:.8vh 1.4vw; border-radius:99px; font-size:1.2rem; font-weight:700; display:none; z-index:5; }
 .aviso.on{ display:block; }
+.sair{ position:fixed; right:12px; bottom:12px; z-index:9; padding:8px 14px; border-radius:10px; border:1px solid var(--line); background:rgba(14,24,41,.85); color:var(--soft); font-size:14px; font-weight:700; cursor:pointer; opacity:.55; }
+.sair:hover{ opacity:1; color:var(--ink); }
+body.ocioso .sair{ opacity:0; }
 </style>
 </head>
 <body>
@@ -234,6 +237,7 @@ body.ocioso{ cursor:none; }
   <p>Depois de entrar, a TV fica conectada e o painel atualiza sozinho a cada minuto.</p>
 </form></div>
 <div class="aviso" id="aviso"></div>
-<script src="tv.js?v=20261113e"></script>
+<button class="sair" type="button" onclick="tvSair()" title="Sair deste usuário e voltar ao sistema">⎋ Sair</button>
+<script src="tv.js?v=20261116a"></script>
 </body>
 </html>
