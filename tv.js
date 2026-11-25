@@ -158,13 +158,8 @@ function calcular(D){
   // frota por atividade (Status da Frota)
   const porAtiv = ATIVIDADES.map(a=>({ ...a, n:frota.filter(f=>(f.r.atividade||"reserva")===a.k).length }));
 
-  // saúde: entregas no ritmo do horário (dia útil) + frota disponível
-  const ritmo = esperado >= 1 ? Math.min(100, realizadas.length/esperado*100) : null;
-  const partes = [dispPct, ...(ritmo!=null ? [ritmo] : [])];
-  const saude = total ? Math.round(partes.reduce((s,x)=>s+x,0)/partes.length) : null;
-
   return { hoje, minAgora, frota, total, man, parado, semMot, operando, dispPct, progHoje, realizadas, meta, esperado, atrasadas,
-    horas, evoReal, evoMeta, balHoje, desc, carr, descP, carrP, balAbertas, planReal, planMes, realMes, realPlanMes, carDia, carHoje, carMes, porAtiv, ritmo, saude, fila:D.fila, D };
+    horas, evoReal, evoMeta, balHoje, desc, carr, descP, carrP, balAbertas, planReal, planMes, realMes, realPlanMes, carDia, carHoje, carMes, porAtiv, fila:D.fila, D };
 }
 
 /* ---------------- desenho ---------------- */
@@ -185,15 +180,6 @@ function renderizar(D){
   $("k-carr").textContent = D.semAcesso.balsas ? "—" : nf(C.carr);
   $("k-desc").nextElementSibling.textContent = C.descP ? `viagens · plano ${C.descP}` : "viagens";
   $("k-carr").nextElementSibling.textContent = C.carrP ? `viagens · plano ${C.carrP}` : "viagens";
-
-  // saúde (meia-lua)
-  const s = C.saude, corS = s==null ? COR.cinza : s>=85 ? COR.verde : s>=70 ? COR.ambar : COR.vermelho;
-  $("k-saude").textContent = s==null ? "—" : `${s}%`;
-  const selo = $("k-saude-selo"); selo.textContent = s==null ? "sem dados" : s>=85 ? "Bom desempenho" : s>=70 ? "Atenção" : "Crítico";
-  selo.style.background = corS; selo.style.color = s!=null && s>=70 && s<85 ? "#1A1300" : "#fff";
-  $("k-saude-sub").textContent = C.ritmo!=null ? `frota disponível ${C.dispPct}% · entregas no ritmo ${Math.round(C.ritmo)}%` : `frota disponível ${C.dispPct}%`;
-  grafico("ch-gauge", { type:"doughnut", data:{ datasets:[{ data:[s||0, 100-(s||0)], backgroundColor:[corS, "rgba(255,255,255,.08)"], borderWidth:0, borderRadius:[fs(.6), 0] }] },
-    options:{ responsive:true, maintainAspectRatio:false, rotation:-90, circumference:180, cutout:"74%", plugins:{ legend:{ display:false }, tooltip:{ enabled:false } } } });
 
   // disponibilidade
   const itens = C.porAtiv.map(a=>({ t:a.t, n:a.n, c:a.c }));
@@ -244,11 +230,11 @@ function renderizar(D){
   const CD = C.carDia;
   $("carr-sub").textContent = ` · ${C.carMes} no mês`;
   grafico("ch-carretas", { type:"bar", data:{ labels:CD.map(x=>x.d.slice(8,10)), datasets:[
-      { label:"Carretas", data:CD.map(x=>x.n), backgroundColor:CD.map(x=>x.d===C.hoje ? COR.laranja : "#C9D1DE"), borderRadius:4, maxBarThickness:fs(2.6),
-        datalabels:{ display:(c)=>c.dataset.data[c.dataIndex] > 0, anchor:"end", align:"top", offset:1, color:COR.ink, font:{ size:fs(.95), weight:800 } } } ] },
-    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.4) } },
+      { label:"Carretas", data:CD.map(x=>x.n), backgroundColor:CD.map(x=>x.d===C.hoje ? COR.laranja : "#C9D1DE"), borderRadius:4, maxBarThickness:fs(4),
+        datalabels:{ display:(c)=>c.dataset.data[c.dataIndex] > 0, anchor:"end", align:"top", offset:1, color:COR.ink, font:{ size:fs(1.3), weight:900 } } } ] },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.6) } },
       plugins:{ legend:{ display:false }, tooltip:{ enabled:false } },
-      scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:{ size:fs(.8) } } },
+      scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:{ size:fs(1.1), weight:600 } } },
         y:{ beginAtZero:true, suggestedMax:Math.max(4, ...CD.map(x=>x.n))*1.2, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, font:{ size:fs(.9) } } } } } });
 
   // balsas em operação: uma coluna por balsa — plano (barra clara) × real (barra na cor da operação)
@@ -309,10 +295,11 @@ function desenharOficina(C){
       <div class="s" style="background:${f.st.c}26; color:${f.st.c}">${f.st.t}</div>
       <div class="d">${f.dias==null ? "—" : f.dias}<small>${f.dias==null ? "" : f.dias===1 ? "dia" : "dias"}</small></div></div>`; };
   box.innerHTML = linha(C.man[0]);
-  const hLinha = (box.firstElementChild?.offsetHeight || 50) + fs(.6), porPag = Math.max(1, Math.floor((box.clientHeight + fs(.6)) / hLinha));
+  const vao = parseFloat(getComputedStyle(box).rowGap) || 0;
+  const hLinha = (box.firstElementChild?.offsetHeight || 50) + vao, porPag = Math.max(1, Math.floor((box.clientHeight + vao) / hLinha));
   const pags = Math.ceil(C.man.length / porPag); if(OF_PAG >= pags) OF_PAG = 0;
   box.innerHTML = C.man.slice(OF_PAG*porPag, OF_PAG*porPag + porPag).map(linha).join("");
-  $("of-pag").textContent = pags > 1 ? `página ${OF_PAG+1} de ${pags}` : "";
+  $("of-pag").textContent = pags > 1 ? `pág. ${OF_PAG+1}/${pags}` : "";
 }
 setInterval(()=>{ OF_PAG++; desenharOficina(); }, 10000);
 

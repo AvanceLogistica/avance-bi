@@ -40,7 +40,7 @@ body.ocioso{ cursor:none; }
 @keyframes pulso{ 0%{ box-shadow:0 0 0 0 rgba(34,197,94,.6);} 70%{ box-shadow:0 0 0 .9vh rgba(34,197,94,0);} 100%{ box-shadow:0 0 0 0 rgba(34,197,94,0);} }
 
 /* cards */
-.kpis{ display:grid; grid-template-columns:repeat(4, 1fr); gap:1vw; }
+.kpis{ display:grid; grid-template-columns:1fr 1fr 1fr 1.4fr; gap:1vw; }
 .card{ background:linear-gradient(160deg, var(--card2), var(--card)); border:1px solid var(--line); border-radius:1.4vh; padding:1.4vh 1.2vw; position:relative; overflow:hidden; min-height:0; min-width:0; display:flex; flex-direction:column; }
 .card h2{ font-size:1.35rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--ink); display:flex; align-items:center; gap:.6vw; }
 .card h2{ white-space:nowrap; } .card h2 small{ overflow:hidden; text-overflow:ellipsis; min-width:0; font-size:1rem; color:var(--soft); font-weight:600; letter-spacing:.02em; text-transform:none; margin-left:auto; }
@@ -48,7 +48,7 @@ body.ocioso{ cursor:none; }
 .kpi.k1{ border-color:rgba(242,113,28,.75); box-shadow:inset 0 0 4vh rgba(242,113,28,.10); }
 .kpi.k2{ border-color:rgba(59,130,246,.75); box-shadow:inset 0 0 4vh rgba(59,130,246,.10); }
 .kpi.k3{ border-color:rgba(34,211,238,.7); box-shadow:inset 0 0 4vh rgba(34,211,238,.08); }
-.kpi.k4{ border-color:rgba(34,197,94,.7); box-shadow:inset 0 0 4vh rgba(34,197,94,.08); }
+.kpi.k4{ border-color:rgba(245,185,33,.7); box-shadow:inset 0 0 4vh rgba(245,185,33,.08); padding:1vh 1vw; }
 .kpi .cab{ display:flex; align-items:center; gap:.8vw; }
 .kpi .cab .ic{ font-size:3rem; line-height:1; }
 .kpi .cab h3{ font-size:1.45rem; font-weight:800; text-transform:uppercase; letter-spacing:.04em; line-height:1.15; }
@@ -61,16 +61,9 @@ body.ocioso{ cursor:none; }
 .kpi .duo .lb{ font-size:1.15rem; font-weight:700; color:var(--soft); text-transform:uppercase; letter-spacing:.04em; }
 .kpi .duo .big{ font-size:5rem; }
 .kpi .duo .un{ font-size:1.05rem; color:var(--mute); }
-.gauge{ display:flex; align-items:center; gap:1vw; flex:1; }
-.gauge .g{ position:relative; width:13vw; height:12vh; }
-.gauge .g canvas{ width:100% !important; height:100% !important; }
-.gauge .g b{ position:absolute; left:0; right:0; bottom:0; text-align:center; font-size:4.4rem; font-weight:900; line-height:1; }
-.selo{ display:inline-block; padding:.7vh .9vw; border-radius:99px; font-size:1.25rem; font-weight:900; letter-spacing:.04em; text-transform:uppercase; }
-.gauge .info .sub{ margin-top:1vh; }
-
 .linha{ display:grid; gap:1vw; min-height:0; }
 .l1{ grid-template-columns:1.05fr 1fr 1.6fr; }
-.l2{ grid-template-columns:1.45fr 1.05fr 0.95fr 1fr; }
+.l2{ grid-template-columns:2.5fr 0.95fr 1fr; }
 .chart{ position:relative; flex:1; min-height:0; margin-top:1vh; }
 
 /* disponibilidade */
@@ -99,6 +92,18 @@ body.ocioso{ cursor:none; }
 .of-row .d small{ font-size:1rem; font-weight:600; color:var(--soft); margin-left:.2vw; }
 .of-row.critico .d{ color:var(--red); }
 .of-pag{ font-size:1rem; color:var(--mute); text-align:right; margin-top:.4vh; }
+/* oficina compacta, na linha de cima */
+.of-topo{ display:flex; align-items:center; gap:.8vw; margin-top:.5vh; }
+.k4 .of-chips{ flex:1; min-width:0; margin:0; flex-wrap:nowrap; overflow:hidden; gap:.3vw; }
+.k4 .of-chip{ padding:.1vh .35vw; gap:.25vw; font-size:.85rem; white-space:nowrap; } .k4 .of-chip b{ font-size:1.05rem; }
+.k4 .of-pag{ margin:0; white-space:nowrap; font-size:.9rem; }
+.k4 .of-lista{ margin-top:.5vh; gap:.4vh; }
+.k4 .of-row{ grid-template-columns:3.4vw minmax(0,1fr) auto auto; gap:.6vw; padding:.15vh .6vw; }
+.k4 .of-row .n{ font-size:1.05rem; } .k4 .of-row .p{ font-size:1.25rem; line-height:1.2; }
+.k4 .of-row .p small{ display:inline; font-size:.95rem; margin-left:.5vw; }
+.k4 .of-row .s{ font-size:.95rem; padding:.1vh .5vw; }
+.k4 .of-row .d{ font-size:1.3rem; line-height:1.2; min-width:4vw; } .k4 .of-row .d small{ font-size:.9rem; }
+.k4 .vazio{ flex-direction:row; font-size:1.2rem; } .k4 .vazio b{ font-size:1.8rem; }
 .vazio{ flex:1; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:1vh; color:var(--soft); font-size:1.4rem; text-align:center; }
 .vazio b{ font-size:3rem; }
 
@@ -192,12 +197,9 @@ body.ocioso .sair{ opacity:0; }
         <div class="sep" style="margin:0;"></div>
         <div><div class="lb" style="color:var(--cyan);">⬆ Carregamento</div><div class="big" id="k-carr">—</div><div class="un">viagens</div></div>
       </div></div>
-    <div class="card kpi k4"><div class="gauge">
-      <div class="g"><canvas id="ch-gauge"></canvas><b id="k-saude">—</b></div>
-      <div class="info"><h3 style="font-size:1.6rem; font-weight:900; text-transform:uppercase; letter-spacing:.04em; line-height:1.15;">Saúde<br>operacional</h3>
-        <div style="margin-top:1.2vh;"><span class="selo" id="k-saude-selo">—</span></div>
-        <div class="sub" id="k-saude-sub" style="font-size:1rem;">entregas no ritmo + frota disponível</div></div>
-    </div></div>
+    <div class="card kpi k4"><h2>🔧 Veículos na oficina <small id="of-sub"></small></h2>
+      <div class="of-topo"><div class="of-chips" id="of-chips"></div><div class="of-pag" id="of-pag"></div></div>
+      <div class="of-lista" id="of-lista"></div></div>
   </section>
 
   <section class="linha l1">
@@ -218,10 +220,6 @@ body.ocioso .sair{ opacity:0; }
   </section>
 
   <section class="linha l2">
-    <div class="card"><h2>🔧 Veículos na oficina <small id="of-sub"></small></h2>
-      <div class="of-chips" id="of-chips"></div>
-      <div class="of-lista" id="of-lista"></div>
-      <div class="of-pag" id="of-pag"></div></div>
     <div class="card"><h2 class="h2-ic"><svg class="ic-carreta" viewBox="0 0 64 40" aria-hidden="true"><rect x="2" y="6" width="40" height="20" rx="2" fill="#C9D1DE" stroke="#F2F5FA" stroke-width="1.5"/><line x1="10" y1="9" x2="10" y2="23" stroke="#8A94A3" stroke-width="1.2"/><line x1="18" y1="9" x2="18" y2="23" stroke="#8A94A3" stroke-width="1.2"/><line x1="26" y1="9" x2="26" y2="23" stroke="#8A94A3" stroke-width="1.2"/><line x1="34" y1="9" x2="34" y2="23" stroke="#8A94A3" stroke-width="1.2"/><rect x="42" y="22" width="8" height="3" fill="#C9D1DE"/><circle cx="28" cy="31" r="4.5" fill="#1B2436" stroke="#F2F5FA" stroke-width="1.5"/><circle cx="38" cy="31" r="4.5" fill="#1B2436" stroke="#F2F5FA" stroke-width="1.5"/><line x1="4" y1="26" x2="4" y2="34" stroke="#C9D1DE" stroke-width="2"/><circle cx="52" cy="14" r="11" fill="#F2711C"/><path d="M57.5 9.2a4.6 4.6 0 0 1-5.9 5.9l-5.2 5.2a1.6 1.6 0 0 1-2.3-2.3l5.2-5.2a4.6 4.6 0 0 1 5.9-5.9l-2.7 2.7.5 1.8 1.8.5z" fill="#fff"/></svg><span class="h2-t">Carretas em manutenção<em>Pátio Externo<span id="carr-sub" style="color:var(--soft); letter-spacing:.02em; text-transform:none;"></span></em></span></h2><div class="chart"><canvas id="ch-carretas"></canvas></div></div>
     <div class="card"><h2>Realizado × meta (hoje)</h2><div class="rm" id="rm"></div></div>
     <div class="card alertas"><h2>⚠️ Alertas operacionais</h2><div class="al-lista" id="alertas"></div></div>
@@ -238,6 +236,6 @@ body.ocioso .sair{ opacity:0; }
   <p>Depois de entrar, a TV fica conectada e o painel atualiza sozinho a cada minuto.</p>
 </form></div>
 <div class="aviso" id="aviso"></div>
-<script src="tv.js?v=20261116a"></script>
+<script src="tv.js?v=20261125a"></script>
 </body>
 </html>
