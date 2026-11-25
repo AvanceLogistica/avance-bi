@@ -1,5 +1,6 @@
 -- Rode isto no SQL Editor do Supabase. Pode rodar mais de uma vez sem problema.
--- BALSAS EM TRÂNSITO (tela Balsas): balsa, previsão de chegada, quantidade de carga, de rack/peça e mercado (Total = rack + mercado, calculado na tela).
+-- BALSAS EM TRÂNSITO (tela Balsas): balsa, previsão de chegada, quantidade de rack/peça e mercado (Total = rack + mercado, calculado na tela).
+-- A coluna carga saiu da tela (25/11/2026) e não é mais usada; fica no banco com 0.
 -- chegada vazia = ainda em trânsito. Mesmo acesso das operações de balsa (acesso_pier).
 create table if not exists balsa_transito (
   id uuid primary key default gen_random_uuid(),
