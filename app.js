@@ -9967,6 +9967,7 @@ const pierCorPct = (p) => p==null ? "var(--ink-soft)" : p>=100 ? "var(--green)" 
 
 async function pierCarregar(){
   PIER.carregando = true;
+  await transCarregar();
   if(!sb){ try{ PIER.lista = JSON.parse(localStorage.getItem(PIER_LOCAL)||"[]"); }catch(e){ PIER.lista = []; } }
   else {
     const { data, error } = await sb.from("balsa_operacoes").select("*").order("data", { ascending:false }).order("hora_inicio", { ascending:false });
@@ -10050,6 +10051,88 @@ window.pierExcluir = async (id) => {
   if(PIER_EDIT === id) PIER_EDIT = null; navigate("pier");
 };
 
+/* Balsas em trânsito: ainda não chegaram aos piers. Tabela balsa_transito (chegada vazia = em trânsito). */
+const TRANS_LOCAL = "avance_balsa_transito_v1";
+let TRANS = { lista:[], erro:null }, TRANS_EDIT = null, TRANS_SALVANDO = false;
+const transErro = (e) => /balsa_transito/i.test(e.message) && /find|exist|schema/i.test(e.message) ? "Falta rodar o SQL das Balsas em trânsito no Supabase." : e.message;
+async function transCarregar(){
+  if(!sb){ try{ TRANS.lista = JSON.parse(localStorage.getItem(TRANS_LOCAL)||"[]"); }catch(e){ TRANS.lista = []; } return; }
+  const { data, error } = await sb.from("balsa_transito").select("*").order("previsao");
+  if(error){ TRANS.erro = transErro(error); return; }
+  TRANS.erro = null;
+  TRANS.lista = data.map(r=>({ id:r.id, balsa:r.balsa||"", previsao:r.previsao, carga:Number(r.carga)||0, rack:Number(r.rack)||0, chegada:r.chegada||"" }));
+}
+function transSalvarLocal(){ if(!sb) try{ localStorage.setItem(TRANS_LOCAL, JSON.stringify(TRANS.lista)); }catch(e){} }
+async function transGravar(r, novo){
+  if(sb){
+    const campos = { balsa:r.balsa, previsao:r.previsao, carga:r.carga, rack:r.rack, chegada:r.chegada||null, atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() };
+    const q = novo ? sb.from("balsa_transito").insert({ ...campos, criado_por:MEU_EMAIL||null }).select("id").single() : sb.from("balsa_transito").update(campos).eq("id", r.id).select("id").single();
+    const { data, error } = await q;
+    if(error){ toast("⚠ Não salvou: " + transErro(error)); return false; }
+    if(novo) r.id = data.id;
+  } else if(novo) r.id = "t" + Date.now();
+  if(novo) TRANS.lista.push(r); else TRANS.lista = TRANS.lista.map(x=>x.id===r.id ? r : x);
+  transSalvarLocal(); return true;
+}
+window.transSalvar = async () => {
+  if(TRANS_SALVANDO) return;
+  const g = (id) => (document.getElementById("trans-"+id)?.value||"").trim();
+  const ed = TRANS_EDIT ? TRANS.lista.find(r=>r.id===TRANS_EDIT) : null;
+  const carga = Number(g("carga")), rack = Number(g("rack"));
+  const r = { chegada:"", ...(ed||{}), balsa:g("balsa").toUpperCase(), previsao:g("previsao"), carga, rack };
+  if(!r.balsa){ toast("Informe a balsa."); return; }
+  if(!r.previsao){ toast("Informe a previsão de chegada."); return; }
+  if(g("carga")==="" || isNaN(carga) || carga < 0){ toast("Informe a quantidade de carga."); return; }
+  if(g("rack")==="" || !Number.isInteger(rack) || rack < 0){ toast("Informe a quantidade de rack (número inteiro)."); return; }
+  TRANS_SALVANDO = true;
+  try{ if(await transGravar(r, !ed)){ toast(ed ? "✓ Balsa em trânsito atualizada" : `✓ ${r.balsa} em trânsito`); TRANS_EDIT = null; pierRerender(); } }
+  finally { TRANS_SALVANDO = false; }
+};
+window.transEditar = (id) => { TRANS_EDIT = id; pierRerender(); document.getElementById("trans-form")?.scrollIntoView({ behavior:"smooth", block:"center" }); };
+window.transCancelar = () => { TRANS_EDIT = null; pierRerender(); };
+window.transChegou = async (id) => {
+  const r = TRANS.lista.find(x=>x.id===id); if(!r || !confirm(`A balsa ${r.balsa} chegou? Ela sai da lista de trânsito.`)) return;
+  if(await transGravar({ ...r, chegada:frotaHojeISO() }, false)){ if(TRANS_EDIT === id) TRANS_EDIT = null; toast(`✓ ${r.balsa} chegou`); pierRerender(); }
+};
+window.transDesfazer = async (id) => { const r = TRANS.lista.find(x=>x.id===id); if(r && await transGravar({ ...r, chegada:"" }, false)) pierRerender(); };
+window.transExcluir = async (id) => {
+  const r = TRANS.lista.find(x=>x.id===id); if(!r || !confirm(`Excluir a balsa ${r.balsa} do trânsito?`)) return;
+  if(sb){ const { error } = await sb.from("balsa_transito").delete().eq("id", id); if(error){ toast("⚠ Não excluiu: " + error.message); return; } }
+  TRANS.lista = TRANS.lista.filter(x=>x.id!==id); transSalvarLocal();
+  if(TRANS_EDIT === id) TRANS_EDIT = null;
+  pierRerender();
+};
+function transPainel(hoje, balsas){
+  if(TRANS.erro) return `<div class="panel" style="margin-bottom:16px;"><h3>🚢 Balsas em trânsito</h3><div class="hint">⚠ ${osEsc(TRANS.erro)}</div></div>`;
+  const ls = TRANS.lista.filter(r=>!r.chegada).sort((a,b)=>a.previsao.localeCompare(b.previsao));
+  const cheg = TRANS.lista.filter(r=>r.chegada).sort((a,b)=>b.chegada.localeCompare(a.chegada)).slice(0,5);
+  const n = (x) => Number(x||0).toLocaleString("pt-BR", { maximumFractionDigits:2 });
+  const tot = (k) => n(ls.reduce((s,r)=>s+(r[k]||0), 0));
+  const ed = TRANS_EDIT ? TRANS.lista.find(r=>r.id===TRANS_EDIT) : null, v = ed || { balsa:"", previsao:"", carga:"", rack:"" };
+  const prazo = (r) => { const d = Math.round((new Date(r.previsao+"T12:00:00") - new Date(hoje+"T12:00:00"))/864e5);
+    return d < 0 ? `<span class="badge red">atrasada ${-d} dia${d===-1?"":"s"}</span>` : d === 0 ? `<span class="badge green">chega hoje</span>` : `<span class="hint" style="margin:0; display:inline;">em ${d} dia${d===1?"":"s"}</span>`; };
+  return `<div class="panel" style="margin-bottom:16px;">
+      <h3>🚢 Balsas em trânsito (${ls.length})</h3>
+      ${!ls.length ? `<div class="hint">Nenhuma balsa em trânsito. Lance abaixo.</div>` : `<div style="overflow-x:auto; margin-top:8px;"><table class="nf-tab">
+        <thead><tr><th>Balsa</th><th>Previsão de chegada</th><th class="num">Qtd. de carga</th><th class="num">Qtd. de rack</th><th></th></tr></thead>
+        <tbody>${ls.map(r=>`<tr><td><b>${osEsc(r.balsa)}</b></td><td style="white-space:nowrap;">${fmtDataBR(r.previsao)} ${prazo(r)}</td><td class="num"><b>${n(r.carga)}</b></td><td class="num"><b>${n(r.rack)}</b></td>
+          <td style="white-space:nowrap; text-align:right;"><button class="os-btn sm" onclick="transChegou('${r.id}')">✅ Chegou</button> <button class="os-btn sm" onclick="transEditar('${r.id}')">✏️ Editar</button> <button class="os-link" onclick="transExcluir('${r.id}')">excluir</button></td></tr>`).join("")}
+          <tr><td colspan="2"><b>Total</b></td><td class="num"><b>${tot("carga")}</b></td><td class="num"><b>${tot("rack")}</b></td><td></td></tr></tbody>
+      </table></div>`}
+      <div class="os-form pier-grid" id="trans-form" style="margin-top:12px;">
+        <label>Balsa<input id="trans-balsa" list="trans-balsas" value="${osEsc(v.balsa)}" placeholder="Digite ou escolha" autocomplete="off"><datalist id="trans-balsas">${balsas.map(b=>`<option value="${osEsc(b)}">`).join("")}</datalist></label>
+        <label>Previsão de chegada<input type="date" id="trans-previsao" value="${v.previsao}"></label>
+        <label>Quantidade de carga<input type="number" min="0" step="any" id="trans-carga" value="${v.carga}" placeholder="0"></label>
+        <label>Quantidade de rack<input type="number" min="0" step="1" id="trans-rack" value="${v.rack}" placeholder="0"></label>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button class="entry-submit" style="margin:0;" onclick="transSalvar()">${ed ? "💾 Salvar alterações" : "➕ Lançar em trânsito"}</button>
+        ${ed ? `<button class="os-btn" onclick="transCancelar()">Cancelar</button>` : ""}
+      </div>
+      ${cheg.length ? `<div class="hint" style="margin-top:10px;">Últimas chegadas: ${cheg.map(r=>`<b>${osEsc(r.balsa)}</b> ${fmtDataBR(r.chegada)} <button class="os-link" onclick="transDesfazer('${r.id}')">desfazer</button>`).join(" · ")}</div>` : ""}
+    </div>`;
+}
+
 renderers.pier = () => {
   if(!PIER.carregado && !PIER.carregando){ PIER.carregando = true; setTimeout(()=>pierCarregar(), 0); }
   const cab = `<div class="page-head"><h2>Balsas</h2><p>Abertura e fechamento das operações nos piers Panamá e Luiza — viagens Plano × Real por balsa (vai para o Painel TV)</p></div>`;
@@ -10096,6 +10179,8 @@ renderers.pier = () => {
           <div style="display:flex; gap:10px; margin-top:6px;"><button class="os-link" onclick="pierEditar('${r.id}')">✏️ editar</button><button class="os-link" onclick="pierExcluir('${r.id}')">excluir</button></div>
         </div>`; }).join("")}</div>`}
     </div>
+
+    ${transPainel(hoje, balsas)}
 
     <div class="panel" id="pier-form" style="margin-bottom:16px;">
       <h3>${ed ? `✏️ Editar operação — ${osEsc(pierBalsaRot(ed))}` : "➕ Abrir operação de balsa"}</h3>
