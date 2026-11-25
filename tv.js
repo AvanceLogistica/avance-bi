@@ -76,7 +76,7 @@ async function buscarTransito(q){
   return r.error && /descarga/i.test(r.error.message) ? q(base().is("chegada", null)) : r;
 }
 async function buscar(){
-  const hoje = hojeISO(), desde45 = somaDias(hoje, -45), desde13 = somaDias(hoje, -13), iniMes = hoje.slice(0,8) + "01";
+  const hoje = hojeISO(), desde45 = somaDias(hoje, -45), desde13 = somaDias(hoje, -13), iniMes = hoje.slice(0,8) + "01", ontem = somaDias(hoje, -1);
   const desdeProg = iniMes < desde13 ? iniMes : desde13;
   const fimMes = (()=>{ const d = new Date(Number(hoje.slice(0,4)), Number(hoje.slice(5,7)), 0); return iso(d); })();
   const q = (p) => p.then(r=>r, e=>({ error:{ message:String(e) } }));
@@ -87,7 +87,7 @@ async function buscar(){
     q(sbTv.from("entregas_programacao").select("data,situacao,horario,hora_real,servico,frota,cliente,planejado").gte("data", desdeProg).lte("data", fimMes)),
     q(sbTv.from("balsa_operacoes").select("data,pier,balsa,numero,tipo,viagens,viagens_plano,hora_inicio,hora_fim,data_fechamento").or(`data_fechamento.is.null,data_fechamento.gte.${desde13}`).lte("data", hoje)),
     buscarTransito(q),
-    q(sbTv.from("manutencao_os").select("status,saida_data,frota").gte("saida_data", iniMes).lte("saida_data", hoje)),
+    q(sbTv.from("manutencao_os").select("status,saida_data,frota").gte("saida_data", ontem < iniMes ? ontem : iniMes).lte("saida_data", hoje)),
   ]);
   const erros = [["Frota", veic], ["Status da frota", st], ["Oficina", of], ["Entregas", prog], ["Balsas", bal], ["Balsas em trânsito", trans], ["O.S de carretas", os]].filter(([,r])=>r.error).map(([n,r])=>`${n}: ${r.error.message}`);
   let email = ""; try{ email = (await sbTv.auth.getUser()).data.user?.email || ""; }catch(e){}
@@ -159,12 +159,13 @@ function calcular(D){
   const planMes = planReal.filter(x=>x.d<=hoje).reduce((s,x)=>s+x.plan,0), realMes = planReal.reduce((s,x)=>s+x.real,0);
   const realPlanMes = progMes.filter(r=>r.data<=hoje && r.planejado!==false && r.situacao==="realizada").length;
   const carDia = diasCar.map(d=>({ d, n:(D.os||[]).filter(o=>o.saida_data===d).length }));
-  const carHoje = (D.os||[]).filter(o=>o.saida_data===hoje).length, carMes = (D.os||[]).length;
+  // o dia 1º busca também o dia anterior (mês passado), por isso o mês é filtrado aqui
+  const ontem = somaDias(hoje, -1), carOntem = (D.os||[]).filter(o=>o.saida_data===ontem).length, carMes = (D.os||[]).filter(o=>o.saida_data.slice(0,7)===hoje.slice(0,7)).length;
   // frota por atividade (Status da Frota)
   const porAtiv = ATIVIDADES.map(a=>({ ...a, n:frota.filter(f=>(f.r.atividade||"reserva")===a.k).length }));
 
   return { hoje, minAgora, frota, total, man, parado, semMot, operando, dispPct, progHoje, realizadas, meta, esperado,
-    horas, evoReal, evoMeta, balHoje, desc, carr, descP, carrP, balAbertas, planReal, planMes, realMes, realPlanMes, carDia, carHoje, carMes, porAtiv, D };
+    horas, evoReal, evoMeta, balHoje, desc, carr, descP, carrP, balAbertas, planReal, planMes, realMes, realPlanMes, carDia, ontem, carOntem, carMes, porAtiv, D };
 }
 
 /* ---------------- desenho ---------------- */
@@ -174,7 +175,8 @@ function renderizar(D){
   const nf = (n) => n==null ? "—" : String(n).padStart(2,"0");
 
   // KPIs
-  $("k-car-dia").textContent = D.semAcesso.os ? "—" : nf(C.carHoje);
+  $("k-car-dia").textContent = D.semAcesso.os ? "—" : nf(C.carOntem);
+  $("k-car-dia-sub").textContent = `em ${C.ontem.slice(8,10)}/${C.ontem.slice(5,7)}`;
   $("k-car-mes").textContent = D.semAcesso.os ? "—" : nf(C.carMes);
   $("k-car-mes-sub").textContent = `em ${MES[Number(C.hoje.slice(5,7))-1].toLowerCase()}/${C.hoje.slice(2,4)}`;
   $("k-ent").textContent = D.semAcesso.entregas ? "—" : nf(C.realizadas.length);
