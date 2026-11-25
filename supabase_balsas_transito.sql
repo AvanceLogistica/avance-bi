@@ -18,6 +18,9 @@ alter table balsa_transito add column if not exists mercado integer not null def
 alter table balsa_transito enable row level security;
 drop policy if exists "balsa_transito_acesso" on balsa_transito;
 create policy "balsa_transito_acesso" on balsa_transito for all to authenticated using (acesso_pier()) with check (acesso_pier());
+-- Painel TV: só leitura
+drop policy if exists "balsa_transito_select_tv" on balsa_transito;
+create policy "balsa_transito_select_tv" on balsa_transito for select to authenticated using (eh_tv());
 
 notify pgrst, 'reload schema';
 select 'ok — Balsas em trânsito pronto' as resultado;

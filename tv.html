@@ -63,7 +63,7 @@ body.ocioso{ cursor:none; }
 .kpi .duo .un{ font-size:1.05rem; color:var(--mute); }
 .linha{ display:grid; gap:1vw; min-height:0; }
 .l1{ grid-template-columns:1.05fr 1fr 1.6fr; }
-.l2{ grid-template-columns:2.5fr 0.95fr 1fr; }
+.l2{ grid-template-columns:2.2fr 0.95fr 1.3fr; }
 .chart{ position:relative; flex:1; min-height:0; margin-top:1vh; }
 
 /* disponibilidade */
@@ -144,12 +144,19 @@ body.ocioso{ cursor:none; }
 .rm-i .bar i{ display:block; height:100%; border-radius:99px; background:linear-gradient(90deg, #16A34A, #4ADE80); transition:width 1s; }
 .rm-i .p{ font-size:2.1rem; font-weight:900; min-width:4.6vw; text-align:right; }
 
-/* alertas */
-.card.alertas{ border-color:rgba(227,23,47,.55); background:linear-gradient(160deg, rgba(60,10,18,.75), var(--card)); }
-.al-lista{ flex:1; display:grid; align-content:start; gap:.4vh; margin-top:1vh; overflow:hidden; }
-.al{ display:grid; grid-template-columns:3vw 1fr; align-items:center; gap:.6vw; padding:.9vh 0; border-bottom:1px solid var(--line); font-size:1.3rem; line-height:1.25; }
-.al:last-child{ border:0; } .al .ic{ font-size:2rem; text-align:center; }
-.al b{ color:var(--red); } .al.ok b{ color:var(--green); } .al.info b{ color:var(--amber); }
+/* balsas chegando (em trânsito) */
+.card.chegando{ border-color:rgba(34,211,238,.55); }
+.cg-l{ display:grid; grid-template-columns:minmax(0,1fr) 4.8vw 3.4vw 4vw 3.8vw; align-items:center; gap:.4vw; font-variant-numeric:tabular-nums; }
+.cg-l > :nth-child(n+3){ text-align:right; }
+.cg-cab{ font-size:.9rem; line-height:1.05; font-weight:700; color:var(--soft); text-transform:uppercase; margin-top:.6vh; padding:0 .5vw .4vh; border-bottom:1px solid var(--line); }
+.cg-lista{ flex:1; min-height:0; overflow:hidden; display:grid; grid-auto-rows:min-content; align-content:start; } .cg-lista .vazio{ padding-top:4vh; }
+.cg-row{ padding:.45vh .5vw; border-bottom:1px solid var(--line); font-size:1.4rem; font-weight:700; }
+.cg-row .b{ font-size:1.25rem; font-weight:900; line-height:1.1; overflow:hidden; overflow-wrap:anywhere; }
+.cg-row .dt{ line-height:1.1; white-space:nowrap; } .cg-row .dt small{ display:block; font-size:.9rem; font-weight:600; color:var(--soft); }
+.cg-row .dt.hoje small{ color:var(--green); } .cg-row .dt.atraso small{ color:#FF6B7A; }
+.cg-row .t, .cg-tot .t{ color:var(--cyan); font-weight:900; }
+.cg-tot{ padding:.5vh .5vw 0; font-size:1.4rem; font-weight:900; border-top:2px solid rgba(34,211,238,.4); } .cg-tot:empty{ display:none; }
+.cg-tot small{ font-size:.95rem; color:var(--soft); font-weight:600; }
 
 /* login */
 .login{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(4,8,15,.92); z-index:10; }
@@ -222,7 +229,10 @@ body.ocioso .sair{ opacity:0; }
   <section class="linha l2">
     <div class="card"><h2 class="h2-ic"><svg class="ic-carreta" viewBox="0 0 64 40" aria-hidden="true"><rect x="2" y="6" width="40" height="20" rx="2" fill="#C9D1DE" stroke="#F2F5FA" stroke-width="1.5"/><line x1="10" y1="9" x2="10" y2="23" stroke="#8A94A3" stroke-width="1.2"/><line x1="18" y1="9" x2="18" y2="23" stroke="#8A94A3" stroke-width="1.2"/><line x1="26" y1="9" x2="26" y2="23" stroke="#8A94A3" stroke-width="1.2"/><line x1="34" y1="9" x2="34" y2="23" stroke="#8A94A3" stroke-width="1.2"/><rect x="42" y="22" width="8" height="3" fill="#C9D1DE"/><circle cx="28" cy="31" r="4.5" fill="#1B2436" stroke="#F2F5FA" stroke-width="1.5"/><circle cx="38" cy="31" r="4.5" fill="#1B2436" stroke="#F2F5FA" stroke-width="1.5"/><line x1="4" y1="26" x2="4" y2="34" stroke="#C9D1DE" stroke-width="2"/><circle cx="52" cy="14" r="11" fill="#F2711C"/><path d="M57.5 9.2a4.6 4.6 0 0 1-5.9 5.9l-5.2 5.2a1.6 1.6 0 0 1-2.3-2.3l5.2-5.2a4.6 4.6 0 0 1 5.9-5.9l-2.7 2.7.5 1.8 1.8.5z" fill="#fff"/></svg><span class="h2-t">Carretas em manutenção<em>Pátio Externo<span id="carr-sub" style="color:var(--soft); letter-spacing:.02em; text-transform:none;"></span></em></span></h2><div class="chart"><canvas id="ch-carretas"></canvas></div></div>
     <div class="card"><h2>Realizado × meta (hoje)</h2><div class="rm" id="rm"></div></div>
-    <div class="card alertas"><h2>⚠️ Alertas operacionais</h2><div class="al-lista" id="alertas"></div></div>
+    <div class="card chegando"><h2>🚢 Balsas chegando <small id="ch-sub"></small></h2>
+      <div class="cg-l cg-cab"><span>Balsa</span><span>Data</span><span>Rack/<br>peça</span><span>Mercado</span><span>Total</span></div>
+      <div class="cg-lista" id="cg-lista"></div>
+      <div class="cg-l cg-tot" id="cg-tot"></div></div>
   </section>
 </div>
 
@@ -236,6 +246,6 @@ body.ocioso .sair{ opacity:0; }
   <p>Depois de entrar, a TV fica conectada e o painel atualiza sozinho a cada minuto.</p>
 </form></div>
 <div class="aviso" id="aviso"></div>
-<script src="tv.js?v=20261125a"></script>
+<script src="tv.js?v=20261125b"></script>
 </body>
 </html>

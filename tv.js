@@ -4,7 +4,7 @@
    - Frota: frota_veiculos + frota_status (status do dia) + frota_oficina (paradas abertas)
    - Entregas: entregas_programacao (meta fixa de 10 por dia, segunda a sexta)
    - Balsas: balsa_operacoes (descarga / carregamento, viagens por pier Panamá e Luiza)
-   - Carretas do cliente na fila: carretas_fila
+   - Balsas chegando: balsa_transito (lançadas na tela Balsas, ainda sem chegada)
    ============================================================================ */
 const TV_META_ENTREGAS = 10;            // meta de segunda a sexta
 const TV_HORA_INI = 7, TV_HORA_FIM = 17; // janela da meta acumulada (07h → 17h)
@@ -74,20 +74,20 @@ async function buscar(){
   const desdeProg = iniMes < desde13 ? iniMes : desde13;
   const fimMes = (()=>{ const d = new Date(Number(hoje.slice(0,4)), Number(hoje.slice(5,7)), 0); return iso(d); })();
   const q = (p) => p.then(r=>r, e=>({ error:{ message:String(e) } }));
-  const [veic, st, of, prog, bal, fila, os] = await Promise.all([
+  const [veic, st, of, prog, bal, trans, os] = await Promise.all([
     q(sbTv.from("frota_veiculos").select("id,ordem,placa,motorista,atividade_padrao,obs").order("ordem")),
     q(sbTv.from("frota_status").select("data,veiculo_id,atividade,status,motorista,obs").gte("data", desde45).lte("data", hoje)),
     q(sbTv.from("frota_oficina").select("veiculo_id,placa,data_parada,observacao,aprovacao,inicio_execucao,conclusao").is("conclusao", null)),
     q(sbTv.from("entregas_programacao").select("data,situacao,horario,hora_real,servico,frota,cliente,planejado").gte("data", desdeProg).lte("data", fimMes)),
     q(sbTv.from("balsa_operacoes").select("data,pier,balsa,numero,tipo,viagens,viagens_plano,hora_inicio,hora_fim,data_fechamento").or(`data_fechamento.is.null,data_fechamento.gte.${desde13}`).lte("data", hoje)),
-    q(sbTv.from("carretas_fila").select("frota,placa,data_entrada").is("data_conclusao", null)),
+    q(sbTv.from("balsa_transito").select("balsa,previsao,rack,mercado").is("chegada", null).order("previsao")),
     q(sbTv.from("manutencao_os").select("status,saida_data,frota").gte("saida_data", iniMes).lte("saida_data", hoje)),
   ]);
-  const erros = [["Frota", veic], ["Status da frota", st], ["Oficina", of], ["Entregas", prog], ["Balsas", bal], ["Carretas", fila], ["O.S de carretas", os]].filter(([,r])=>r.error).map(([n,r])=>`${n}: ${r.error.message}`);
+  const erros = [["Frota", veic], ["Status da frota", st], ["Oficina", of], ["Entregas", prog], ["Balsas", bal], ["Balsas em trânsito", trans], ["O.S de carretas", os]].filter(([,r])=>r.error).map(([n,r])=>`${n}: ${r.error.message}`);
   let email = ""; try{ email = (await sbTv.auth.getUser()).data.user?.email || ""; }catch(e){}
   return { hoje, agora:new Date(), erros, email,
-    veiculos: veic.data||[], status: st.data||[], oficina: of.data||[], programacao: prog.data||[], balsas: bal.data||[], fila: fila.data||[], os: (os.data||[]).filter(o=>(o.status||"emitida")==="emitida"),
-    semAcesso:{ os:!!os.error, frota:!!veic.error, entregas:!!prog.error, balsas:!!bal.error } };
+    veiculos: veic.data||[], status: st.data||[], oficina: of.data||[], programacao: prog.data||[], balsas: bal.data||[], transito: trans.data||[], os: (os.data||[]).filter(o=>(o.status||"emitida")==="emitida"),
+    semAcesso:{ os:!!os.error, frota:!!veic.error, entregas:!!prog.error, balsas:!!bal.error, transito:!!trans.error } };
 }
 
 /* ---------------- cálculos ---------------- */
@@ -128,7 +128,6 @@ function calcular(D){
   const meta = ehDiaUtil(hoje) ? TV_META_ENTREGAS : 0;
   const fracDia = Math.min(1, Math.max(0, (minAgora - TV_HORA_INI*60) / ((TV_HORA_FIM-TV_HORA_INI)*60)));
   const esperado = meta * fracDia;
-  const atrasadas = progHoje.filter(r=>r.situacao==="pendente" && minutos(r.horario)!=null && minutos(r.horario) + 60 < minAgora);
   const horas = []; for(let h=TV_HORA_INI; h<=TV_HORA_FIM+1; h++) horas.push(h);
   const semHora = realizadas.filter(r=>minutos(r.hora_real)==null).length;
   const evoReal = horas.map(h=> h*60 > minAgora + 59 ? null : realizadas.filter(r=>{ const m = minutos(r.hora_real); return m==null ? false : m < (h+1)*60; }).length);
@@ -158,8 +157,8 @@ function calcular(D){
   // frota por atividade (Status da Frota)
   const porAtiv = ATIVIDADES.map(a=>({ ...a, n:frota.filter(f=>(f.r.atividade||"reserva")===a.k).length }));
 
-  return { hoje, minAgora, frota, total, man, parado, semMot, operando, dispPct, progHoje, realizadas, meta, esperado, atrasadas,
-    horas, evoReal, evoMeta, balHoje, desc, carr, descP, carrP, balAbertas, planReal, planMes, realMes, realPlanMes, carDia, carHoje, carMes, porAtiv, fila:D.fila, D };
+  return { hoje, minAgora, frota, total, man, parado, semMot, operando, dispPct, progHoje, realizadas, meta, esperado,
+    horas, evoReal, evoMeta, balHoje, desc, carr, descP, carrP, balAbertas, planReal, planMes, realMes, realPlanMes, carDia, carHoje, carMes, porAtiv, D };
 }
 
 /* ---------------- desenho ---------------- */
@@ -266,19 +265,7 @@ function renderizar(D){
     linhaRM("🚛", "Frota disp.", C.total - C.man.length - C.parado.length, C.total),
   ].join("");
 
-  // alertas
-  const al = [];
-  if(criticos.length) al.push({ ic:"🚛", h:`<b>${criticos.length}</b> veículo(s) parado(s) há + de ${TV_DIAS_ALERTA} dias: ${criticos.slice(0,3).map(f=>esc(f.v.placa)).join(", ")}${criticos.length>3?"…":""}` });
-  if(C.atrasadas.length) al.push({ ic:"⏰", h:`<b>${C.atrasadas.length}</b> entrega(s) programada(s) atrasada(s) (passou + de 1h do horário)` });
-  if(C.meta && C.esperado >= 2 && C.realizadas.length < C.esperado - 1) al.push({ ic:"🎯", h:`Entregas abaixo do ritmo: <b>${C.realizadas.length}</b> de ${Math.round(C.esperado)} esperadas até agora` });
-  if(C.parado.length) al.push({ ic:"⛔", h:`<b>${C.parado.length}</b> veículo(s) com status Parado` });
-  if(C.semMot.length) al.push({ ic:"👤", h:`<b>${C.semMot.length}</b> veículo(s) sem motorista hoje`, cls:"info" });
-  if(!D.semAcesso.balsas && !C.balAbertas.length) al.push({ ic:"🚢", h:`<b>Nenhuma</b> balsa em operação nos piers agora`, cls:"info" });
-  if(C.fila.length) al.push({ ic:"🔩", h:`<b>${C.fila.length}</b> carreta(s) do cliente na fila de manutenção`, cls:"info" });
-  if(!D.veiculos.length && !D.semAcesso.frota) al.unshift({ ic:"🔒", h:`<b>Sem permissão para ver os dados.</b> O usuário ${esc(D.email||"")} precisa do perfil <b>TV</b> (Gestão de Acessos)` });
-  if(D.erros.length) al.push({ ic:"🔒", h:`<b>Sem acesso</b> a: ${esc(D.erros.map(e=>e.split(":")[0]).join(", "))}`, cls:"info" });
-  if(!al.length) al.push({ ic:"✅", h:`<b>Operação sem alertas</b> no momento`, cls:"ok" });
-  $("alertas").innerHTML = al.slice(0,6).map(a=>`<div class="al ${a.cls||""}"><div class="ic">${a.ic}</div><div>${a.h}</div></div>`).join("");
+  desenharChegando(C);
   ULTIMO = C;
 }
 let ULTIMO = null;
@@ -301,7 +288,25 @@ function desenharOficina(C){
   box.innerHTML = C.man.slice(OF_PAG*porPag, OF_PAG*porPag + porPag).map(linha).join("");
   $("of-pag").textContent = pags > 1 ? `pág. ${OF_PAG+1}/${pags}` : "";
 }
-setInterval(()=>{ OF_PAG++; desenharOficina(); }, 10000);
+setInterval(()=>{ OF_PAG++; desenharOficina(); CG_PAG++; desenharChegando(); }, 10000);
+// balsas em trânsito (tela Balsas), pela previsão de chegada; passa as páginas a cada 10 s se não couber
+let CG_PAG = 0;
+function desenharChegando(C){
+  C = C || ULTIMO; if(!C) return;
+  const box = $("cg-lista"), tot = $("cg-tot"), ls = [...C.D.transito].sort((a,b)=>a.previsao.localeCompare(b.previsao));
+  const num = (x) => Number(x||0).toLocaleString("pt-BR"), som = (k) => ls.reduce((t,r)=>t+(Number(r[k])||0), 0);
+  $("ch-sub").textContent = ls.length ? `${ls.length} em trânsito` : "";
+  tot.innerHTML = "";
+  if(!ls.length){ box.innerHTML = `<div class="vazio">${C.D.semAcesso.transito ? "Sem acesso às balsas em trânsito" : "Nenhuma balsa em trânsito"}</div>`; return; }
+  const linha = (r) => { const d = diasEntre(C.hoje, r.previsao);
+    return `<div class="cg-l cg-row"><span class="b">${esc(r.balsa)}</span><span class="dt ${d<0?"atraso":d===0?"hoje":""}">${r.previsao.slice(8,10)}/${r.previsao.slice(5,7)}<small>${d<0?`atrasada ${-d}d`:d===0?"hoje":d===1?"amanhã":`em ${d} dias`}</small></span><span>${num(r.rack)}</span><span>${num(r.mercado)}</span><span class="t">${num((+r.rack||0)+(+r.mercado||0))}</span></div>`; };
+  tot.innerHTML = `<span>Total</span><span><small id="cg-pag"></small></span><span>${num(som("rack"))}</span><span>${num(som("mercado"))}</span><span class="t">${num(som("rack")+som("mercado"))}</span>`;
+  box.innerHTML = linha(ls[0]);
+  const porPag = Math.max(1, Math.floor(box.clientHeight / (box.firstElementChild.offsetHeight || 40))), pags = Math.ceil(ls.length / porPag);
+  if(CG_PAG >= pags) CG_PAG = 0;
+  box.innerHTML = ls.slice(CG_PAG*porPag, CG_PAG*porPag + porPag).map(linha).join("");
+  $("cg-pag").textContent = pags > 1 ? `pág. ${CG_PAG+1}/${pags}` : "";
+}
 
 /* ---------------- ciclo ---------------- */
 let ATUALIZANDO = false;
@@ -314,7 +319,10 @@ async function atualizar(){
     renderizar(D);
     const d = new Date();
     vivo.classList.remove("erro"); vivo.querySelector("span").textContent = `Ao vivo · ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
-    $("aviso").classList.remove("on");
+    // sem permissão ou com erro em alguma parte: avisa na faixa do rodapé
+    const msg = !D.veiculos.length && !D.semAcesso.frota ? `🔒 Sem permissão para ver os dados. O usuário ${D.email||""} precisa do perfil TV (Gestão de Acessos)`
+      : D.erros.length ? `🔒 Sem acesso a: ${D.erros.map(e=>e.split(":")[0]).join(", ")}` : "";
+    $("aviso").textContent = msg; $("aviso").classList.toggle("on", !!msg);
   }catch(e){
     vivo.classList.add("erro"); vivo.querySelector("span").textContent = "Sem conexão";
     const a = $("aviso"); a.textContent = "⚠ Não foi possível atualizar — tentando de novo em 1 minuto"; a.classList.add("on");
