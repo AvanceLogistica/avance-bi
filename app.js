@@ -10202,8 +10202,20 @@ renderers.pier = () => {
         </div>`; }).join("")}</div>`}
     </div>
 
-    ${transPainel("d", hoje, balsas)}
-    ${transPainel("t", hoje, balsas)}
+    <div class="panel" style="margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">📋 Operações de ${nomeMes(PIER_MES)}</h3><div class="hint">Pela data de abertura. Plano ${pMes} · Real ${rMes}${pctMes!=null ? ` · ${pctMes}%` : ""}</div></div>
+        <label class="frota-data">Mês <select onchange="pierSetMes(this.value)">${meses.map(m=>`<option value="${m}" ${m===PIER_MES?"selected":""}>${nomeMes(m)}</option>`).join("")}</select></label>
+      </div>
+      ${!doMes.length ? `<div class="hint" style="margin-top:10px;">Nenhuma operação aberta neste mês.</div>` : `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
+        <thead><tr><th>Pier</th><th>Operação</th><th>Balsa</th><th>Abertura</th><th>Fechamento</th><th class="num">Duração</th><th class="num">Plano</th><th class="num">Real</th><th class="num">Real × Plano</th><th></th></tr></thead>
+        <tbody>${doMes.map(r=>{ const t = pierTipo(r.tipo), p = pierPct(r);
+          return `<tr><td><b>${pierNome(r.pier)}</b></td><td><span style="color:${t.cor}; font-weight:700;">${t.ic} ${t.nome}</span></td><td><b>${osEsc(pierBalsaRot(r))}</b>${r.obs ? `<div class="hint" style="margin:0;">${osEsc(r.obs)}</div>` : ""}</td>
+            <td>${fmtDataBR(r.data)} ${r.ini||""}</td><td>${pierAberta(r) ? `<span class="badge green">aberta</span>` : `${fmtDataBR(r.dataFim)} ${r.fim||""}`}</td>
+            <td class="num">${pierDuracao(r)}</td><td class="num">${r.plano}</td><td class="num"><b>${r.real}</b></td><td class="num" style="color:${pierCorPct(p)}; font-weight:800;">${p==null?"—":p+"%"}</td>
+            <td style="white-space:nowrap;">${pierAberta(r) ? "" : `<button class="os-link" onclick="pierReabrir('${r.id}')">reabrir</button> `}<button class="os-btn sm" onclick="pierEditar('${r.id}')">✏️ Editar</button> <button class="os-link" onclick="pierExcluir('${r.id}')">excluir</button></td></tr>`; }).join("")}</tbody>
+      </table></div>`}
+    </div>
 
     <div class="panel" id="pier-form" style="margin-bottom:16px;">
       <h3>${ed ? `✏️ Editar operação — ${osEsc(pierBalsaRot(ed))}` : "➕ Abrir operação de balsa"}</h3>
@@ -10228,20 +10240,8 @@ renderers.pier = () => {
       ${ed ? `<div class="hint" style="margin-top:8px;">Para reabrir uma operação fechada, apague o dia e a hora do fechamento e salve.</div>` : ""}
     </div>
 
-    <div class="panel">
-      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap;">
-        <div><h3 style="margin:0;">📋 Operações de ${nomeMes(PIER_MES)}</h3><div class="hint">Pela data de abertura. Plano ${pMes} · Real ${rMes}${pctMes!=null ? ` · ${pctMes}%` : ""}</div></div>
-        <label class="frota-data">Mês <select onchange="pierSetMes(this.value)">${meses.map(m=>`<option value="${m}" ${m===PIER_MES?"selected":""}>${nomeMes(m)}</option>`).join("")}</select></label>
-      </div>
-      ${!doMes.length ? `<div class="hint" style="margin-top:10px;">Nenhuma operação aberta neste mês.</div>` : `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
-        <thead><tr><th>Pier</th><th>Operação</th><th>Balsa</th><th>Abertura</th><th>Fechamento</th><th class="num">Duração</th><th class="num">Plano</th><th class="num">Real</th><th class="num">Real × Plano</th><th></th></tr></thead>
-        <tbody>${doMes.map(r=>{ const t = pierTipo(r.tipo), p = pierPct(r);
-          return `<tr><td><b>${pierNome(r.pier)}</b></td><td><span style="color:${t.cor}; font-weight:700;">${t.ic} ${t.nome}</span></td><td><b>${osEsc(pierBalsaRot(r))}</b>${r.obs ? `<div class="hint" style="margin:0;">${osEsc(r.obs)}</div>` : ""}</td>
-            <td>${fmtDataBR(r.data)} ${r.ini||""}</td><td>${pierAberta(r) ? `<span class="badge green">aberta</span>` : `${fmtDataBR(r.dataFim)} ${r.fim||""}`}</td>
-            <td class="num">${pierDuracao(r)}</td><td class="num">${r.plano}</td><td class="num"><b>${r.real}</b></td><td class="num" style="color:${pierCorPct(p)}; font-weight:800;">${p==null?"—":p+"%"}</td>
-            <td style="white-space:nowrap;">${pierAberta(r) ? "" : `<button class="os-link" onclick="pierReabrir('${r.id}')">reabrir</button> `}<button class="os-btn sm" onclick="pierEditar('${r.id}')">✏️ Editar</button> <button class="os-link" onclick="pierExcluir('${r.id}')">excluir</button></td></tr>`; }).join("")}</tbody>
-      </table></div>`}
-    </div>`;
+    ${transPainel("d", hoje, balsas)}
+    ${transPainel("t", hoje, balsas)}`;
 };
 
 /* -------------------- QUADRO DE PESSOAL (quantidade de pessoas por mês e por vínculo) --------------------
