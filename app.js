@@ -10060,12 +10060,12 @@ async function transCarregar(){
   const { data, error } = await sb.from("balsa_transito").select("*").order("previsao");
   if(error){ TRANS.erro = transErro(error); return; }
   TRANS.erro = null;
-  TRANS.lista = data.map(r=>({ id:r.id, balsa:r.balsa||"", previsao:r.previsao, carga:Number(r.carga)||0, rack:Number(r.rack)||0, chegada:r.chegada||"" }));
+  TRANS.lista = data.map(r=>({ id:r.id, balsa:r.balsa||"", previsao:r.previsao, carga:Number(r.carga)||0, rack:Number(r.rack)||0, mercado:Number(r.mercado)||0, chegada:r.chegada||"" }));
 }
 function transSalvarLocal(){ if(!sb) try{ localStorage.setItem(TRANS_LOCAL, JSON.stringify(TRANS.lista)); }catch(e){} }
 async function transGravar(r, novo){
   if(sb){
-    const campos = { balsa:r.balsa, previsao:r.previsao, carga:r.carga, rack:r.rack, chegada:r.chegada||null, atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() };
+    const campos = { balsa:r.balsa, previsao:r.previsao, carga:r.carga, rack:r.rack, mercado:r.mercado||0, chegada:r.chegada||null, atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() };
     const q = novo ? sb.from("balsa_transito").insert({ ...campos, criado_por:MEU_EMAIL||null }).select("id").single() : sb.from("balsa_transito").update(campos).eq("id", r.id).select("id").single();
     const { data, error } = await q;
     if(error){ toast("⚠ Não salvou: " + transErro(error)); return false; }
@@ -10074,16 +10074,19 @@ async function transGravar(r, novo){
   if(novo) TRANS.lista.push(r); else TRANS.lista = TRANS.lista.map(x=>x.id===r.id ? r : x);
   transSalvarLocal(); return true;
 }
+const transTotal = (r) => (r.rack||0) + (r.mercado||0);   // Total = rack/peça + mercado
+window.transSomar = () => { const g = (id) => Number(document.getElementById("trans-"+id)?.value)||0, el = document.getElementById("trans-total"); if(el) el.value = (g("rack") + g("mercado")).toLocaleString("pt-BR"); };
 window.transSalvar = async () => {
   if(TRANS_SALVANDO) return;
   const g = (id) => (document.getElementById("trans-"+id)?.value||"").trim();
   const ed = TRANS_EDIT ? TRANS.lista.find(r=>r.id===TRANS_EDIT) : null;
-  const carga = Number(g("carga")), rack = Number(g("rack"));
-  const r = { chegada:"", ...(ed||{}), balsa:g("balsa").toUpperCase(), previsao:g("previsao"), carga, rack };
+  const carga = Number(g("carga")), rack = Number(g("rack")), mercado = Number(g("mercado")||0);
+  const r = { chegada:"", ...(ed||{}), balsa:g("balsa").toUpperCase(), previsao:g("previsao"), carga, rack, mercado };
   if(!r.balsa){ toast("Informe a balsa."); return; }
   if(!r.previsao){ toast("Informe a previsão de chegada."); return; }
   if(g("carga")==="" || isNaN(carga) || carga < 0){ toast("Informe a quantidade de carga."); return; }
-  if(g("rack")==="" || !Number.isInteger(rack) || rack < 0){ toast("Informe a quantidade de rack (número inteiro)."); return; }
+  if(g("rack")==="" || !Number.isInteger(rack) || rack < 0){ toast("Informe a quantidade de rack/peça (número inteiro)."); return; }
+  if(!Number.isInteger(mercado) || mercado < 0){ toast("Mercado precisa ser um número inteiro."); return; }
   TRANS_SALVANDO = true;
   try{ if(await transGravar(r, !ed)){ toast(ed ? "✓ Balsa em trânsito atualizada" : `✓ ${r.balsa} em trânsito`); TRANS_EDIT = null; pierRerender(); } }
   finally { TRANS_SALVANDO = false; }
@@ -10108,22 +10111,24 @@ function transPainel(hoje, balsas){
   const cheg = TRANS.lista.filter(r=>r.chegada).sort((a,b)=>b.chegada.localeCompare(a.chegada)).slice(0,5);
   const n = (x) => Number(x||0).toLocaleString("pt-BR", { maximumFractionDigits:2 });
   const tot = (k) => n(ls.reduce((s,r)=>s+(r[k]||0), 0));
-  const ed = TRANS_EDIT ? TRANS.lista.find(r=>r.id===TRANS_EDIT) : null, v = ed || { balsa:"", previsao:"", carga:"", rack:"" };
+  const ed = TRANS_EDIT ? TRANS.lista.find(r=>r.id===TRANS_EDIT) : null, v = ed || { balsa:"", previsao:"", carga:"", rack:"", mercado:"" };
   const prazo = (r) => { const d = Math.round((new Date(r.previsao+"T12:00:00") - new Date(hoje+"T12:00:00"))/864e5);
     return d < 0 ? `<span class="badge red">atrasada ${-d} dia${d===-1?"":"s"}</span>` : d === 0 ? `<span class="badge green">chega hoje</span>` : `<span class="hint" style="margin:0; display:inline;">em ${d} dia${d===1?"":"s"}</span>`; };
   return `<div class="panel" style="margin-bottom:16px;">
       <h3>🚢 Balsas em trânsito (${ls.length})</h3>
       ${!ls.length ? `<div class="hint">Nenhuma balsa em trânsito. Lance abaixo.</div>` : `<div style="overflow-x:auto; margin-top:8px;"><table class="nf-tab">
-        <thead><tr><th>Balsa</th><th>Previsão de chegada</th><th class="num">Qtd. de carga</th><th class="num">Qtd. de rack</th><th></th></tr></thead>
-        <tbody>${ls.map(r=>`<tr><td><b>${osEsc(r.balsa)}</b></td><td style="white-space:nowrap;">${fmtDataBR(r.previsao)} ${prazo(r)}</td><td class="num"><b>${n(r.carga)}</b></td><td class="num"><b>${n(r.rack)}</b></td>
+        <thead><tr><th>Balsa</th><th>Previsão de chegada</th><th class="num">Qtd. de carga</th><th class="num">Qtd. de rack/peça</th><th class="num">Mercado</th><th class="num">Total</th><th></th></tr></thead>
+        <tbody>${ls.map(r=>`<tr><td><b>${osEsc(r.balsa)}</b></td><td style="white-space:nowrap;">${fmtDataBR(r.previsao)} ${prazo(r)}</td><td class="num"><b>${n(r.carga)}</b></td><td class="num"><b>${n(r.rack)}</b></td><td class="num"><b>${n(r.mercado)}</b></td><td class="num" style="color:var(--red);"><b>${n(transTotal(r))}</b></td>
           <td style="white-space:nowrap; text-align:right;"><button class="os-btn sm" onclick="transChegou('${r.id}')">✅ Chegou</button> <button class="os-btn sm" onclick="transEditar('${r.id}')">✏️ Editar</button> <button class="os-link" onclick="transExcluir('${r.id}')">excluir</button></td></tr>`).join("")}
-          <tr><td colspan="2"><b>Total</b></td><td class="num"><b>${tot("carga")}</b></td><td class="num"><b>${tot("rack")}</b></td><td></td></tr></tbody>
+          <tr><td colspan="2"><b>Total geral</b></td><td class="num"><b>${tot("carga")}</b></td><td class="num"><b>${tot("rack")}</b></td><td class="num"><b>${tot("mercado")}</b></td><td class="num" style="color:var(--red);"><b>${n(ls.reduce((t,r)=>t+transTotal(r), 0))}</b></td><td></td></tr></tbody>
       </table></div>`}
       <div class="os-form pier-grid" id="trans-form" style="margin-top:12px;">
         <label>Balsa<input id="trans-balsa" list="trans-balsas" value="${osEsc(v.balsa)}" placeholder="Digite ou escolha" autocomplete="off"><datalist id="trans-balsas">${balsas.map(b=>`<option value="${osEsc(b)}">`).join("")}</datalist></label>
         <label>Previsão de chegada<input type="date" id="trans-previsao" value="${v.previsao}"></label>
         <label>Quantidade de carga<input type="number" min="0" step="any" id="trans-carga" value="${v.carga}" placeholder="0"></label>
-        <label>Quantidade de rack<input type="number" min="0" step="1" id="trans-rack" value="${v.rack}" placeholder="0"></label>
+        <label>Quantidade de rack/peça<input type="number" min="0" step="1" id="trans-rack" value="${v.rack}" placeholder="0" oninput="transSomar()"></label>
+        <label>Mercado<input type="number" min="0" step="1" id="trans-mercado" value="${v.mercado??""}" placeholder="0" oninput="transSomar()"></label>
+        <label>Total (rack/peça + mercado)<input id="trans-total" value="${n(transTotal({ rack:Number(v.rack)||0, mercado:Number(v.mercado)||0 }))}" readonly tabindex="-1" style="font-weight:800;"></label>
       </div>
       <div style="display:flex; gap:8px; margin-top:12px;">
         <button class="entry-submit" style="margin:0;" onclick="transSalvar()">${ed ? "💾 Salvar alterações" : "➕ Lançar em trânsito"}</button>

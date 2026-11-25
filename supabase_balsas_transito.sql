@@ -1,5 +1,5 @@
 -- Rode isto no SQL Editor do Supabase. Pode rodar mais de uma vez sem problema.
--- BALSAS EM TRÂNSITO (tela Balsas): balsa, previsão de chegada, quantidade de carga e de rack.
+-- BALSAS EM TRÂNSITO (tela Balsas): balsa, previsão de chegada, quantidade de carga, de rack/peça e mercado (Total = rack + mercado, calculado na tela).
 -- chegada vazia = ainda em trânsito. Mesmo acesso das operações de balsa (acesso_pier).
 create table if not exists balsa_transito (
   id uuid primary key default gen_random_uuid(),
@@ -13,6 +13,7 @@ create table if not exists balsa_transito (
   atualizado_em timestamptz not null default now(),
   created_at timestamptz not null default now()
 );
+alter table balsa_transito add column if not exists mercado integer not null default 0;
 alter table balsa_transito enable row level security;
 drop policy if exists "balsa_transito_acesso" on balsa_transito;
 create policy "balsa_transito_acesso" on balsa_transito for all to authenticated using (acesso_pier()) with check (acesso_pier());
