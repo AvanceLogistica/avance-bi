@@ -1135,9 +1135,9 @@ function computarAtestadosStats(lancamentos){
    ============================================================================ */
 const RECEITA_BELEM_PADRAO = 85000; // receita bruta de contrato; cada mês pode ser ajustado na tela
 const BELEM_CATEGORIAS = [
-  { chave:"combustivel", label:"Combustível", cor:"#D0021B" },
-  { chave:"mao_de_obra", label:"Mão de Obra", cor:"#17181C" },
-  { chave:"pecas",       label:"Peças",       cor:"#E1971F" }
+  { chave:"combustivel", label:"Combustível", cor:"#E1971F", ic:"⛽" },
+  { chave:"mao_de_obra", label:"Mão de Obra", cor:"#2F5DA8", ic:"👷" },
+  { chave:"pecas",       label:"Peças",       cor:"#8E5BB5", ic:"🔧" }
 ];
 const FILTRO_BELEM = { ano:"todos" };
 window.setFiltroBelem = (campo, valor) => {
@@ -1185,7 +1185,7 @@ function computarBelemStats(lancamentos, receitaOverrides, filtroAno){
     receitaTotal, custoTotal,
     resultadoTotal: receitaTotal - custoTotal,
     margemTotal: receitaTotal ? ((receitaTotal - custoTotal)/receitaTotal*100) : 0,
-    porCategoria: BELEM_CATEGORIAS.map(c=>({ nome:c.label, valor: soma(c.chave), cor:c.cor }))
+    porCategoria: BELEM_CATEGORIAS.map(c=>({ nome:c.label, valor: soma(c.chave), cor:c.cor, ic:c.ic, chave:c.chave }))
   };
 }
 
@@ -12486,17 +12486,26 @@ renderers.belem = () => {
   const b = DATA.belem;
   const anosDisponiveis = [...new Set(b.lancamentos.map(r=>r.d).filter(Boolean).map(d=>d.slice(0,4)))].sort();
   const st = computarBelemStats(b.lancamentos, b.receita, FILTRO_BELEM.ano);
-  const opt = (valor,label,atual) => `<option value="${valor}" ${atual===valor?"selected":""}>${label}</option>`;
   const vazio = b.lancamentos.length === 0 && Object.keys(b.receita).length === 0;
 
   const sinal = (v) => v >= 0 ? "green" : "red";
   const recentes = [...b.lancamentos].sort((a,c)=>c.d.localeCompare(a.d)).slice(0,25);
-  const catLabel = Object.fromEntries(BELEM_CATEGORIAS.map(c=>[c.chave, c.label]));
+  const cat = Object.fromEntries(BELEM_CATEGORIAS.map(c=>[c.chave, c]));
+  const pct = (v, t) => t ? (v/t*100) : 0;
+  const pctTxt = (v) => v.toLocaleString("pt-BR",{minimumFractionDigits:1, maximumFractionDigits:1}) + "%";
+  const n = st.linhas.length;
+  const lucro = st.resultadoTotal >= 0;
+  const sobra = st.receitaTotal ? st.resultadoTotal / st.receitaTotal * 100 : 0;
+  const melhor = n ? st.linhas.reduce((a,l)=>l.resultado > a.resultado ? l : a) : null;
+  const pior = n ? st.linhas.reduce((a,l)=>l.resultado < a.resultado ? l : a) : null;
+  const ult = st.linhas[n-1], ant = st.linhas[n-2];
+  const varUlt = ult && ant && ant.resultado ? (ult.resultado - ant.resultado) / Math.abs(ant.resultado) * 100 : null;
+  const anel = Math.max(0, Math.min(100, st.margemTotal));
 
   return `
     <div class="page-head">
-      <h2>Operação Belém</h2>
-      <p>Custos da operação e resultado mensal (DRE) — receita de contrato de ${fmtBRL(RECEITA_BELEM_PADRAO)}/mês${b.lancamentos.length ? ` · ${fmtNum(b.lancamentos.length)} lançamento(s)` : ""}</p>
+      <h2>🏗️ Operação Belém</h2>
+      <p>Custos da operação e resultado mensal (DRE) · receita de contrato de ${fmtBRL(RECEITA_BELEM_PADRAO)}/mês${b.lancamentos.length ? ` · ${fmtNum(b.lancamentos.length)} lançamento(s)` : ""}</p>
       ${anosDisponiveis.length ? `
       <div class="tabs" style="margin-top:12px;">
         <button class="tab-btn ${FILTRO_BELEM.ano==="todos"?"active":""}" onclick="setFiltroBelem('ano','todos')">Todos</button>
@@ -12511,93 +12520,131 @@ renderers.belem = () => {
         <p>Vá em <b>Entrada de Dados → Operação Belém</b> para importar as planilhas de combustível, mão de obra e peças.</p>
       </div>
     </div>` : `
-    <div class="kpi-grid">
-      <div class="kpi"><div class="lbl">Receita Bruta</div><div class="val">${fmtBRL(st.receitaTotal)}</div><div class="delta flat">${st.linhas.length} ${st.linhas.length===1?"mês":"meses"}</div></div>
-      <div class="kpi"><div class="lbl">Custo Total</div><div class="val">${fmtBRL(st.custoTotal)}</div><div class="delta flat">${st.receitaTotal ? (st.custoTotal/st.receitaTotal*100).toFixed(1) : 0}% da receita</div></div>
-      <div class="kpi"><div class="lbl">Resultado do Período</div><div class="val" style="color:var(--${sinal(st.resultadoTotal)});">${fmtBRL(st.resultadoTotal)}</div><div class="delta ${st.resultadoTotal>=0?"down":"up"}">${st.resultadoTotal>=0?"lucro":"prejuízo"}</div></div>
-      <div class="kpi"><div class="lbl">Margem</div><div class="val" style="color:var(--${sinal(st.resultadoTotal)});">${st.margemTotal.toFixed(1)}%</div></div>
-      ${st.porCategoria.map(c=>`
-      <div class="kpi"><div class="lbl">${c.nome}</div><div class="val">${fmtBRL(c.valor)}</div><div class="delta flat">${st.custoTotal ? (c.valor/st.custoTotal*100).toFixed(1) : 0}% dos custos</div></div>`).join("")}
-      ${st.linhas.length ? (() => {
+    <!-- resumo do período: receita − custos = resultado, e a margem em anel -->
+    <div class="bl-hero">
+      <div class="bl-conta">
+        <div class="bl-item"><div class="bl-ic rec">💰</div><div><div class="bl-lbl">Receita bruta</div><div class="bl-val">${fmtBRL(st.receitaTotal)}</div><div class="bl-sub">${n} ${n===1?"mês":"meses"} · ${fmtBRL(n ? st.receitaTotal/n : 0)}/mês</div></div></div>
+        <div class="bl-op">−</div>
+        <div class="bl-item"><div class="bl-ic cus">💸</div><div><div class="bl-lbl">Custo total</div><div class="bl-val">${fmtBRL(st.custoTotal)}</div><div class="bl-sub">${pctTxt(pct(st.custoTotal, st.receitaTotal))} da receita</div></div></div>
+        <div class="bl-op">=</div>
+        <div class="bl-item res ${lucro?"":"neg"}"><div class="bl-ic ${lucro?"luc":"pre"}">${lucro?"📈":"📉"}</div><div><div class="bl-lbl">Resultado do período</div><div class="bl-val">${fmtBRL(st.resultadoTotal)}</div><div class="bl-sub">${lucro?"✅ lucro":"⚠️ prejuízo"} · ${fmtBRL(n ? st.resultadoTotal/n : 0)}/mês</div></div></div>
+      </div>
+      <div class="bl-margem">
+        <div class="bl-anel ${lucro?"":"neg"}" style="--p:${anel}"><div><b>${pctTxt(st.margemTotal)}</b><span>margem</span></div></div>
+        <div class="bl-frase">${lucro
+          ? `De cada <b>R$ 100</b> recebidos, sobram <b class="ok">R$ ${sobra.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2})}</b> de lucro.`
+          : `A operação gastou <b class="no">${pctTxt(pct(st.custoTotal, st.receitaTotal) - 100)}</b> a mais do que recebeu.`}</div>
+      </div>
+    </div>
+
+    <!-- custos por categoria + destaques -->
+    <div class="bl-cards">
+      ${st.porCategoria.map(c=>{ const p = pct(c.valor, st.custoTotal); return `
+      <div class="bl-card">
+        <div class="bl-card-top"><span class="bl-cic" style="--c:${c.cor}">${c.ic}</span><span class="bl-lbl">${c.nome}</span></div>
+        <div class="bl-val sm">${fmtBRL(c.valor)}</div>
+        <div class="bl-barra"><i style="width:${p}%; background:${c.cor}"></i></div>
+        <div class="bl-sub"><b>${pctTxt(p)}</b> dos custos · ${fmtBRL(n ? c.valor/n : 0)}/mês</div>
+      </div>`; }).join("")}
+      ${melhor ? `
+      <div class="bl-card">
+        <div class="bl-card-top"><span class="bl-cic" style="--c:#1C9A6C">🏆</span><span class="bl-lbl">Melhor mês</span></div>
+        <div class="bl-val sm" style="color:var(--green)">${melhor.label}</div>
+        <div class="bl-sub">resultado de <b>${fmtBRL(melhor.resultado)}</b> · margem ${pctTxt(melhor.margem)}</div>
+        ${pior && pior !== melhor ? `<div class="bl-sub">menor: ${pior.label} · ${fmtBRL(pior.resultado)}</div>` : ""}
+      </div>` : ""}
+      ${n ? (() => {
         // Projeção anual: média mensal dos meses do DRE × 12
-        const n = st.linhas.length;
         const receitaAno = st.receitaTotal / n * 12, custoAno = st.custoTotal / n * 12, resultadoAno = st.resultadoTotal / n * 12;
         return `
-      <div class="kpi" title="Média dos ${n} ${n===1?"mês":"meses"} do DRE × 12 · Receita ${fmtBRL(receitaAno)} − Custo ${fmtBRL(custoAno)}"><div class="lbl">Projeção 12 meses (resultado)</div><div class="val" style="color:var(--${sinal(resultadoAno)});">${fmtBRL(resultadoAno)}</div><div class="delta flat">média de ${fmtBRL(st.resultadoTotal / n)}/mês · ${n} ${n===1?"mês":"meses"} base</div><div class="delta flat">Receita ${fmtBRL(receitaAno)} · Custo ${fmtBRL(custoAno)}</div></div>`;
+      <div class="bl-card" title="Média dos ${n} ${n===1?"mês":"meses"} do DRE × 12 · Receita ${fmtBRL(receitaAno)} − Custo ${fmtBRL(custoAno)}">
+        <div class="bl-card-top"><span class="bl-cic" style="--c:#2F5DA8">🔮</span><span class="bl-lbl">Projeção 12 meses</span></div>
+        <div class="bl-val sm" style="color:var(--${sinal(resultadoAno)})">${fmtBRL(resultadoAno)}</div>
+        <div class="bl-sub">se mantiver a média de <b>${fmtBRL(st.resultadoTotal / n)}</b>/mês</div>
+        <div class="bl-sub">Receita ${fmtBRL(receitaAno)} · Custo ${fmtBRL(custoAno)}</div>
+      </div>`;
       })() : ""}
     </div>
 
     <div class="panel" style="margin-bottom:16px;">
-      <h3>DRE — Resultado mês a mês</h3>
-      <div class="hint">A Receita Bruta começa em ${fmtBRL(RECEITA_BELEM_PADRAO)} (valor do contrato). Clique no valor para ajustar um mês específico — a alteração é salva na hora.</div>
-      <table>
+      <h3>📊 Para onde vai a receita, mês a mês</h3>
+      <div class="hint">Cada barra é a receita do mês, dividida entre os custos e o lucro (em verde). Em cima, a margem do mês.</div>
+      <div class="chart-wrap" style="height:340px;"><canvas id="ch-belem-dre"></canvas></div>
+      <div class="chart-insight">${insightSerie(st.labels, st.linhas.map(l=>l.resultado), fmtBRL)}${varUlt!=null ? ` Último mês (${ult.label}): resultado ${varUlt>=0?"▲":"▼"} ${pctTxt(Math.abs(varUlt))} frente a ${ant.label}.` : ""}</div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>🎯 Margem mês a mês</h3>
+        <div class="hint">Quanto sobra da receita, em %. A linha tracejada é a média do período (${pctTxt(st.margemTotal)}).</div>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ch-belem-cat"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>🧩 Composição dos custos</h3>
+        <div class="hint">Peso de cada categoria no custo total do período</div>
+        <div class="bl-comp">
+          <div class="chart-wrap" style="height:220px;"><canvas id="ch-belem-comp"></canvas></div>
+          <div class="bl-leg">
+            ${[...st.porCategoria].sort((a,c)=>c.valor-a.valor).map(c=>`
+            <div class="bl-leg-l"><span class="bl-cic" style="--c:${c.cor}">${c.ic}</span><span class="nm">${c.nome}</span><b>${pctTxt(pct(c.valor, st.custoTotal))}</b><small>${fmtBRL(c.valor)}</small></div>`).join("")}
+          </div>
+        </div>
+        <div class="chart-insight">${insightComposicao(st.porCategoria, "nome", "valor")}</div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>📋 DRE · Resultado mês a mês</h3>
+      <div class="hint">A Receita Bruta começa em ${fmtBRL(RECEITA_BELEM_PADRAO)} (valor do contrato). Clique no valor para ajustar um mês específico; a alteração é salva na hora.</div>
+      <div style="overflow-x:auto;">
+      <table class="bl-dre">
         <thead><tr>
-          <th>Mês</th><th class="num">Receita Bruta</th><th class="num">Combustível</th><th class="num">Mão de Obra</th>
-          <th class="num">Peças</th><th class="num">Custo Total</th><th class="num">Resultado</th><th class="num">Margem</th>
+          <th>📅 Mês</th><th class="num">💰 Receita</th><th class="num">⛽ Combustível</th><th class="num">👷 Mão de obra</th>
+          <th class="num">🔧 Peças</th><th class="num">💸 Custo total</th><th class="num">📈 Resultado</th><th>🎯 Margem</th>
         </tr></thead>
         <tbody>
-          ${st.linhas.map(l=>`<tr>
+          ${st.linhas.map((l,i)=>{ const a = st.linhas[i-1], d = a ? l.resultado - a.resultado : null; return `<tr>
             <td><b>${l.label}</b></td>
-            <td class="num"><input type="number" step="0.01" value="${l.receita}" onchange="salvarReceitaBelem('${l.mes}', this.value)"
-                style="width:110px; text-align:right; font-family:inherit; font-size:12.5px; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--paper);"></td>
+            <td class="num"><input type="number" step="0.01" value="${l.receita}" onchange="salvarReceitaBelem('${l.mes}', this.value)" class="bl-inp"></td>
             <td class="num">${fmtBRL2(l.combustivel)}</td>
             <td class="num">${fmtBRL2(l.mao_de_obra)}</td>
             <td class="num">${fmtBRL2(l.pecas)}</td>
             <td class="num"><b>${fmtBRL2(l.custoTotal)}</b></td>
-            <td class="num" style="color:var(--${sinal(l.resultado)}); font-weight:700;">${fmtBRL2(l.resultado)}</td>
-            <td class="num"><span class="badge ${l.resultado>=0?"green":"red"}">${l.margem.toFixed(1)}%</span></td>
-          </tr>`).join("")}
+            <td class="num" style="color:var(--${sinal(l.resultado)}); font-weight:800;">${fmtBRL2(l.resultado)}${d!=null && d!==0 ? `<span class="bl-seta ${d>0?"up":"dn"}" title="${d>0?"+":"−"}${fmtBRL(Math.abs(d))} frente a ${a.label}">${d>0?"▲":"▼"}</span>` : ""}</td>
+            <td><div class="bl-mg ${l.resultado>=0?"":"neg"}"><i style="--p:${Math.max(0,Math.min(100,l.margem))}"></i><b>${pctTxt(l.margem)}</b></div></td>
+          </tr>`; }).join("")}
         </tbody>
-        <tfoot><tr style="font-weight:700; background:var(--paper);">
+        <tfoot><tr>
           <td>Total</td>
           <td class="num">${fmtBRL2(st.receitaTotal)}</td>
           ${BELEM_CATEGORIAS.map(c=>`<td class="num">${fmtBRL2(st.porCategoria.find(p=>p.nome===c.label).valor)}</td>`).join("")}
           <td class="num">${fmtBRL2(st.custoTotal)}</td>
           <td class="num" style="color:var(--${sinal(st.resultadoTotal)});">${fmtBRL2(st.resultadoTotal)}</td>
-          <td class="num">${st.margemTotal.toFixed(1)}%</td>
+          <td><div class="bl-mg ${lucro?"":"neg"}"><i style="--p:${anel}"></i><b>${pctTxt(st.margemTotal)}</b></div></td>
         </tr></tfoot>
       </table>
-    </div>
-
-    <div class="panel" style="margin-bottom:16px;">
-      <h3>Receita, Custo e Resultado por mês</h3>
-      <div class="hint">Valores em R$ mil · embaixo do resultado, a margem do mês (resultado ÷ receita)</div>
-      <div class="chart-wrap" style="height:320px;"><canvas id="ch-belem-dre"></canvas></div>
-      <div class="chart-insight">${insightSerie(st.labels, st.linhas.map(l=>l.resultado), fmtBRL)}</div>
-    </div>
-
-    <div class="grid-2">
-      <div class="panel">
-        <h3>Custo por categoria (mensal)</h3>
-        <div class="hint">Empilhado — combustível, mão de obra e peças</div>
-        <div class="chart-wrap" style="height:280px;"><canvas id="ch-belem-cat"></canvas></div>
-        <div class="chart-insight">${insightSerie(st.labels, st.linhas.map(l=>l.custoTotal), fmtBRL)}</div>
-      </div>
-      <div class="panel">
-        <h3>Composição dos custos</h3>
-        <div class="hint">% sobre o custo total do período</div>
-        <div class="chart-wrap" style="height:280px;"><canvas id="ch-belem-comp"></canvas></div>
-        <div class="chart-insight">${insightComposicao(st.porCategoria, "nome", "valor")}</div>
       </div>
     </div>
 
     <div class="panel">
-      <h3>Lançamentos mais recentes</h3>
+      <h3>🧾 Lançamentos mais recentes</h3>
       <div class="hint">Últimos 25 registros importados</div>
       ${recentes.length === 0 ? `<div class="empty-state" style="padding:24px;"><div class="glyph">📋</div><p>Nenhum custo lançado ainda.</p></div>` : `
+      <div style="overflow-x:auto;">
       <table>
         <thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>Referência</th><th class="num">Qtde</th><th class="num">Valor</th></tr></thead>
         <tbody>
-          ${recentes.map(r=>`<tr>
+          ${recentes.map(r=>{ const c = cat[r.categoria]; return `<tr>
             <td>${fmtDataBR(r.d)}</td>
-            <td>${catLabel[r.categoria] || r.categoria}</td>
+            <td>${c ? `<span class="bl-chip" style="--c:${c.cor}">${c.ic} ${c.label}</span>` : r.categoria}</td>
             <td>${r.descricao || "—"}</td>
             <td>${r.referencia || "—"}</td>
             <td class="num">${r.qtd != null ? fmtNum(r.qtd) : "—"}</td>
-            <td class="num">${fmtBRL2(r.v)}</td>
-          </tr>`).join("")}
+            <td class="num"><b>${fmtBRL2(r.v)}</b></td>
+          </tr>`; }).join("")}
         </tbody>
-      </table>`}
+      </table>
+      </div>`}
     </div>
     `}
   `;
@@ -12607,59 +12654,76 @@ initCharts.belem = () => {
   const b = DATA.belem;
   const st = computarBelemStats(b.lancamentos, b.receita, FILTRO_BELEM.ano);
   if(!st.linhas.length) return;
+  const k = (v) => fmtLabelBRL(v).replace("R$ ","");
+  const pctTxt = (v) => v.toLocaleString("pt-BR",{maximumFractionDigits:1}) + "%";
+  const VERDE = COLORS.green, legenda = { position:"bottom", labels:{ boxWidth:10, boxHeight:10, usePointStyle:true, pointStyle:"rectRounded", padding:16, font:{ size:12, weight:600 } } };
 
-  // Três barras por mês (Receita, Custo, Resultado) no mesmo eixo em R$, cada uma com o valor em cima;
-  // a do Resultado leva também a margem. Resultado negativo (prejuízo) fica abaixo do zero, em vermelho escuro.
-  const semRS = (v) => fmtLabelBRL(v).replace("R$ ","");
-  const barra = { borderRadius:5, maxBarThickness:58, categoryPercentage:0.78, barPercentage:0.92 };
-  const rotuloTopo = { display:true, anchor:"end", align:"end", offset:2, clamp:true, color:COLORS.ink, font:{ size:11.5, weight:800 } };
+  // 1) Barra empilhada = receita do mês: custos por categoria embaixo + lucro (verde) em cima; a margem no topo.
+  //    No prejuízo o lucro é 0 e a barra de custo passa da receita (linha tracejada).
+  const maxRec = Math.max(...st.linhas.map(l=>Math.max(l.receita, l.custoTotal)));
+  const seg = { stack:"r", borderRadius:4, borderSkipped:false, borderWidth:{ top:2 }, borderColor:"#fff", maxBarThickness:70, categoryPercentage:0.7, barPercentage:0.9 };
+  const rotDentro = { display:(c)=>c.dataset.data[c.dataIndex] >= maxRec*0.07, color:"#fff", font:{ size:11, weight:800 }, formatter:k };
   mkChart("ch-belem-dre", {
     type:"bar",
     data:{ labels:st.labels, datasets:[
-      { label:"Receita Bruta", data:st.linhas.map(l=>l.receita), backgroundColor:COLORS.green, ...barra,
-        datalabels:{ ...rotuloTopo, formatter:semRS } },
-      { label:"Custo Total", data:st.linhas.map(l=>l.custoTotal), backgroundColor:COLORS.red, ...barra,
-        datalabels:{ ...rotuloTopo, formatter:semRS } },
-      { label:"Resultado", data:st.linhas.map(l=>l.resultado), ...barra,
-        backgroundColor:st.linhas.map(l=>l.resultado>=0 ? COLORS.ink : COLORS.redDark),
-        datalabels:{ ...rotuloTopo,
-          color:(c)=>st.linhas[c.dataIndex].resultado>=0 ? COLORS.ink : COLORS.redDark,
-          formatter:(v,c)=>`${semRS(v)}\n${st.linhas[c.dataIndex].margem.toFixed(0)}%`, textAlign:"center" } },
+      ...BELEM_CATEGORIAS.map(c=>({ label:`${c.ic} ${c.label}`, data:st.linhas.map(l=>l[c.chave]), backgroundColor:c.cor, ...seg, datalabels:rotDentro })),
+      { label:"📈 Lucro", data:st.linhas.map(l=>Math.max(0, l.resultado)), backgroundColor:VERDE, ...seg,
+        datalabels:{ labels:{
+          valor:{ ...rotDentro },
+          topo:{ display:true, anchor:"end", align:"end", offset:4, textAlign:"center", font:{ size:12, weight:800 },
+            color:(c)=>st.linhas[c.dataIndex].resultado>=0 ? VERDE : COLORS.redDark,
+            formatter:(v,c)=>{ const l = st.linhas[c.dataIndex]; return l.resultado>=0 ? `margem ${pctTxt(l.margem)}` : `prejuízo ${k(l.resultado)}`; } } } } },
+      { type:"line", stack:"rec", label:"Receita", data:st.linhas.map(l=>l.receita), borderColor:COLORS.inkSoft, borderDash:[5,4], borderWidth:1.5,
+        pointRadius:0, pointHoverRadius:0, stepped:"middle", fill:false, datalabels:{ display:false } },
     ]},
-    options:{ responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:12, usePointStyle:true, pointStyle:"rectRounded", padding:16,
-          // a barra de Resultado muda de cor no prejuízo; a legenda mostra sempre a cor normal (preto)
-          generateLabels:(chart)=>{ const it = Chart.defaults.plugins.legend.labels.generateLabels(chart); if(it[2]){ it[2].fillStyle = COLORS.ink; it[2].strokeStyle = COLORS.ink; } return it; } } },
-        tooltip:{ mode:"index", intersect:false, callbacks:{
-          label:(c)=>` ${c.dataset.label}: ${fmtBRL(c.raw)}`,
-          afterBody:(its)=>{ const l = st.linhas[its[0].dataIndex]; return `Margem: ${l.margem.toFixed(1)}%`; } } } },
-      layout:{ padding:{ top:34 } },
-      scales:{ y:{ beginAtZero:true, grid:{ color:COLORS.grid }, border:{ display:false }, ticks:{ callback:v=>fmtMil(v), color:COLORS.inkSoft },
-                   // com prejuízo, abre espaço abaixo do zero para o valor e a margem caberem
-                   suggestedMin: Math.min(0, ...st.linhas.map(l=>l.resultado)) < 0 ? Math.min(...st.linhas.map(l=>l.resultado))*2.2 : 0 },
+    options:{ responsive:true, maintainAspectRatio:false, interaction:{ mode:"index", intersect:false },
+      plugins:{ legend:{ ...legenda, labels:{ ...legenda.labels, filter:(it)=>it.text!=="Receita" } },
+        tooltip:{ padding:12, titleFont:{ size:13, weight:800 }, bodySpacing:4,
+          filter:(c)=>c.dataset.label!=="Receita",
+          callbacks:{
+            title:(its)=>`${its[0].label} · Receita ${fmtBRL(st.linhas[its[0].dataIndex].receita)}`,
+            label:(c)=>{ const l = st.linhas[c.dataIndex]; return ` ${c.dataset.label}: ${fmtBRL(c.raw)} (${pctTxt(l.receita ? c.raw/l.receita*100 : 0)})`; },
+            footer:(its)=>{ const l = st.linhas[its[0].dataIndex]; return `Custo total ${fmtBRL(l.custoTotal)} · Resultado ${fmtBRL(l.resultado)}`; } } } },
+      layout:{ padding:{ top:26 } },
+      scales:{ y:{ stacked:true, beginAtZero:true, grid:{ color:COLORS.grid }, border:{ display:false }, ticks:{ callback:v=>"R$ "+fmtMil(v), color:COLORS.inkSoft } },
+               x:{ stacked:true, grid:{ display:false }, border:{ display:false }, ticks:{ font:{ size:12.5, weight:700 }, color:COLORS.ink } } } }
+  });
+
+  // 2) Margem do mês (linha) com a média do período tracejada
+  const margens = st.linhas.map(l=>+l.margem.toFixed(1));
+  mkChart("ch-belem-cat", {
+    type:"line",
+    data:{ labels:st.labels, datasets:[
+      { label:"Margem do mês", data:margens, borderColor:VERDE, backgroundColor:"rgba(28,154,108,.10)", fill:true, tension:.3, borderWidth:2.5,
+        pointRadius:6, pointHoverRadius:8, pointBackgroundColor:st.linhas.map(l=>l.resultado>=0 ? VERDE : COLORS.red), pointBorderColor:"#fff", pointBorderWidth:2,
+        datalabels:{ display:true, anchor:"end", align:"top", offset:6, color:COLORS.ink, font:{ size:12, weight:800 }, formatter:(v)=>pctTxt(v) } },
+      { label:"Média do período", data:st.linhas.map(()=>+st.margemTotal.toFixed(1)), borderColor:COLORS.inkSoft, borderDash:[6,5], borderWidth:1.5, pointRadius:0, pointHoverRadius:0, fill:false },
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false, interaction:{ mode:"index", intersect:false },
+      plugins:{ legend:{ ...legenda, labels:{ ...legenda.labels, pointStyle:"line" } },
+        tooltip:{ callbacks:{ label:(c)=>` ${c.dataset.label}: ${pctTxt(c.raw)}`,
+          afterBody:(its)=>{ const l = st.linhas[its[0].dataIndex]; return `Resultado: ${fmtBRL(l.resultado)}`; } } } },
+      layout:{ padding:{ top:20 } },
+      scales:{ y:{ suggestedMin:Math.min(0, ...margens), suggestedMax:Math.max(...margens)+10, grid:{ color:COLORS.grid }, border:{ display:false }, ticks:{ callback:v=>v+"%", color:COLORS.inkSoft } },
                x:{ grid:{ display:false }, border:{ display:false }, ticks:{ font:{ size:12, weight:700 }, color:COLORS.ink } } } }
   });
 
-  mkChart("ch-belem-cat", {
-    type:"bar",
-    data:{ labels:st.labels, datasets: BELEM_CATEGORIAS.map(c=>({
-      label:c.label, data:st.linhas.map(l=>l[c.chave]), backgroundColor:c.cor, stack:"a", borderRadius:3
-    }))},
-    options:{ responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
-        datalabels:{ display:(ctx)=>ctx.dataset.data[ctx.dataIndex] > 3000, color:"#fff", font:{size:10, weight:700}, formatter:fmtLabelBRL } },
-      scales:{ x:{stacked:true, grid:{display:false}}, y:{stacked:true, grid:{color:COLORS.grid}, ticks:{callback:v=>fmtMil(v)}} } }
-  });
-
+  // 3) Rosca com o custo total no meio
   const totalComp = sumArr(st.porCategoria.map(c=>c.valor));
   mkChart("ch-belem-comp", {
     type:"doughnut",
-    data:{ labels:st.porCategoria.map(c=>c.nome), datasets:[{ data:st.porCategoria.map(c=>c.valor),
-      backgroundColor:st.porCategoria.map(c=>c.cor), borderWidth:2, borderColor:"#fff" }]},
-    options:{ responsive:true, maintainAspectRatio:false, cutout:"60%",
-      plugins:{ legend:{position:"bottom", labels:{boxWidth:10, usePointStyle:true, pointStyle:"circle"}},
-        datalabels:{ display:(ctx)=>totalComp>0 && ctx.dataset.data[ctx.dataIndex]/totalComp > 0.02, color:"#fff", font:{size:11, weight:700},
-          formatter:(v)=> totalComp ? Math.round(v/totalComp*100)+"%" : "" } } }
+    data:{ labels:st.porCategoria.map(c=>`${c.ic} ${c.nome}`), datasets:[{ data:st.porCategoria.map(c=>c.valor),
+      backgroundColor:st.porCategoria.map(c=>c.cor), borderWidth:3, borderColor:"#fff", hoverOffset:6 }]},
+    options:{ responsive:true, maintainAspectRatio:false, cutout:"66%",
+      plugins:{ legend:{ display:false },
+        tooltip:{ callbacks:{ label:(c)=>` ${c.label}: ${fmtBRL(c.raw)} (${pctTxt(totalComp ? c.raw/totalComp*100 : 0)})` } },
+        datalabels:{ display:(ctx)=>totalComp>0 && ctx.dataset.data[ctx.dataIndex]/totalComp > 0.04, color:"#fff", font:{ size:12, weight:800 },
+          formatter:(v)=> totalComp ? Math.round(v/totalComp*100)+"%" : "" } } },
+    plugins:[{ id:"blCentro", afterDraw:(ch)=>{ const { ctx, chartArea:a } = ch, x = (a.left+a.right)/2, y = (a.top+a.bottom)/2;
+      ctx.save(); ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillStyle = COLORS.inkSoft; ctx.font = "600 11px " + Chart.defaults.font.family; ctx.fillText("CUSTO TOTAL", x, y-12);
+      ctx.fillStyle = COLORS.ink; ctx.font = "800 17px " + Chart.defaults.font.family; ctx.fillText(fmtLabelBRL(totalComp), x, y+8);
+      ctx.restore(); } }]
   });
 };
 
