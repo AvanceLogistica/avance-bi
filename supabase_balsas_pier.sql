@@ -20,6 +20,8 @@ create table if not exists balsa_operacoes (
 alter table balsa_operacoes add column if not exists numero text;
 alter table balsa_operacoes add column if not exists data_fechamento date;
 alter table balsa_operacoes add column if not exists viagens_plano integer not null default 0;
+-- Carregamento: real liberado pela Combitrans (viagens = coleta/puxa da Avance; pendência = liberado − coleta)
+alter table balsa_operacoes add column if not exists liberado integer not null default 0;
 create index if not exists balsa_operacoes_data on balsa_operacoes (data);
 create index if not exists balsa_operacoes_abertas on balsa_operacoes (pier) where data_fechamento is null;
 alter table balsa_operacoes enable row level security;

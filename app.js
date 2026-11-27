@@ -9943,7 +9943,9 @@ initCharts.organograma = () => { orgDepoisDeDesenhar(); if(ORG_FICHA) orgDesenha
    Cada operação = uma balsa (nome do Faturamento + nº da viagem) operando num pier (Panamá ou Luiza),
    em Carregamento ou Descarga, com dia/hora de abertura e de fechamento e as viagens Plano × Real.
    Tabela balsa_operacoes: data = dia da abertura, hora_inicio = hora da abertura, data_fechamento / hora_fim
-   = fechamento, viagens_plano = plano, viagens = real. Alimenta o Painel TV (tv.html). */
+   = fechamento, viagens_plano = plano, viagens = real. Alimenta o Painel TV (tv.html).
+   Carregamento: liberado = real liberado de carga pela Combitrans; viagens = coleta/puxa feita pela Avance;
+   pendência = liberado − coleta (é onde se mede a performance da Avance). */
 const PIER_PIERS = [ { k:"panama", nome:"Panamá" }, { k:"luiza", nome:"Luiza" } ];
 const PIER_TIPOS = [ { k:"carregamento", nome:"Carregamento", ic:"⬆️", cor:"#2E6DB0" }, { k:"descarga", nome:"Descarga", ic:"⬇️", cor:"#1E8E3E" } ];
 const PIER_LOCAL = "avance_balsa_operacoes_v2";
@@ -9964,6 +9966,10 @@ function pierDuracao(r){
 }
 const pierPct = (r) => r.plano ? Math.round(r.real/r.plano*100) : null;
 const pierCorPct = (p) => p==null ? "var(--ink-soft)" : p>=100 ? "var(--green)" : p>=80 ? "#B7791F" : "var(--red)";
+const pierCarr = (r) => r.tipo === "carregamento";
+const pierPend = (r) => Math.max(0, (r.liberado||0) - (r.real||0));          // liberado pela Combitrans e ainda não puxado
+const pierPctLib = (r) => r.liberado ? Math.round(r.real/r.liberado*100) : null;
+const pierCorPend = (n) => n > 0 ? "var(--red)" : "var(--green)";
 
 async function pierCarregar(){
   PIER.carregando = true;
@@ -9973,8 +9979,10 @@ async function pierCarregar(){
     const { data, error } = await sb.from("balsa_operacoes").select("*").order("data", { ascending:false }).order("hora_inicio", { ascending:false });
     if(error){ PIER.erro = error.message; PIER.carregando = false; PIER.carregado = true; pierRerender(); return; }
     PIER.erro = null;
+    if(data.length) PIER.semLib = !("liberado" in data[0]);
     PIER.lista = data.map(r=>({ id:r.id, pier:r.pier, tipo:r.tipo, balsa:r.balsa||"", numero:r.numero||"", data:r.data, ini:r.hora_inicio||"",
       dataFim:r.data_fechamento||"", fim:r.hora_fim||"", plano:Number(r.viagens_plano)||0, real:Number(r.viagens)||0, obs:r.obs||"",
+      liberado:r.liberado===undefined ? undefined : (Number(r.liberado)||0),   // undefined = coluna ainda não criada no banco
       por:(r.atualizado_por||r.criado_por||"").split("@")[0] }));
   }
   PIER.carregando = false; PIER.carregado = true; pierRerender();
@@ -9983,11 +9991,13 @@ function pierRerender(){ if(document.querySelector('nav.menu button.active')?.da
 function pierSalvarLocal(){ if(!sb) try{ localStorage.setItem(PIER_LOCAL, JSON.stringify(PIER.lista)); }catch(e){} }
 const pierBanco = (r) => ({ pier:r.pier, tipo:r.tipo, balsa:r.balsa, numero:r.numero||null, data:r.data, hora_inicio:r.ini||null,
   data_fechamento:r.dataFim||null, hora_fim:r.dataFim ? (r.fim||null) : null, viagens_plano:r.plano||0, viagens:r.real||0, obs:r.obs||null,
-  atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() });
+  ...(PIER.semLib ? {} : { liberado:r.liberado||0 }), atualizado_por:MEU_EMAIL||null, atualizado_em:new Date().toISOString() });
 async function pierGravar(r, novo){
   if(sb){
-    const q = novo ? sb.from("balsa_operacoes").insert({ ...pierBanco(r), criado_por:MEU_EMAIL||null }).select("id").single() : sb.from("balsa_operacoes").update(pierBanco(r)).eq("id", r.id);
-    const { data, error } = await q;
+    const q = () => novo ? sb.from("balsa_operacoes").insert({ ...pierBanco(r), criado_por:MEU_EMAIL||null }).select("id").single() : sb.from("balsa_operacoes").update(pierBanco(r)).eq("id", r.id);
+    let { data, error } = await q();
+    // coluna liberado ainda não criada: grava sem ela e avisa
+    if(error && /liberado/i.test(error.message) && !PIER.semLib){ PIER.semLib = true; ({ data, error } = await q()); if(!error) toast("⚠ Falta rodar o SQL do Real liberado (carregamento) no Supabase."); }
     if(error){ toast(/balsa_operacoes|numero|viagens_plano|data_fechamento/i.test(error.message) ? "⚠ Falta rodar o SQL das Balsas no Supabase." : "⚠ Não salvou: " + error.message); return false; }
     if(novo && data) r.id = data.id;
   } else if(novo) r.id = "l" + Date.now();
@@ -10008,7 +10018,8 @@ window.pierSalvar = async () => {
   const ed = PIER_EDIT ? PIER.lista.find(r=>r.id===PIER_EDIT) : null;
   const r = { ...(ed||{}), pier:g("pier"), tipo:g("tipo"), balsa:g("balsa").toUpperCase(), numero:g("numero"), data:g("data"), ini:g("ini"),
     plano:Math.max(0, parseInt(g("plano"),10)||0), obs:g("obs") };
-  if(ed){ r.dataFim = g("datafim"); r.fim = g("fim"); r.real = Math.max(0, parseInt(g("real"),10)||0); } else { r.dataFim = ""; r.fim = ""; r.real = 0; }
+  if(ed){ r.dataFim = g("datafim"); r.fim = g("fim"); r.real = Math.max(0, parseInt(g("real"),10)||0); if(document.getElementById("pier-lib")) r.liberado = Math.max(0, parseInt(g("lib"),10)||0); }
+  else { r.dataFim = ""; r.fim = ""; r.real = 0; r.liberado = 0; }
   if(!r.pier){ toast("Escolha o pier: Panamá ou Luiza."); return; }
   if(!r.tipo){ toast("Escolha a operação: Carregamento ou Descarga."); return; }
   if(!r.balsa){ toast("Informe a balsa."); return; }
@@ -10029,15 +10040,25 @@ window.pierReal = async (id, delta, valor) => {
   if(novo.real === r.real) return;
   if(await pierGravar(novo, false)) pierRerender();
 };
+window.pierLib = async (id, delta, valor) => {
+  if(PIER.semLib){ toast("⚠ Falta rodar o SQL do Real liberado (carregamento) no Supabase."); return; }
+  const r = PIER.lista.find(x=>x.id===id); if(!r) return;
+  const novo = { ...r, liberado: valor!=null ? Math.max(0, parseInt(valor,10)||0) : Math.max(0, (r.liberado||0) + delta) };
+  if(novo.liberado === (r.liberado||0)) return;
+  if(await pierGravar(novo, false)) pierRerender();
+};
 window.pierFechar = async (id) => {
   const r = PIER.lista.find(x=>x.id===id); if(!r) return;
   const dataFim = document.getElementById("pf-d-"+id)?.value, fim = document.getElementById("pf-h-"+id)?.value;
   const real = parseInt(document.getElementById("pf-r-"+id)?.value, 10);
   if(!dataFim || !fim){ toast("Informe o dia e a hora do fechamento."); return; }
   if(`${dataFim} ${fim}` < `${r.data} ${r.ini}`){ toast("O fechamento não pode ser antes da abertura."); return; }
+  const lib = parseInt(document.getElementById("pf-l-"+id)?.value, 10);
   const novo = { ...r, dataFim, fim, real: isNaN(real) ? r.real : Math.max(0, real) };
-  if(!confirm(`Fechar ${pierBalsaRot(r)} (${pierTipo(r.tipo).nome}, pier ${pierNome(r.pier)}) com ${novo.real} de ${r.plano} viagens?`)) return;
-  if(await pierGravar(novo, false)){ toast(`✓ ${pierBalsaRot(r)} fechada — ${novo.real}/${r.plano} viagens`); pierRerender(); }
+  if(pierCarr(r) && !isNaN(lib)) novo.liberado = Math.max(0, lib);
+  const resumo = pierCarr(r) ? `plano ${r.plano}, liberado ${novo.liberado||0}, coleta ${novo.real}, pendência ${pierPend(novo)}` : `${novo.real} de ${r.plano} viagens`;
+  if(!confirm(`Fechar ${pierBalsaRot(r)} (${pierTipo(r.tipo).nome}, pier ${pierNome(r.pier)}) com ${resumo}?`)) return;
+  if(await pierGravar(novo, false)){ toast(`✓ ${pierBalsaRot(r)} fechada — ${resumo}`); pierRerender(); }
 };
 window.pierReabrir = async (id) => {
   const r = PIER.lista.find(x=>x.id===id); if(!r || !confirm(`Reabrir ${pierBalsaRot(r)}?`)) return;
@@ -10157,7 +10178,7 @@ function transPainel(k, hoje, balsas){
 
 renderers.pier = () => {
   if(!PIER.carregado && !PIER.carregando){ PIER.carregando = true; setTimeout(()=>pierCarregar(), 0); }
-  const cab = `<div class="page-head"><h2>Balsas</h2><p>Abertura e fechamento das operações nos piers Panamá e Luiza — viagens Plano × Real por balsa (vai para o Painel TV)</p></div>`;
+  const cab = `<div class="page-head"><h2>Balsas</h2><p>Abertura e fechamento das operações nos piers Panamá e Luiza — viagens Plano × Real por balsa (vai para o Painel TV)</p></div>${PIER.semLib ? `<div class="hint" style="margin:-10px 0 14px; color:var(--red);">⚠ Falta rodar o SQL do Real liberado (carregamento) no Supabase.</div>` : ""}`;
   if(PIER.erro) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar</h4><p>${osEsc(PIER.erro)}</p><p>Se falar em tabela ou coluna inexistente, rode o SQL das Balsas no Supabase.</p></div></div>`;
   if(!PIER.carregado) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando...</p></div></div>`;
   const hoje = frotaHojeISO(); if(!PIER_MES) PIER_MES = hoje.slice(0,7);
@@ -10172,6 +10193,7 @@ renderers.pier = () => {
   const nomeMes = (m) => `${MOS_MESES[Number(m.slice(5,7))-1]}/${m.slice(0,4)}`;
   const kpi = (rot, val, sub, cor) => `<div class="kpi"><div class="lbl">${rot}</div><div class="val" ${cor ? `style="color:${cor}"` : ""}>${val}</div><div class="delta flat">${sub}</div></div>`;
   const pMes = soma(doMes, "plano"), rMes = soma(doMes, "real"), pctMes = pMes ? Math.round(rMes/pMes*100) : null;
+  const carrMes = doMes.filter(pierCarr), libMes = soma(carrMes, "liberado"), colMes = soma(carrMes, "real"), pendMes = carrMes.reduce((t,r)=>t+pierPend(r), 0);
   const barra = (r) => { const p = pierPct(r); return `<div class="pier-bar"><i style="width:${Math.min(100, p||0)}%; background:${pierCorPct(p)}"></i></div>`; };
 
   return cab + `
@@ -10180,6 +10202,7 @@ renderers.pier = () => {
       ${kpi(`📋 Viagens plano — ${nomeMes(PIER_MES)}`, pMes, `${doMes.length} operação(ões) no mês`)}
       ${kpi(`✅ Viagens real — ${nomeMes(PIER_MES)}`, rMes, `${fechMes.length} fechada(s)`)}
       ${kpi("🎯 Real × Plano", pctMes==null ? "—" : pctMes + "%", "aderência ao plano no mês", pierCorPct(pctMes))}
+      ${kpi(`⏳ Pendência carregamento — ${nomeMes(PIER_MES)}`, pendMes, `liberado ${libMes} · coleta/puxa ${colMes}`, carrMes.length ? pierCorPend(pendMes) : "")}
     </div>
 
     <div class="panel" style="margin-bottom:16px;">
@@ -10189,13 +10212,19 @@ renderers.pier = () => {
           <div class="pier-card-top"><span class="pier-tag">⚓ Pier ${pierNome(r.pier)}</span><span class="pier-tipo" style="color:${t.cor}">${t.ic} ${t.nome}</span></div>
           <div class="pier-balsa">${osEsc(pierBalsaRot(r))}</div>
           <div class="hint" style="margin:2px 0 8px;">Aberta em ${fmtDataBR(r.data)} às ${r.ini||"—"} · há ${pierDuracao(r)}</div>
+          ${pierCarr(r) ? (() => { const pend = pierPend(r), pl = pierPctLib(r); return `
+          <div class="pier-pr c4"><div><span>Plano</span><b>${r.plano}</b></div><div><span>Real liberado</span><b>${r.liberado||0}</b></div><div><span>Coleta/Puxa</span><b>${r.real}</b></div><div><span>Pendência</span><b style="color:${pierCorPend(pend)}">${pend}</b></div></div>
+          <div class="pier-bar" title="Coleta/Puxa ÷ Real liberado"><i style="width:${Math.min(100, pl||0)}%; background:${pierCorPct(pl)}"></i></div>
+          <div class="hint" style="margin:-6px 0 8px; text-align:center;">${pl==null ? "Aguardando liberação da Combitrans" : `Avance puxou <b>${pl}%</b> do liberado`}</div>
+          <div class="pier-lin"><span>Real liberado <small>Combitrans</small></span><div class="pier-mais"><button class="os-btn" onclick="pierLib('${r.id}',-1)">−1</button><input type="number" min="0" value="${r.liberado||0}" onchange="pierLib('${r.id}',0,this.value)" title="Real liberado pela Combitrans"><button class="os-btn azul" onclick="pierLib('${r.id}',1)">+1 liberado</button></div></div>
+          <div class="pier-lin"><span>Coleta/Puxa <small>Avance</small></span><div class="pier-mais"><button class="os-btn" onclick="pierReal('${r.id}',-1)">−1</button><input type="number" min="0" value="${r.real}" onchange="pierReal('${r.id}',0,this.value)" title="Coleta/puxa feita pela Avance"><button class="os-btn green" onclick="pierReal('${r.id}',1)">+1 puxada</button></div></div>`; })() : `
           <div class="pier-pr"><div><span>Plano</span><b>${r.plano}</b></div><div><span>Real</span><b style="color:${pierCorPct(p)}">${r.real}</b></div><div><span>Real × Plano</span><b style="color:${pierCorPct(p)}">${p==null?"—":p+"%"}</b></div></div>
           ${barra(r)}
-          <div class="pier-mais"><button class="os-btn" onclick="pierReal('${r.id}',-1)">−1</button><input type="number" min="0" value="${r.real}" onchange="pierReal('${r.id}',0,this.value)" title="Viagens realizadas"><button class="os-btn green" onclick="pierReal('${r.id}',1)">+1 viagem</button></div>
-          <div class="pier-fechar">
+          <div class="pier-mais"><button class="os-btn" onclick="pierReal('${r.id}',-1)">−1</button><input type="number" min="0" value="${r.real}" onchange="pierReal('${r.id}',0,this.value)" title="Viagens realizadas"><button class="os-btn green" onclick="pierReal('${r.id}',1)">+1 viagem</button></div>`}
+          <div class="pier-fechar ${pierCarr(r) ? "c4" : ""}">
             <label>Fechamento<input type="date" id="pf-d-${r.id}" value="${hoje}"></label>
             <label>Hora<input type="time" id="pf-h-${r.id}" value="${pierAgoraHora()}"></label>
-            <label>Real<input type="number" min="0" id="pf-r-${r.id}" value="${r.real}"></label>
+            ${pierCarr(r) ? `<label>Liberado<input type="number" min="0" id="pf-l-${r.id}" value="${r.liberado||0}"></label><label>Coleta<input type="number" min="0" id="pf-r-${r.id}" value="${r.real}"></label>` : `<label>Real<input type="number" min="0" id="pf-r-${r.id}" value="${r.real}"></label>`}
             <button class="entry-submit" style="margin:0; background:#B0001A;" onclick="pierFechar('${r.id}')">🔴 Fechar</button>
           </div>
           <div style="display:flex; gap:10px; margin-top:6px;"><button class="os-link" onclick="pierEditar('${r.id}')">✏️ editar</button><button class="os-link" onclick="pierExcluir('${r.id}')">excluir</button></div>
@@ -10208,18 +10237,18 @@ renderers.pier = () => {
         <label class="frota-data">Mês <select onchange="pierSetMes(this.value)">${meses.map(m=>`<option value="${m}" ${m===PIER_MES?"selected":""}>${nomeMes(m)}</option>`).join("")}</select></label>
       </div>
       ${!doMes.length ? `<div class="hint" style="margin-top:10px;">Nenhuma operação aberta neste mês.</div>` : `<div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab">
-        <thead><tr><th>Pier</th><th>Operação</th><th>Balsa</th><th>Abertura</th><th>Fechamento</th><th class="num">Duração</th><th class="num">Plano</th><th class="num">Real</th><th class="num">Real × Plano</th><th></th></tr></thead>
+        <thead><tr><th>Pier</th><th>Operação</th><th>Balsa</th><th>Abertura</th><th>Fechamento</th><th class="num">Duração</th><th class="num">Plano</th><th class="num">Real liberado</th><th class="num">Real / Coleta</th><th class="num">Real × Plano</th><th class="num">Pendência</th><th></th></tr></thead>
         <tbody>${doMes.map(r=>{ const t = pierTipo(r.tipo), p = pierPct(r);
           return `<tr><td><b>${pierNome(r.pier)}</b></td><td><span style="color:${t.cor}; font-weight:700;">${t.ic} ${t.nome}</span></td><td><b>${osEsc(pierBalsaRot(r))}</b>${r.obs ? `<div class="hint" style="margin:0;">${osEsc(r.obs)}</div>` : ""}</td>
             <td>${fmtDataBR(r.data)} ${r.ini||""}</td><td>${pierAberta(r) ? `<span class="badge green">aberta</span>` : `${fmtDataBR(r.dataFim)} ${r.fim||""}`}</td>
-            <td class="num">${pierDuracao(r)}</td><td class="num">${r.plano}</td><td class="num"><b>${r.real}</b></td><td class="num" style="color:${pierCorPct(p)}; font-weight:800;">${p==null?"—":p+"%"}</td>
+            <td class="num">${pierDuracao(r)}</td><td class="num">${r.plano}</td><td class="num">${pierCarr(r) ? (r.liberado||0) : "—"}</td><td class="num"><b>${r.real}</b></td><td class="num" style="color:${pierCorPct(p)}; font-weight:800;">${p==null?"—":p+"%"}</td><td class="num" style="font-weight:800; color:${pierCarr(r) ? pierCorPend(pierPend(r)) : "var(--ink-soft)"};">${pierCarr(r) ? pierPend(r) : "—"}</td>
             <td style="white-space:nowrap;">${pierAberta(r) ? "" : `<button class="os-link" onclick="pierReabrir('${r.id}')">reabrir</button> `}<button class="os-btn sm" onclick="pierEditar('${r.id}')">✏️ Editar</button> <button class="os-link" onclick="pierExcluir('${r.id}')">excluir</button></td></tr>`; }).join("")}</tbody>
       </table></div>`}
     </div>
 
     <div class="panel" id="pier-form" style="margin-bottom:16px;">
       <h3>${ed ? `✏️ Editar operação — ${osEsc(pierBalsaRot(ed))}` : "➕ Abrir operação de balsa"}</h3>
-      <div class="hint">Escolha o pier e a operação, a balsa (mesmos nomes do Faturamento) com o nº da viagem, o dia/hora da abertura e o plano de viagens. O real é lançado durante a operação e no fechamento.</div>
+      <div class="hint">Escolha o pier e a operação, a balsa (mesmos nomes do Faturamento) com o nº da viagem, o dia/hora da abertura e o plano de viagens. O real é lançado durante a operação e no fechamento. No carregamento, lance o real liberado pela Combitrans e a coleta/puxa da Avance; a diferença é a pendência.</div>
       <div class="os-form pier-grid">
         <label>Pier<input type="hidden" id="pier-pier" value="${v.pier}"><div class="pier-opc">${PIER_PIERS.map(p=>`<button type="button" class="pier-b ${v.pier===p.k?"on":""}" data-pier-pier="${p.k}" onclick="pierEscolher('pier','${p.k}')">⚓ ${p.nome}</button>`).join("")}</div></label>
         <label>Operação<input type="hidden" id="pier-tipo" value="${v.tipo}"><div class="pier-opc">${PIER_TIPOS.map(t=>`<button type="button" class="pier-b ${v.tipo===t.k?"on":""}" data-pier-tipo="${t.k}" onclick="pierEscolher('tipo','${t.k}')">${t.ic} ${t.nome}</button>`).join("")}</div></label>
@@ -10228,7 +10257,8 @@ renderers.pier = () => {
         <label>Dia da abertura<input type="date" id="pier-data" value="${v.data}"></label>
         <label>Hora da abertura<input type="time" id="pier-ini" value="${v.ini}"></label>
         <label>Viagens — plano<input type="number" min="0" step="1" id="pier-plano" value="${v.plano}" placeholder="0"></label>
-        ${ed ? `<label>Viagens — real<input type="number" min="0" step="1" id="pier-real" value="${ed.real}"></label>
+        ${ed && pierCarr(ed) ? `<label>Real liberado (Combitrans)<input type="number" min="0" step="1" id="pier-lib" value="${ed.liberado||0}"></label>` : ""}
+        ${ed ? `<label>${pierCarr(ed) ? "Coleta/Puxa (Avance)" : "Viagens — real"}<input type="number" min="0" step="1" id="pier-real" value="${ed.real}"></label>
         <label>Dia do fechamento<input type="date" id="pier-datafim" value="${ed.dataFim||""}"></label>
         <label>Hora do fechamento<input type="time" id="pier-fim" value="${ed.fim||""}"></label>` : ""}
         <label style="grid-column:span 2;">Observação<input id="pier-obs" value="${osEsc(v.obs)}" placeholder="opcional"></label>
