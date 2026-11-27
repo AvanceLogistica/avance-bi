@@ -75,6 +75,13 @@ async function buscarTransito(q){
   const r = await q(base().is("descarga", null));
   return r.error && /descarga/i.test(r.error.message) ? q(base().is("chegada", null)) : r;
 }
+// sem a coluna liberado (SQL do carregamento ainda não rodado) busca sem ela
+async function buscarBalsas(q, desde13, hoje){
+  const base = (lib) => sbTv.from("balsa_operacoes").select("data,pier,balsa,numero,tipo,viagens,viagens_plano,hora_inicio,hora_fim,data_fechamento" + (lib ? ",liberado" : ""))
+    .or(`data_fechamento.is.null,data_fechamento.gte.${desde13}`).lte("data", hoje);
+  const r = await q(base(true));
+  return r.error && /liberado/i.test(r.error.message) ? q(base(false)) : r;
+}
 async function buscar(){
   const hoje = hojeISO(), desde45 = somaDias(hoje, -45), desde13 = somaDias(hoje, -13), iniMes = hoje.slice(0,8) + "01", ontem = somaDias(hoje, -1);
   const desdeProg = iniMes < desde13 ? iniMes : desde13;
@@ -85,7 +92,7 @@ async function buscar(){
     q(sbTv.from("frota_status").select("data,veiculo_id,atividade,status,motorista,obs").gte("data", desde45).lte("data", hoje)),
     q(sbTv.from("frota_oficina").select("veiculo_id,placa,data_parada,observacao,aprovacao,inicio_execucao,conclusao").is("conclusao", null)),
     q(sbTv.from("entregas_programacao").select("data,situacao,horario,hora_real,servico,frota,cliente,planejado").gte("data", desdeProg).lte("data", fimMes)),
-    q(sbTv.from("balsa_operacoes").select("data,pier,balsa,numero,tipo,viagens,viagens_plano,hora_inicio,hora_fim,data_fechamento").or(`data_fechamento.is.null,data_fechamento.gte.${desde13}`).lte("data", hoje)),
+    buscarBalsas(q, desde13, hoje),
     buscarTransito(q),
     q(sbTv.from("manutencao_os").select("status,saida_data,frota").gte("saida_data", ontem < iniMes ? ontem : iniMes).lte("saida_data", hoje)),
   ]);
@@ -244,24 +251,21 @@ function renderizar(D){
       scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:{ size:fs(1.1), weight:600 } } },
         y:{ beginAtZero:true, suggestedMax:Math.max(4, ...CD.map(x=>x.n))*1.2, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, font:{ size:fs(.9) } } } } } });
 
-  // balsas em operação: uma coluna por balsa — plano (barra clara) × real (barra na cor da operação)
-  const BL = C.balHoje.slice(0, 6);
-  $("bal-tot").textContent = D.semAcesso.balsas ? "—" : nf(C.balAbertas.length);
-  const corTipo = (r) => r.tipo==="descarga" ? COR.verde : COR.ciano;
-  const pctB = (r) => (+r.viagens_plano) ? Math.round((+r.viagens||0)/(+r.viagens_plano)*100) : null;
-  grafico("ch-bal", { type:"bar", data:{ labels:BL.map(r=>[`${r.balsa}${r.numero ? " " + r.numero : ""}`, `${r.tipo==="descarga" ? "⬇" : "⬆"} ${PIERS.find(p=>p.k===r.pier)?.nome||""}${r.data_fechamento ? " ✓" : ""}`]), datasets:[
-      { label:"Plano", data:BL.map(r=>+r.viagens_plano||0), grouped:false, order:2, barPercentage:.78, categoryPercentage:.9, backgroundColor:"rgba(255,255,255,.10)",
-        borderColor:"rgba(255,255,255,.4)", borderWidth:1.5, borderRadius:6, borderSkipped:false,
-        datalabels:{ display:true, formatter:(_v,c)=>{ const r = BL[c.dataIndex]; return `${+r.viagens||0}/${+r.viagens_plano||0}`; },
-          color:(c)=>{ const p = pctB(BL[c.dataIndex]); return p==null ? COR.soft : p>=100 ? "#4ADE80" : COR.ink; }, anchor:"end", align:"top", offset:2, font:{ size:fs(1.15), weight:900 } } },
-      { label:"Real", data:BL.map(r=>+r.viagens||0), grouped:false, order:1, barPercentage:.46, categoryPercentage:.9, borderRadius:5, borderSkipped:false, backgroundColor:BL.map(corTipo) } ] },
-    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:fs(1.8) } },
-      plugins:{ legend:{ display:false }, tooltip:{ enabled:false } },
-      scales:{ x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:(c)=>({ size:fs(c.index!=null ? .95 : .95), weight:700 }), color:COR.ink } },
-        y:{ beginAtZero:true, suggestedMax:Math.max(4, ...BL.map(r=>Math.max(+r.viagens_plano||0, +r.viagens||0)))*1.25, grid:{ color:COR.grade }, border:{ display:false }, ticks:{ precision:0, maxTicksLimit:5, font:{ size:fs(.9) } } } } } });
-  $("bal-lista").innerHTML = D.semAcesso.balsas ? "Sem acesso às operações de balsa"
-    : !C.balHoje.length ? "Nenhuma balsa em operação nos piers"
-    : PIERS.map(p=>{ const ab = C.balAbertas.filter(r=>r.pier===p.k); return `<b>Pier ${p.nome}:</b> ${ab.length ? ab.map(r=>`${esc(r.balsa)}${r.numero ? " " + esc(r.numero) : ""} desde ${r.data===C.hoje ? "" : r.data.slice(8,10)+"/"+r.data.slice(5,7)+" "}${esc(r.hora_inicio||"")}`).join(", ") : "livre"}`; }).join(" · ");
+  // balsas em operação: uma linha por balsa — barra = plano, preenchida com o real (carregamento: + liberado e pendência)
+  $("bal-tot").textContent = D.semAcesso.balsas ? "" : `plano × real · ${nf(C.balAbertas.length)} aberta(s)`;
+  const ddmm = (d) => `${d.slice(8,10)}/${d.slice(5,7)}`;
+  const linhaBal = (r) => { const carr = r.tipo==="carregamento", cor = carr ? COR.ciano : COR.verde, pl = +r.viagens_plano||0, re = +r.viagens||0;
+    const p = pl ? Math.round(re/pl*100) : null, corP = p==null ? COR.soft : p>=100 ? COR.verde : p>=80 ? COR.ambar : COR.vermelho;
+    const temLib = carr && r.liberado!=null, lib = +r.liberado||0, pend = Math.max(0, lib - re), w = (n) => pl ? Math.min(100, n/pl*100) : 0;
+    return `<div class="bo-row ${r.data_fechamento ? "fech" : ""}" style="--c:${cor}">
+      <div class="bo-ic">${carr ? "⬆" : "⬇"}</div>
+      <div class="bo-n"><b>${esc(r.balsa)}${r.numero ? ` <small>${esc(r.numero)}</small>` : ""}</b><span>${carr ? "Carregamento" : "Descarga"} · ${PIERS.find(x=>x.k===r.pier)?.nome||""} · ${r.data_fechamento ? "✓ fechada" : `desde ${r.data===C.hoje ? "" : ddmm(r.data)+" "}${esc(r.hora_inicio||"")}`}</span></div>
+      <div class="bo-bar"><div class="bo-trk">${temLib ? `<i class="lib" style="width:${w(lib)}%"></i>` : ""}<i style="width:${w(re)}%"></i></div>
+        ${temLib ? `<div class="bo-lib">liberado <b>${lib}</b> · pendência <b style="color:${pend ? "#FF6B7A" : COR.verde}">${pend}</b></div>` : ""}</div>
+      <div class="bo-v"><b>${re}<small>/${pl}</small></b><span style="color:${corP}">${p==null ? "—" : p+"%"}</span></div></div>`; };
+  $("bal-lista").innerHTML = D.semAcesso.balsas ? `<div class="vazio">Sem acesso às operações de balsa</div>`
+    : !C.balHoje.length ? `<div class="vazio"><b>⚓</b>Nenhuma balsa em operação nos piers</div>`
+    : C.balHoje.slice(0, 5).map(linhaBal).join("") + (C.balHoje.length > 5 ? `<div class="bo-mais">+ ${C.balHoje.length - 5} operação(ões)</div>` : "");
 
   // realizado x meta
   const linhaRM = (ic, t, a, b, sufixo) => { const p = b ? Math.round(a/b*100) : null; const cor = p==null ? COR.soft : p>=90 ? COR.verde : p>=70 ? COR.ambar : COR.vermelho;

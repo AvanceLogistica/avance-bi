@@ -62,19 +62,19 @@ body.ocioso{ cursor:none; }
 .kpi .duo .big{ font-size:5rem; }
 .kpi .duo .un{ font-size:1.05rem; color:var(--mute); }
 .linha{ display:grid; gap:1vw; min-height:0; }
-.l1{ grid-template-columns:1.05fr 1fr 1.6fr; }
+.l1{ grid-template-columns:0.9fr 1.2fr 1.55fr; }
 .l2{ grid-template-columns:2.2fr 0.95fr 1.3fr; }
 .chart{ position:relative; flex:1; min-height:0; margin-top:1vh; }
 
 /* disponibilidade */
 .disp{ flex:1; display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:1vw; min-height:0; }
-.disp .dn{ position:relative; height:18vh; width:18vh; }
+.disp .dn{ position:relative; height:14vh; width:14vh; }
 .disp .dn b{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:1rem; font-weight:900; line-height:1; }
 .disp .dn b span{ font-size:1.1rem; color:var(--soft); font-weight:600; margin-top:.5vh; }
 .disp ul{ list-style:none; display:grid; gap:.2vh; }
-.disp li{ display:flex; align-items:center; gap:.7vw; padding:.1vh 0; font-size:1.15rem; white-space:nowrap; border-bottom:1px solid var(--line); font-size:1.25rem; color:var(--soft); }
+.disp li{ display:flex; align-items:center; gap:.7vw; padding:.1vh 0; font-size:1.15rem; white-space:nowrap; border-bottom:1px solid var(--line); font-size:1.05rem; color:var(--soft); overflow:hidden; text-overflow:ellipsis; }
 .disp li:last-child{ border:0; }
-.disp li b{ font-size:1.55rem; color:var(--ink); min-width:3vw; font-variant-numeric:tabular-nums; }
+.disp li b{ font-size:1.35rem; color:var(--ink); min-width:2.2vw; font-variant-numeric:tabular-nums; }
 .disp li i{ width:1.4vh; height:1.4vh; border-radius:50%; display:inline-block; }
 
 /* oficina */
@@ -126,13 +126,23 @@ body.ocioso{ cursor:none; }
 .pr-k i{ width:1.6vh; height:1.6vh; border-radius:4px; flex-shrink:0; }
 .pr-k span{ font-size:1.05rem; color:var(--soft); flex:1; white-space:nowrap; }
 .pr-k b{ font-size:2.2rem; font-weight:900; line-height:1; font-variant-numeric:tabular-nums; }
-/* balsas */
-.bal{ flex:1; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:.8vw; min-height:0; }
-.bal .tot{ display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding-left:.8vw; border-left:1px solid var(--line); width:7.5vw; }
-.bal .tot b{ font-size:4rem; font-weight:900; line-height:1; } .bal .tot span{ font-size:1.05rem; color:var(--soft); }
-.bal .tot img{ width:5.6vw; border-radius:.8vh; margin-bottom:1vh; opacity:.9; }
-.bal-lista{ font-size:1.05rem; color:var(--soft); margin-top:.6vh; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.bal-lista b{ color:var(--ink); }
+/* balsas em operação */
+.bo-leg{ display:flex; gap:1vw; font-size:.95rem; color:var(--soft); margin-top:.4vh; }
+.bo-leg span{ display:flex; align-items:center; gap:.3vw; } .bo-leg i{ width:1.3vh; height:1.3vh; border-radius:3px; display:inline-block; }
+.bo-leg i.lb{ background:rgba(34,211,238,.35); } .bo-leg i.tr{ background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.35); }
+.bo-lista{ flex:1; min-height:0; display:grid; grid-auto-rows:minmax(0,1fr); gap:.6vh; margin-top:.8vh; overflow:hidden; }
+.bo-lista .vazio{ grid-row:1 / -1; }
+.bo-row{ display:grid; grid-template-columns:2.6vh minmax(0,1.15fr) minmax(0,1fr) auto; align-items:center; gap:.7vw; padding:.3vh .6vw; border-radius:.9vh; background:rgba(255,255,255,.035); border-left:.5vh solid var(--c); max-height:8.5vh; }
+.bo-row.fech{ opacity:.6; }
+.bo-ic{ width:2.6vh; height:2.6vh; border-radius:.6vh; display:grid; place-items:center; font-size:1.2rem; font-weight:900; color:#08130C; background:var(--c); }
+.bo-n{ min-width:0; line-height:1.15; } .bo-n b{ display:block; font-size:1.35rem; font-weight:900; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .bo-n b small{ font-size:1rem; color:var(--soft); font-weight:700; }
+.bo-n span{ display:block; font-size:.9rem; color:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bo-trk{ position:relative; height:1.5vh; border-radius:99px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.25); overflow:hidden; }
+.bo-trk i{ position:absolute; left:0; top:0; bottom:0; border-radius:99px; background:var(--c); } .bo-trk i.lib{ background:rgba(34,211,238,.35); }
+.bo-lib{ font-size:.85rem; color:var(--soft); margin-top:.3vh; white-space:nowrap; } .bo-lib b{ color:var(--ink); }
+.bo-v{ text-align:right; line-height:1.05; min-width:4.6vw; } .bo-v b{ display:block; font-size:1.7rem; font-weight:900; font-variant-numeric:tabular-nums; } .bo-v b small{ font-size:1.05rem; color:var(--soft); }
+.bo-v span{ font-size:1.05rem; font-weight:900; }
+.bo-mais{ font-size:.95rem; color:var(--soft); text-align:right; }
 
 /* realizado x meta */
 .rm{ flex:1; display:grid; align-content:space-evenly; gap:.6vh; }
@@ -215,12 +225,11 @@ body.ocioso .sair{ opacity:0; }
 
   <section class="linha l1">
     <div class="card"><h2>🚛 Status da frota <small id="disp-sub"></small></h2>
-      <div class="disp"><div class="dn"><canvas id="ch-disp"></canvas><b><span id="disp-pct" style="font-size:3.4rem; color:var(--ink); font-weight:900; margin:0;">—</span><span>veículos</span></b></div>
+      <div class="disp"><div class="dn"><canvas id="ch-disp"></canvas><b><span id="disp-pct" style="font-size:2.8rem; color:var(--ink); font-weight:900; margin:0;">—</span><span>veículos</span></b></div>
         <ul id="disp-lista"></ul></div></div>
-    <div class="card"><h2>🚢 Balsas em operação — plano × real</h2>
-      <div class="bal"><div class="chart"><canvas id="ch-bal"></canvas></div>
-        <div class="tot"><img src="img/tv-balsa.jpg" alt=""><b id="bal-tot">—</b><span>balsa(s)<br>aberta(s)</span></div></div>
-      <div class="bal-lista" id="bal-lista"></div></div>
+    <div class="card"><h2>🚢 Balsas em operação <small id="bal-tot"></small></h2>
+      <div class="bo-leg"><span><i style="background:#22D3EE"></i>⬆ Carregamento</span><span><i style="background:#22C55E"></i>⬇ Descarga</span><span><i class="lb"></i>Liberado</span><span><i class="tr"></i>Plano</span></div>
+      <div class="bo-lista" id="bal-lista"></div></div>
     <div class="card"><h2>📊 Entregas — planejado × realizado por dia <small id="plan-mes"></small></h2>
       <div class="pr-top">
         <div class="pr-k"><i style="background:rgba(255,255,255,.18); border:1.5px solid rgba(255,255,255,.45);"></i><span>Planejado no mês</span><b id="plan-plan">—</b></div>
@@ -250,6 +259,6 @@ body.ocioso .sair{ opacity:0; }
   <p>Depois de entrar, a TV fica conectada e o painel atualiza sozinho a cada minuto.</p>
 </form></div>
 <div class="aviso" id="aviso"></div>
-<script src="tv.js?v=20261125d"></script>
+<script src="tv.js?v=20261127a"></script>
 </body>
 </html>
