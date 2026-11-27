@@ -2608,7 +2608,7 @@ function heAlertas(porFuncao){
   ];
 }
 
-renderers.horaextra = () => {
+function heRenderReais(){
   const lanc = heLanc();
   if(!lanc.length){
     return `<div class="page-head"><h2>Hora Extra</h2></div>
@@ -2775,7 +2775,7 @@ renderers.horaextra = () => {
     </div>`;
 };
 
-initCharts.horaextra = () => {
+function heInitReais(){
   if(HE_BUSCA) heBuscarMatriz(HE_BUSCA);   // mantém a pesquisa ao trocar o filtro
   if(!heLanc().length) return;
   const st = heStats(), { ano, anoAnt } = st;
@@ -4070,6 +4070,12 @@ const ENTRY_FORMS = {
       <input type="file" id="ehe-import-file" accept=".xlsx,.xls" style="font-size:12.5px;">
       <button class="entry-submit" style="margin-top:10px;" onclick="importHoraExtraXlsx()">Importar e substituir</button>
       <div id="ehe-import-status" class="hint" style="margin-top:10px;"></div>
+    </div>
+    <div style="background:#EEF3FB; border:1px solid #C8D6EE; border-radius:12px; padding:16px; margin-top:12px;">
+      <h4 style="font-size:13px; margin-bottom:4px;">⏱️ Importar PDF do ponto (horas)</h4>
+      <div class="hint" style="margin-bottom:10px;">"Relatório de Extras Abonadas" do Poliponto. Lê os dias, horários e totais (Extra 50%, 100% e adicional noturno) de cada colaborador.
+        Os dados aparecem na tela <b>Hora Extra → aba Em horas</b>. Reimportar o mesmo período substitui o anterior.</div>
+      <label class="os-btn" style="cursor:pointer; display:inline-block;">📥 Escolher o PDF<input type="file" id="hep-file-ent" accept="application/pdf,.pdf" style="display:none;" onchange="hepImportar('hep-file-ent')"></label>
     </div>
     <h4 style="font-size:13px; margin-top:18px;">Lançamento manual mensal</h4>
     <div class="tabs" style="margin-top:12px;">
@@ -12511,6 +12517,316 @@ renderers.infracoes = () => {
   return abas + infracoesPagina();
 };
 initCharts.infracoes = () => { if(INF_ABA !== "sinistro") infracoesChartsBase(); };
+/* Leitura do PDF "Relatório de Extras Abonadas" do Poliponto: cada colaborador (matrícula + nome) com os dias
+   (1º período, intervalo, 2º período — início, fim e total) e, no fim, os totais Extra 50% / 100% e Ext Adi 50% / 100%.
+   As colunas são achadas pela posição do texto na página (layout fixo do relatório). */
+const HEP_COLS = [["p1i",270],["p1f",300],["p1t",330],["ii",369],["if",399],["it",429],["p2i",468],["p2f",498],["p2t",528]];
+const hepMin = (s) => { const m = /^(\d+):(\d\d)$/.exec(String(s||"").trim()); return m ? Number(m[1])*60 + Number(m[2]) : 0; };
+const hepHora = (min) => { min = Math.round(min||0); const neg = min < 0; min = Math.abs(min); return `${neg?"−":""}${Math.floor(min/60)}:${String(min%60).padStart(2,"0")}`; };
+async function hepLerPdf(buf){
+  await pdfImpCarregar(); window.pdfjsLib.GlobalWorkerOptions.workerSrc = "pdf.worker.min.js";
+  const pdf = await window.pdfjsLib.getDocument({ data:buf }).promise;
+  let ini = "", fim = "", atual = null;
+  const colab = {}, ordem = [];
+  const iso = (dm, ano) => `${ano}-${dm.slice(3,5)}-${dm.slice(0,2)}`;
+  for(let n = 1; n <= pdf.numPages; n++){
+    const tc = await (await pdf.getPage(n)).getTextContent();
+    const its = tc.items.filter(i=>i.str.trim()).map(i=>({ s:i.str.trim(), x:i.transform[4], y:i.transform[5] }));
+    // agrupa em linhas pela altura (tolerância de 2 pontos)
+    its.sort((a,b)=>b.y-a.y || a.x-b.x);
+    const linhas = [];
+    its.forEach(i=>{ const l = linhas.find(l=>Math.abs(l.y-i.y) <= 2); if(l) l.it.push(i); else linhas.push({ y:i.y, it:[i] }); });
+    linhas.forEach(l=>l.it.sort((a,b)=>a.x-b.x));
+    if(!ini){ const lp = linhas.find(l=>/Per\. de Ref/i.test(l.it.map(i=>i.s).join(" ")));
+      const ds = lp ? lp.it.map(i=>i.s).filter(t=>/^\d\d\/\d\d\/\d{4}$/.test(t)) : [];
+      if(ds.length >= 2){ ini = ds[0].split("/").reverse().join("-"); fim = ds[1].split("/").reverse().join("-"); } }
+    for(const l of linhas){
+      const txt = l.it.map(i=>i.s).join(" ");
+      if(/Per\. de Ref|Emissão|Funcionário|RELATÓRIO|Empresa|Endereço|POLIPONTO/i.test(txt)) continue;
+      // matrícula + nome
+      const im = l.it.findIndex(i=>/^\d{8}\b/.test(i.s) && i.x < 80);
+      if(im >= 0){
+        const mm = /^(\d{8})\s*(.*)$/.exec(l.it[im].s); const mat = mm[1];
+        const nome = (mm[2] || (l.it[im+1] && l.it[im+1].x < 200 ? l.it[im+1].s : "")).trim();
+        if(!colab[mat]){ colab[mat] = { matricula:mat, nome, dias:[], e50:0, e100:0, a50:0, a100:0 }; ordem.push(mat); }
+        if(nome && !colab[mat].nome) colab[mat].nome = nome;
+        atual = colab[mat];
+      }
+      // totais do colaborador
+      if(atual && /Ext/i.test(txt)){
+        const tot = (re) => { const m = re.exec(txt); return m ? hepMin(m[1]) : null; };
+        const a = tot(/Extra A 050%\s*:\s*(\d+:\d\d)/), b = tot(/Extra A 100%\s*:\s*(\d+:\d\d)/), c = tot(/Ext Adi A 050%\s*:\s*(\d+:\d\d)/), d = tot(/Ext Adi A 100%\s*:\s*(\d+:\d\d)/);
+        if(a!=null) atual.e50 = a; if(b!=null) atual.e100 = b; if(c!=null) atual.a50 = c; if(d!=null) atual.a100 = d;
+      }
+      // dia: "Seg" + "16/11" e os horários nas colunas
+      const idm = l.it.findIndex(i=>/^\d\d\/\d\d$/.test(i.s) && i.x > 200 && i.x < 260);
+      if(atual && idm >= 0 && ini){
+        const dm = l.it[idm].s, ano = Number(ini.slice(0,4)) + (Number(dm.slice(3,5)) < Number(ini.slice(5,7)) ? 1 : 0);
+        const d = { data:iso(dm, ano) };
+        l.it.filter(i=>/^\d\d:\d\d$/.test(i.s) && i.x > 255).forEach(i=>{
+          let best = null, dist = 1e9; HEP_COLS.forEach(([k,x])=>{ const dd = Math.abs(i.x - x); if(dd < dist){ dist = dd; best = k; } });
+          if(dist < 14) d[best] = i.s; });
+        d.total = hepMin(d.p1t) + hepMin(d.it) + hepMin(d.p2t);
+        atual.dias.push(d);
+      }
+    }
+  }
+  return { ini, fim, colaboradores: ordem.map(m=>colab[m]) };
+}
+
+/* -------------------- HORA EXTRA EM HORAS (PDF do ponto - Poliponto) --------------------
+   Aba "Em horas" da tela Hora Extra. Importa o PDF "Relatório de Extras Abonadas": um registro por colaborador e período,
+   com os totais Extra 50% / 100% e Ext Adi (adicional noturno) em minutos e os dias (jsonb). Tabela horaextra_ponto.
+   Competência = mês da data final do período do relatório. Reimportar um período substitui o que se sobrepõe a ele. */
+let HE_ABA = "reais";
+const HEP_LOCAL = "avance_he_ponto_v1";
+const HEP_LIMITE = 100 * 60;   // acima de 100 h no mês fica em destaque
+let HEP = { lista:[], carregado:false, carregando:false, erro:null }, HEP_COMP = null, HEP_SEL = null, HEP_BUSCA = "", HEP_ORDEM = "total", HEP_IMPORTANDO = false;
+window.heSetAba = (a) => { HE_ABA = a; navigate("horaextra"); };
+const hepH = (min) => { min = Math.round(min||0); return `${Math.floor(min/60).toLocaleString("pt-BR")}h${String(min%60).padStart(2,"0")}`; };
+const hepTot = (c) => (c.e50||0) + (c.e100||0);
+const hepComp = (r) => r.periodo_fim.slice(0,7);
+const hepNomeMes = (m) => `${MOS_MESES[Number(m.slice(5,7))-1]}/${m.slice(0,4)}`;
+const HEP_SEM = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+const hepDow = (iso) => new Date(iso + "T12:00:00").getDay();
+const hepDM = (iso) => `${iso.slice(8,10)}/${iso.slice(5,7)}`;
+
+async function hepCarregar(){
+  HEP.carregando = true;
+  if(!sb){ try{ HEP.lista = JSON.parse(localStorage.getItem(HEP_LOCAL)||"[]"); }catch(e){ HEP.lista = []; } }
+  else {
+    let all = [], from = 0;
+    while(true){
+      const { data, error } = await sb.from("horaextra_ponto").select("*").range(from, from + 999);
+      if(error){ HEP.erro = /horaextra_ponto/i.test(error.message) && /find|exist|schema/i.test(error.message) ? "Falta rodar o SQL da Hora Extra em horas no Supabase." : error.message; break; }
+      HEP.erro = null; all = all.concat(data); if(data.length < 1000) break; from += 1000;
+    }
+    HEP.lista = all.map(r=>({ ...r, dias: Array.isArray(r.dias) ? r.dias : [] }));
+  }
+  HEP.carregando = false; HEP.carregado = true;
+  if(document.querySelector('nav.menu button.active')?.dataset.page === "horaextra" && HE_ABA === "horas"){ const y = window.scrollY; navigate("horaextra"); window.scrollTo(0, y); }
+}
+
+// importa o PDF escolhido no campo (id do input)
+window.hepImportar = async (idInput) => {
+  const inp = document.getElementById(idInput), f = inp && inp.files && inp.files[0];
+  if(!f || HEP_IMPORTANDO) return;
+  HEP_IMPORTANDO = true; toast("⏳ Lendo o PDF...");
+  try{
+    const r = await hepLerPdf(await f.arrayBuffer());
+    const C = r.colaboradores.filter(c=>hepTot(c) || c.dias.length);
+    if(!r.ini || !C.length){ toast("⚠ Não reconheci o PDF. Use o \"Relatório de Extras Abonadas\" do Poliponto."); return; }
+    const s = (k) => C.reduce((t,c)=>t+(c[k]||0), 0);
+    const difs = C.filter(c=>c.dias.reduce((t,d)=>t+d.total,0) !== hepTot(c)).length;
+    if(!confirm(`Período ${fmtDataBR(r.ini)} a ${fmtDataBR(r.fim)}\n${C.length} colaboradores · ${hepH(s("e50")+s("e100"))} de hora extra (50%: ${hepH(s("e50"))} · 100%: ${hepH(s("e100"))})` +
+      `${difs ? `\n⚠ ${difs} colaborador(es) com soma dos dias diferente do total do PDF (vale o total do PDF).` : ""}\n\nO que já existir nesse período será substituído. Importar?`)) return;
+    const novos = C.map(c=>({ matricula:c.matricula, nome:c.nome, periodo_ini:r.ini, periodo_fim:r.fim, e50:c.e50, e100:c.e100, a50:c.a50, a100:c.a100, dias:c.dias }));
+    const velhos = HEP.lista.filter(x=>x.periodo_ini <= r.fim && x.periodo_fim >= r.ini);
+    if(sb){
+      // grava o novo primeiro e só depois apaga o antigo (se falhar no meio, nada se perde)
+      for(let i = 0; i < novos.length; i += 200){ const { error } = await sb.from("horaextra_ponto").insert(novos.slice(i, i+200).map(n=>({ ...n, importado_por:MEU_EMAIL||null }))); if(error) throw error; }
+      const ids = velhos.map(v=>v.id).filter(Boolean);
+      for(let i = 0; i < ids.length; i += 200){ const { error } = await sb.from("horaextra_ponto").delete().in("id", ids.slice(i, i+200)); if(error) throw error; }
+      await hepCarregar();
+    } else {
+      HEP.lista = HEP.lista.filter(x=>!velhos.includes(x)).concat(novos.map((n,i)=>({ ...n, id:"l"+Date.now()+i })));
+      try{ localStorage.setItem(HEP_LOCAL, JSON.stringify(HEP.lista)); }catch(e){}
+    }
+    HEP_COMP = r.fim.slice(0,7); HEP_SEL = null; HE_ABA = "horas";
+    toast(`✓ ${C.length} colaboradores importados (${fmtDataBR(r.ini)} a ${fmtDataBR(r.fim)})`);
+    navigate("horaextra");
+  }catch(e){
+    console.warn(e);
+    toast("⚠ Não importou: " + (/horaextra_ponto/i.test(e.message||"") ? "falta rodar o SQL da Hora Extra em horas no Supabase." : (e.message || e)));
+  }finally{ HEP_IMPORTANDO = false; if(inp) inp.value = ""; }
+};
+
+window.hepSetComp = (m) => { HEP_COMP = m; HEP_SEL = null; navigate("horaextra"); };
+window.hepVer = (mat) => { HEP_SEL = mat; navigate("horaextra"); document.getElementById("hep-consulta")?.scrollIntoView({ behavior:"smooth", block:"start" }); };
+window.hepFecharConsulta = () => { HEP_SEL = null; navigate("horaextra"); };
+window.hepOrdenar = (k) => { HEP_ORDEM = k; navigate("horaextra"); };
+window.hepFiltrar = (t) => { HEP_BUSCA = t; const q = nfSemAcento(t);
+  document.querySelectorAll("#hep-tab tbody tr").forEach(tr=>{ tr.style.display = !q || nfSemAcento(tr.dataset.busca).includes(q) ? "" : "none"; }); };
+window.hepBuscarColab = (v) => { const c = hepDoMes().find(x=>`${x.nome} (${x.matricula})`===v || x.matricula===v.trim()); if(c) hepVer(c.matricula); };
+window.hepExcel = () => {
+  if(typeof XLSX === "undefined"){ toast("⚠ Biblioteca do Excel não carregou."); return; }
+  const ls = hepDoMes(), wb = XLSX.utils.book_new(), hh = (m) => +(m/60).toFixed(2);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ls.map(c=>({ "Matrícula":c.matricula, "Colaborador":c.nome, "Extra 50% (h)":hh(c.e50), "Extra 100% (h)":hh(c.e100),
+    "Total (h)":hh(hepTot(c)), "Adic. noturno 50% (h)":hh(c.a50), "Adic. noturno 100% (h)":hh(c.a100), "Dias com extra":c.dias.filter(d=>d.total).length }))), "Resumo");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ls.flatMap(c=>c.dias.map(d=>({ "Matrícula":c.matricula, "Colaborador":c.nome, "Data":fmtDataBR(d.data), "Dia":HEP_SEM[hepDow(d.data)],
+    "1º período":[d.p1i,d.p1f].filter(Boolean).join(" - "), "Intervalo":[d.ii,d.if].filter(Boolean).join(" - "), "2º período":[d.p2i,d.p2f].filter(Boolean).join(" - "), "Total (h)":hh(d.total) })))), "Dias");
+  XLSX.writeFile(wb, `hora-extra-horas-${HEP_COMP}.xlsx`);
+};
+
+function hepComps(){ return [...new Set(HEP.lista.map(hepComp))].sort().reverse(); }
+function hepDoMes(comp){ comp = comp || HEP_COMP; return HEP.lista.filter(r=>hepComp(r)===comp); }
+// semanas (seg–dom) com as horas dos dias
+function hepSemanas(ls){
+  const por = {};
+  ls.forEach(c=>c.dias.forEach(d=>{ if(!d.total) return; const dt = new Date(d.data + "T12:00:00"); dt.setDate(dt.getDate() - ((dt.getDay()+6)%7));
+    const k = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
+    const s = por[k] = por[k] || { k, min:0, ini:d.data, fim:d.data, pessoas:new Set() }; s.min += d.total; s.pessoas.add(c.matricula);
+    if(d.data < s.ini) s.ini = d.data; if(d.data > s.fim) s.fim = d.data; }));
+  return Object.values(por).sort((a,b)=>a.k.localeCompare(b.k));
+}
+function hepPorDia(ls){
+  const por = {}; ls.forEach(c=>c.dias.forEach(d=>{ if(d.total){ por[d.data] = (por[d.data]||0) + d.total; } }));
+  return Object.entries(por).sort((a,b)=>a[0].localeCompare(b[0]));
+}
+
+function hepPagina(){
+  if(!HEP.carregado && !HEP.carregando){ HEP.carregando = true; setTimeout(()=>hepCarregar(), 0); }
+  const cab = `<div class="page-head"><h2>⏱️ Hora Extra em horas</h2><p>Relatório de Extras Abonadas do ponto (Poliponto) · importe o PDF todo mês</p></div>`;
+  const importar = (id, txt) => `<label class="os-btn" style="cursor:pointer;">${txt}<input type="file" id="${id}" accept="application/pdf,.pdf" style="display:none;" onchange="hepImportar('${id}')"></label>`;
+  if(HEP.erro) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⚠️</div><h4>Não foi possível carregar</h4><p>${osEsc(HEP.erro)}</p></div></div>`;
+  if(!HEP.carregado) return cab + `<div class="panel"><div class="empty-state" style="padding:24px;"><div class="glyph">⏳</div><p>Carregando...</p></div></div>`;
+  const comps = hepComps();
+  if(!comps.length) return cab + `<div class="panel"><div class="empty-state" style="padding:28px;"><div class="glyph">📄</div><h4>Nenhum relatório importado ainda</h4>
+    <p>Importe o PDF <b>"Relatório de Extras Abonadas"</b> do Poliponto. O sistema lê os dias, os horários e os totais de cada colaborador.</p>
+    <div style="margin-top:14px;">${importar("hep-file0", "📥 Importar PDF do ponto")}</div></div></div>`;
+  if(!HEP_COMP || !comps.includes(HEP_COMP)) HEP_COMP = comps[0];
+  const ls = hepDoMes(), ant = comps[comps.indexOf(HEP_COMP)+1], lsAnt = ant ? hepDoMes(ant) : [];
+  const per = ls.reduce((a,r)=>({ ini:!a.ini || r.periodo_ini < a.ini ? r.periodo_ini : a.ini, fim:!a.fim || r.periodo_fim > a.fim ? r.periodo_fim : a.fim }), {});
+  const s = (L, k) => L.reduce((t,c)=>t+(typeof k==="function" ? k(c) : (c[k]||0)), 0);
+  const tot = s(ls, hepTot), totAnt = s(lsAnt, hepTot), e50 = s(ls,"e50"), e100 = s(ls,"e100"), adi = s(ls,"a50") + s(ls,"a100");
+  const acima = ls.filter(c=>hepTot(c) >= HEP_LIMITE).length, media = ls.length ? tot/ls.length : 0;
+  const varP = (a, b) => b ? `<span class="${a>b?"up":"down"}" style="font-weight:700;">${a>b?"▲":"▼"} ${Math.abs((a-b)/b*100).toFixed(0)}%</span> vs ${hepNomeMes(ant)}` : "";
+  const card = (ic, cor, rot, val, sub, corVal) => `<div class="bl-card"><div class="bl-card-top"><span class="bl-cic" style="--c:${cor}">${ic}</span><span class="bl-lbl">${rot}</span></div>
+    <div class="bl-val sm" ${corVal ? `style="color:${corVal}"` : ""}>${val}</div><div class="bl-sub">${sub}</div></div>`;
+  const ord = { total:(a,b)=>hepTot(b)-hepTot(a), e100:(a,b)=>b.e100-a.e100, nome:(a,b)=>a.nome.localeCompare(b.nome), adi:(a,b)=>(b.a50+b.a100)-(a.a50+a.a100) }[HEP_ORDEM] || ((a,b)=>hepTot(b)-hepTot(a));
+  const tabela = [...ls].sort(ord);
+  const rank = [...ls].sort((a,b)=>hepTot(b)-hepTot(a)), pos = Object.fromEntries(rank.map((c,i)=>[c.matricula, i+1]));
+  const top10 = rank.slice(0,10), pctTop = tot ? s(top10, hepTot)/tot*100 : 0;
+  const th = (k, t) => `<th class="num" style="cursor:pointer; white-space:nowrap;" onclick="hepOrdenar('${k}')">${t}${HEP_ORDEM===k?" ▼":""}</th>`;
+  return cab + `
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap; margin:-6px 0 14px;">
+      <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+        <label class="frota-data">Competência <select onchange="hepSetComp(this.value)">${comps.map(m=>`<option value="${m}" ${m===HEP_COMP?"selected":""}>${hepNomeMes(m)}</option>`).join("")}</select></label>
+        <span class="hint" style="margin:0 0 6px;">Período do relatório: <b>${fmtDataBR(per.ini)} a ${fmtDataBR(per.fim)}</b></span>
+      </div>
+      <div style="display:flex; gap:8px;">${importar("hep-file", "📥 Importar PDF do ponto")}<button class="os-btn" onclick="hepExcel()">📊 Exportar Excel</button></div>
+    </div>
+
+    <div class="bl-cards" style="grid-template-columns:repeat(auto-fit, minmax(min(160px,100%),1fr));">
+      ${card("⏱️", "#2F5DA8", "Total de horas extras", hepH(tot), varP(tot, totAnt) || `${ls.length} colaboradores`)}
+      ${card("🕐", "#E1971F", "Extra 50%", hepH(e50), `${tot ? (e50/tot*100).toFixed(0) : 0}% do total`)}
+      ${card("📅", "#D0021B", "Extra 100%", hepH(e100), `${tot ? (e100/tot*100).toFixed(0) : 0}% do total · domingos e feriados`)}
+      ${card("🌙", "#5B4BB5", "Adicional noturno", hepH(adi), "sobre as horas extras")}
+      ${card("👷", "#1C9A6C", "Média por colaborador", hepH(media), `${ls.length} colaboradores com extra`)}
+      ${card("🚨", "#D0021B", `Acima de ${HEP_LIMITE/60} h`, acima, acima ? "colaboradores no mês" : "ninguém passou do limite", acima ? "var(--red)" : "var(--green)")}
+    </div>
+
+    <div class="grid-2">
+      <div class="panel"><h3>📆 Horas extras por semana</h3><div class="hint">Semanas de segunda a domingo, dentro do período do relatório</div>
+        <div class="chart-wrap" style="height:270px;"><canvas id="ch-hep-sem"></canvas></div></div>
+      <div class="panel"><h3>📊 Horas extras por dia</h3><div class="hint">Sábados, domingos e feriados em vermelho: é onde entra a hora 100%</div>
+        <div class="chart-wrap" style="height:270px;"><canvas id="ch-hep-dia"></canvas></div></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px;">
+      <h3>🏆 Os 10 colaboradores com mais horas extras</h3>
+      <div class="hint">Juntos somam <b>${hepH(s(top10, hepTot))}</b> (${pctTop.toFixed(0)}% do total). Clique na barra para ver o extrato.</div>
+      <div class="chart-wrap" style="height:360px;"><canvas id="ch-hep-top"></canvas></div>
+    </div>
+
+    ${HEP_SEL ? hepConsulta(HEP_SEL, ls, pos) : ""}
+
+    <div class="panel">
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+        <div><h3 style="margin:0;">🔎 Consulta por colaborador</h3><div class="hint">Clique no nome para ver o extrato dia a dia. Clique no título da coluna para ordenar.</div></div>
+        <input type="search" placeholder="Buscar nome ou matrícula" value="${osEsc(HEP_BUSCA)}" oninput="hepFiltrar(this.value)" style="padding:8px 12px; border:1px solid var(--line); border-radius:8px; min-width:240px; font-family:inherit;">
+      </div>
+      <div style="overflow-x:auto; margin-top:10px;"><table class="nf-tab" id="hep-tab">
+        <thead><tr><th>#</th><th style="cursor:pointer;" onclick="hepOrdenar('nome')">Colaborador${HEP_ORDEM==="nome"?" ▼":""}</th><th class="num">50%</th>${th("e100","100%")}${th("total","Total")}${th("adi","Adic. noturno")}<th class="num">Dias</th><th class="num">Maior dia</th></tr></thead>
+        <tbody>${tabela.map(c=>{ const md = c.dias.reduce((m,d)=>d.total > (m?m.total:0) ? d : m, null), t = hepTot(c);
+          return `<tr data-busca="${osEsc(c.nome + " " + c.matricula)}" style="cursor:pointer; ${HEP_SEL===c.matricula ? "background:var(--red-soft);" : ""}" onclick="hepVer('${c.matricula}')">
+            <td class="hint" style="margin:0;">${pos[c.matricula]}º</td><td><b>${osEsc(c.nome)}</b> <span class="hint" style="display:inline; margin:0;">${c.matricula}</span></td>
+            <td class="num">${hepH(c.e50)}</td><td class="num">${hepH(c.e100)}</td>
+            <td class="num"><b style="${t >= HEP_LIMITE ? "color:var(--red);" : ""}">${hepH(t)}</b>${t >= HEP_LIMITE ? ` <span class="badge red">+${HEP_LIMITE/60}h</span>` : ""}</td>
+            <td class="num">${hepH(c.a50 + c.a100)}</td><td class="num">${c.dias.filter(d=>d.total).length}</td>
+            <td class="num">${md ? `${hepH(md.total)} <span class="hint" style="display:inline; margin:0;">${hepDM(md.data)}</span>` : "—"}</td></tr>`; }).join("")}</tbody>
+        <tfoot><tr style="font-weight:800;"><td></td><td>Total (${ls.length})</td><td class="num">${hepH(e50)}</td><td class="num">${hepH(e100)}</td><td class="num">${hepH(tot)}</td><td class="num">${hepH(adi)}</td><td></td><td></td></tr></tfoot>
+      </table></div>
+    </div>`;
+}
+
+// extrato de um colaborador: totais, semanas, dias com horários e histórico por competência
+function hepConsulta(mat, ls, pos){
+  const c = ls.find(x=>x.matricula===mat); if(!c) return "";
+  const t = hepTot(c), sem = hepSemanas([c]), dias = [...c.dias].sort((a,b)=>a.data.localeCompare(b.data));
+  const hist = hepComps().slice().reverse().map(m=>({ m, c:HEP.lista.find(r=>hepComp(r)===m && r.matricula===mat) })).filter(x=>x.c);
+  const maxH = Math.max(1, ...hist.map(x=>hepTot(x.c)));
+  const per = (i, f) => i || f ? `${i||"—"} às ${f||"—"}` : "";
+  return `<div class="panel" id="hep-consulta" style="margin-bottom:16px; border-left:6px solid #2F5DA8;">
+    <div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start;">
+      <div><h3 style="margin:0;">👤 ${osEsc(c.nome)}</h3><div class="hint">Matrícula ${c.matricula} · ${pos[mat]}º em horas extras no mês · período ${fmtDataBR(c.periodo_ini)} a ${fmtDataBR(c.periodo_fim)}</div></div>
+      <button class="os-btn" onclick="hepFecharConsulta()">✕ Fechar</button>
+    </div>
+    <div class="bl-cards" style="margin-top:12px;">
+      <div class="bl-card"><div class="bl-lbl">Total</div><div class="bl-val sm" style="${t >= HEP_LIMITE ? "color:var(--red)" : ""}">${hepH(t)}</div></div>
+      <div class="bl-card"><div class="bl-lbl">Extra 50%</div><div class="bl-val sm">${hepH(c.e50)}</div></div>
+      <div class="bl-card"><div class="bl-lbl">Extra 100%</div><div class="bl-val sm">${hepH(c.e100)}</div></div>
+      <div class="bl-card"><div class="bl-lbl">Adicional noturno</div><div class="bl-val sm">${hepH(c.a50 + c.a100)}</div></div>
+      <div class="bl-card"><div class="bl-lbl">Dias com extra</div><div class="bl-val sm">${dias.filter(d=>d.total).length}</div></div>
+    </div>
+    <div class="grid-2" style="margin-bottom:0;">
+      <div><h4 style="font-size:13px; margin-bottom:6px;">📅 Dia a dia</h4><div style="overflow-x:auto; max-height:420px; overflow-y:auto;"><table class="nf-tab">
+        <thead><tr><th>Data</th><th>1º período</th><th>Intervalo</th><th>2º período</th><th class="num">Total</th></tr></thead>
+        <tbody>${dias.map(d=>{ const fds = [0,6].includes(hepDow(d.data));
+          return `<tr><td style="white-space:nowrap;"><b style="${fds ? "color:var(--red);" : ""}">${HEP_SEM[hepDow(d.data)]}</b> ${hepDM(d.data)}</td><td>${per(d.p1i, d.p1f)}</td><td>${per(d.ii, d.if)}</td><td>${per(d.p2i, d.p2f)}</td>
+            <td class="num"><b>${d.total ? hepH(d.total) : "—"}</b></td></tr>`; }).join("")}</tbody></table></div></div>
+      <div>
+        <h4 style="font-size:13px; margin-bottom:6px;">📆 Por semana</h4>
+        <table class="nf-tab"><tbody>${sem.map(w=>`<tr><td>${hepDM(w.ini)} a ${hepDM(w.fim)}</td><td class="num"><b>${hepH(w.min)}</b></td></tr>`).join("")}</tbody></table>
+        <h4 style="font-size:13px; margin:14px 0 6px;">📈 Histórico por competência</h4>
+        ${hist.map(x=>`<div style="display:grid; grid-template-columns:70px 1fr 70px; gap:8px; align-items:center; margin:4px 0; font-size:12.5px;">
+          <span>${hepNomeMes(x.m)}</span><div style="height:10px; background:#EDEDF1; border-radius:6px; overflow:hidden;"><i style="display:block; height:100%; width:${hepTot(x.c)/maxH*100}%; background:${x.m===HEP_COMP ? "#2F5DA8" : "#9DB3DA"};"></i></div><b style="text-align:right;">${hepH(hepTot(x.c))}</b></div>`).join("")}
+        ${hist.length < 2 ? `<div class="hint">O histórico cresce a cada mês importado.</div>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function hepGraficos(){
+  if(!HEP.carregado || !HEP_COMP) return;
+  const ls = hepDoMes(); if(!ls.length) return;
+  const hh = (m) => +(m/60).toFixed(1), rotH = (v) => `${Math.round(v).toLocaleString("pt-BR")}h`;
+  const eixo = { grid:{ color:COLORS.grid }, border:{ display:false }, ticks:{ callback:(v)=>v+"h", color:COLORS.inkSoft } };
+  const sem = hepSemanas(ls);
+  mkChart("ch-hep-sem", { type:"bar",
+    data:{ labels:sem.map(w=>`${hepDM(w.ini)} a ${hepDM(w.fim)}`), datasets:[{ label:"Horas extras", data:sem.map(w=>hh(w.min)), backgroundColor:"#2F5DA8", borderRadius:5, maxBarThickness:70,
+      datalabels:{ display:true, anchor:"end", align:"end", color:COLORS.ink, font:{ size:12, weight:800 }, formatter:rotH } }] },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{ padding:{ top:24 } }, plugins:{ legend:{ display:false },
+      tooltip:{ callbacks:{ label:(c)=>` ${hepH(sem[c.dataIndex].min)} · ${sem[c.dataIndex].pessoas.size} colaboradores` } } },
+      scales:{ y:{ beginAtZero:true, ...eixo }, x:{ grid:{ display:false }, ticks:{ font:{ size:11.5, weight:700 }, color:COLORS.ink } } } } });
+  const dia = hepPorDia(ls), fds = (d) => [0,6].includes(hepDow(d));
+  // vermelho: sábado, domingo ou feriado (dia útil com média acima de 5 h por colaborador)
+  mkChart("ch-hep-dia", { type:"bar",
+    data:{ labels:dia.map(([d])=>d.slice(8,10)), datasets:[{ label:"Horas extras", data:dia.map(([,m])=>hh(m)),
+      backgroundColor:dia.map(([d,m])=>fds(d) || m/ls.length > 300 ? COLORS.red : "#9DB3DA"), borderRadius:3 }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false },
+      tooltip:{ callbacks:{ title:(its)=>{ const d = dia[its[0].dataIndex][0]; return `${HEP_SEM[hepDow(d)]} ${fmtDataBR(d)}`; }, label:(c)=>` ${hepH(dia[c.dataIndex][1])}` } } },
+      scales:{ y:{ beginAtZero:true, ...eixo }, x:{ grid:{ display:false }, ticks:{ autoSkip:false, maxRotation:0, font:{ size:10 }, color:COLORS.inkSoft } } } } });
+  const top = [...ls].sort((a,b)=>hepTot(b)-hepTot(a)).slice(0,10);
+  mkChart("ch-hep-top", { type:"bar",
+    data:{ labels:top.map(c=>c.nome), datasets:[
+      { label:"Extra 50%", data:top.map(c=>hh(c.e50)), backgroundColor:"#E1971F", stack:"a", borderRadius:3, datalabels:{ display:(c)=>c.dataset.data[c.dataIndex] >= 12, color:"#fff", font:{ size:11, weight:800 }, formatter:rotH } },
+      { label:"Extra 100%", data:top.map(c=>hh(c.e100)), backgroundColor:COLORS.red, stack:"a", borderRadius:3,
+        datalabels:{ labels:{ v:{ display:(c)=>c.dataset.data[c.dataIndex] >= 12, color:"#fff", font:{ size:11, weight:800 }, formatter:rotH },
+          t:{ display:true, anchor:"end", align:"end", offset:4, color:COLORS.ink, font:{ size:12, weight:800 }, formatter:(_v,c)=>hepH(hepTot(top[c.dataIndex])) } } } } ] },
+    options:{ indexAxis:"y", responsive:true, maintainAspectRatio:false, layout:{ padding:{ right:70 } },
+      onClick:(_e, el)=>{ if(el.length) hepVer(top[el[0].index].matricula); },
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true, pointStyle:"rectRounded" } },
+        tooltip:{ mode:"index", callbacks:{ label:(c)=>` ${c.dataset.label}: ${hepH((c.dataIndex!=null ? top[c.dataIndex][c.datasetIndex ? "e100" : "e50"] : 0))}`, footer:(its)=>`Total: ${hepH(hepTot(top[its[0].dataIndex]))}` } } },
+      scales:{ x:{ stacked:true, beginAtZero:true, ...eixo }, y:{ stacked:true, grid:{ display:false }, ticks:{ font:{ size:11.5, weight:700 }, color:COLORS.ink } } } } });
+}
+
+// tela Hora Extra: aba Em R$ (planilha) e aba Em horas (PDF do ponto)
+renderers.horaextra = () => `<div class="tabs" style="margin-bottom:14px;">
+    <button class="tab-btn ${HE_ABA==="reais"?"active":""}" onclick="heSetAba('reais')">💰 Em R$</button>
+    <button class="tab-btn ${HE_ABA==="horas"?"active":""}" onclick="heSetAba('horas')">⏱️ Em horas</button></div>` + (HE_ABA === "horas" ? hepPagina() : heRenderReais());
+initCharts.horaextra = () => { if(HE_ABA === "horas") hepGraficos(); else heInitReais(); };
+
 /* -------------------- OPERAÇÃO BELÉM -------------------- */
 renderers.belem = () => {
   const b = DATA.belem;
