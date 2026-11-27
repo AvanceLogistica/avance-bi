@@ -9957,6 +9957,7 @@ const PIER_TIPOS = [ { k:"carregamento", nome:"Carregamento", ic:"⬆️", cor:"
 const PIER_LOCAL = "avance_balsa_operacoes_v2";
 let PIER = { lista:[], carregado:false, carregando:false, erro:null };
 let PIER_MES = null, PIER_EDIT = null, PIER_SALVANDO = false;
+let PIER_PRE = null;   // operação sendo aberta a partir de "Balsas para descarga" (balsa, plano e id da balsa)
 
 const pierNome = (k) => (PIER_PIERS.find(p=>p.k===k)||{nome:k||"—"}).nome;
 const pierTipo = (k) => PIER_TIPOS.find(t=>t.k===k) || { k, nome:k||"—", ic:"", cor:"#5B5F6B" };
@@ -10015,7 +10016,7 @@ window.pierEscolher = (campo, v) => { const el = document.getElementById("pier-"
   document.querySelectorAll(`[data-pier-${campo}]`).forEach(b=>b.classList.toggle("on", b.getAttribute(`data-pier-${campo}`)===v)); };
 window.pierSetMes = (m) => { PIER_MES = m; navigate("pier"); };
 window.pierEditar = (id) => { PIER_EDIT = id; navigate("pier"); document.getElementById("pier-form")?.scrollIntoView({ behavior:"smooth", block:"center" }); };
-window.pierCancelar = () => { PIER_EDIT = null; navigate("pier"); };
+window.pierCancelar = () => { PIER_EDIT = null; PIER_PRE = null; navigate("pier"); };
 
 // Abrir (ou salvar a edição de) uma operação
 window.pierSalvar = async () => {
@@ -10036,7 +10037,12 @@ window.pierSalvar = async () => {
     if(outra && !confirm(`O pier ${pierNome(r.pier)} já tem a ${pierBalsaRot(outra)} aberta (${pierTipo(outra.tipo).nome}). Abrir mesmo assim?`)) return; }
   PIER_SALVANDO = true;
   try{
-    if(await pierGravar(r, !ed)){ toast(ed ? "✓ Operação atualizada" : `✓ ${pierBalsaRot(r)} aberta no pier ${pierNome(r.pier)}`); PIER_EDIT = null; navigate("pier"); }
+    if(await pierGravar(r, !ed)){
+      toast(ed ? "✓ Operação atualizada" : `✓ ${pierBalsaRot(r)} aberta no pier ${pierNome(r.pier)}`);
+      const t = !ed && PIER_PRE && PIER_PRE.transId ? TRANS.lista.find(x=>x.id===PIER_PRE.transId) : null;
+      if(t && (t.descarga !== undefined || !sb)) await transGravar({ ...t, descarga:r.data }, false);   // saiu de "Balsas para descarga"
+      PIER_EDIT = null; PIER_PRE = null; navigate("pier"); window.scrollTo({ top:0, behavior:"smooth" });
+    }
   } finally { PIER_SALVANDO = false; }
 };
 // viagens reais (+1 / −1 / digitado) numa operação aberta
@@ -10063,9 +10069,33 @@ window.pierFechar = async (id) => {
   const novo = { ...r, dataFim, fim, real: isNaN(real) ? r.real : Math.max(0, real) };
   if(pierCarr(r) && !isNaN(lib)) novo.liberado = Math.max(0, lib);
   const resumo = pierCarr(r) ? `plano ${r.plano}, liberado ${novo.liberado||0}, coleta ${novo.real}, pendência ${pierPend(novo)}` : `${novo.real} de ${r.plano} viagens`;
-  if(!confirm(`Fechar ${pierBalsaRot(r)} (${pierTipo(r.tipo).nome}, pier ${pierNome(r.pier)}) com ${resumo}?`)) return;
-  if(await pierGravar(novo, false)){ toast(`✓ ${pierBalsaRot(r)} fechada — ${resumo}`); pierRerender(); }
+  const lr = r.tipo === "descarga" ? `\n\nA balsa vai para o Controle de balsas (Logística Reversa SW) com abertura em ${fmtDataBR(dataFim)}.` : "";
+  if(!confirm(`Fechar ${pierBalsaRot(r)} (${pierTipo(r.tipo).nome}, pier ${pierNome(r.pier)}) com ${resumo}?${lr}`)) return;
+  if(await pierGravar(novo, false)){
+    toast(`✓ ${pierBalsaRot(r)} fechada — ${resumo}`);
+    if(r.tipo === "descarga") await balAbrirDaDescarga(novo);
+    pierRerender();
+  }
 };
+// Fechou a descarga: abre a balsa no Controle de balsas da Logística Reversa (tela Emissão de NF) com abertura = dia do fechamento
+async function balAbrirDaDescarga(r){
+  const data = r.dataFim, numero = r.numero || "";
+  const dup = (ls) => ls.some(b=>b.balsa===r.balsa && (b.numero||"")===numero && b.dataAbertura===data);
+  if(BAL.carregado && dup(BAL.lista)) return;
+  const b = { id:"tmp"+osNovoId(), atividade:"lr_sw", balsa:r.balsa, numero, dataAbertura:data, dataFechamento:"", dataDocumento:"", nfId:null, obs:"aberta pelo fechamento da descarga", por:(MEU_EMAIL||"").split("@")[0] };
+  if(sb){
+    const { data:ja } = await sb.from("balsas_viagens").select("id").eq("balsa", r.balsa).eq("data_abertura", data).limit(1);
+    if(ja && ja.length) return;
+    const { data:d, error } = await sb.from("balsas_viagens").insert({ atividade:b.atividade, balsa:b.balsa, numero:numero||null, data_abertura:data, obs:b.obs, criado_por:MEU_EMAIL, atualizado_por:MEU_EMAIL }).select().single();
+    if(error){ toast("⚠ A descarga fechou, mas não abriu no Controle de balsas: " + error.message); return; }
+    b.id = d.id;
+  } else {
+    let ls = []; try{ ls = JSON.parse(localStorage.getItem(BAL_LOCAL)||"[]"); }catch(e){}
+    if(dup(ls)) return; ls.unshift(b); try{ localStorage.setItem(BAL_LOCAL, JSON.stringify(ls)); }catch(e){}
+  }
+  if(BAL.carregado){ BAL.lista.unshift(b); if(!sb) balSalvarLocal(); }
+  toast(`⚓ ${balRotulo(b)} aberta no Controle de balsas (Logística Reversa SW) em ${fmtDataBR(data)}`);
+}
 window.pierReabrir = async (id) => {
   const r = PIER.lista.find(x=>x.id===id); if(!r || !confirm(`Reabrir ${pierBalsaRot(r)}?`)) return;
   if(await pierGravar({ ...r, dataFim:"", fim:"" }, false)) pierRerender();
@@ -10128,6 +10158,13 @@ window.transSalvar = async (k) => {
   try{ if(await transGravar(r, !ed)){ toast(ed ? "✓ Balsa atualizada" : `✓ ${r.balsa} lançada em ${T.nome}`); TRANS_EDIT = null; pierRerender(); } }
   finally { TRANS_SALVANDO = false; }
 };
+// "Abrir operação": preenche o formulário de abertura (descarga, balsa e plano = total) — falta só escolher o pier
+window.transAbrirOp = (id) => {
+  const r = TRANS.lista.find(x=>x.id===id); if(!r) return;
+  PIER_EDIT = null; PIER_PRE = { transId:id, balsa:r.balsa, plano:transTotal(r) };
+  navigate("pier");
+  setTimeout(()=>{ document.getElementById("pier-form")?.scrollIntoView({ behavior:"smooth", block:"center" }); }, 50);
+};
 window.transEditar = (id) => { TRANS_EDIT = id; pierRerender(); const r = TRANS.lista.find(x=>x.id===id); if(r) document.getElementById(`trans-${transTipo(r)}-form`)?.scrollIntoView({ behavior:"smooth", block:"center" }); };
 window.transCancelar = () => { TRANS_EDIT = null; pierRerender(); };
 async function transMudar(id, pergunta, campos, aviso){
@@ -10158,7 +10195,7 @@ function transPainel(k, hoje, balsas){
     if(k==="d") return d >= 0 ? cinza("chegou hoje") : cinza(`há ${dias(-d)}`);
     return d < 0 ? `<span class="badge red">atrasada ${dias(-d)}</span>` : d === 0 ? `<span class="badge green">chega hoje</span>` : cinza(`em ${dias(d)}`); };
   const acoes = (r) => k==="t" ? `<button class="os-btn sm" onclick="transChegou('${r.id}')">✅ Chegou</button>`
-    : `<button class="os-btn sm" onclick="transDescarregada('${r.id}')">✅ Descarregada</button>`;
+    : `<button class="os-btn sm green" onclick="transAbrirOp('${r.id}')">▶ Abrir operação</button> <button class="os-btn sm" onclick="transDescarregada('${r.id}')">✅ Descarregada</button>`;
   return `${abre}
       <h3>${T.ic} ${T.nome} (${ls.length})</h3>
       ${!ls.length ? `<div class="hint">${k==="t" ? "Nenhuma balsa em trânsito. Lance abaixo." : "Nenhuma balsa aguardando descarga. Lance abaixo ou use o botão Chegou nas balsas em trânsito."}</div>` : `<div style="overflow-x:auto; margin-top:8px;"><table class="nf-tab">
@@ -10193,7 +10230,8 @@ renderers.pier = () => {
   const fechMes = doMes.filter(r=>!pierAberta(r));
   const soma = (ls, k) => ls.reduce((s,r)=>s+(r[k]||0), 0);
   const ed = PIER_EDIT ? PIER.lista.find(r=>r.id===PIER_EDIT) : null;
-  const v = ed || { pier:"", tipo:"", balsa:"", numero:"", data:hoje, ini:pierAgoraHora(), plano:"", obs:"" };
+  const v = ed || (PIER_PRE ? { pier:"", tipo:"descarga", balsa:PIER_PRE.balsa, numero:"", data:hoje, ini:pierAgoraHora(), plano:PIER_PRE.plano||"", obs:"" }
+    : { pier:"", tipo:"", balsa:"", numero:"", data:hoje, ini:pierAgoraHora(), plano:"", obs:"" });
   let balsas = []; try{ balsas = nfBalsasConhecidas(); }catch(e){ balsas = NF_BALSAS_PADRAO; }
   const meses = [...new Set([hoje.slice(0,7), ...PIER.lista.map(r=>r.data.slice(0,7))])].sort().reverse();
   const nomeMes = (m) => `${MOS_MESES[Number(m.slice(5,7))-1]}/${m.slice(0,4)}`;
@@ -10252,8 +10290,9 @@ renderers.pier = () => {
       </table></div>`}
     </div>
 
-    <div class="panel" id="pier-form" style="margin-bottom:16px;">
-      <h3>${ed ? `✏️ Editar operação — ${osEsc(pierBalsaRot(ed))}` : "➕ Abrir operação de balsa"}</h3>
+    <div class="panel" id="pier-form" style="margin-bottom:16px; ${PIER_PRE && !ed ? "border:2px solid var(--green); box-shadow:0 0 0 4px #E4F5EE;" : ""}">
+      <h3>${ed ? `✏️ Editar operação — ${osEsc(pierBalsaRot(ed))}` : PIER_PRE ? `▶ Abrir operação de descarga — ${osEsc(PIER_PRE.balsa)}` : "➕ Abrir operação de balsa"}</h3>
+      ${PIER_PRE && !ed ? `<div class="hint" style="color:var(--green); font-weight:700;">Veio de "Balsas para descarga": a balsa e o plano (total ${PIER_PRE.plano}) já estão preenchidos. Escolha o <b>pier</b>, confira a hora e clique em 🟢 Abrir operação.</div>` : ""}
       <div class="hint">Escolha o pier e a operação, a balsa (mesmos nomes do Faturamento) com o nº da viagem, o dia/hora da abertura e o plano de viagens. O real é lançado durante a operação e no fechamento. No carregamento, lance o real liberado pela Combitrans e a coleta/puxa da Avance; a diferença é a pendência.</div>
       <div class="os-form pier-grid">
         <label>Pier<input type="hidden" id="pier-pier" value="${v.pier}"><div class="pier-opc">${PIER_PIERS.map(p=>`<button type="button" class="pier-b ${v.pier===p.k?"on":""}" data-pier-pier="${p.k}" onclick="pierEscolher('pier','${p.k}')">⚓ ${p.nome}</button>`).join("")}</div></label>
@@ -10271,7 +10310,7 @@ renderers.pier = () => {
       </div>
       <div style="display:flex; gap:8px; margin-top:12px;">
         <button class="entry-submit" style="margin:0;" onclick="pierSalvar()">${ed ? "💾 Salvar alterações" : "🟢 Abrir operação"}</button>
-        ${ed ? `<button class="os-btn" onclick="pierCancelar()">Cancelar</button>` : ""}
+        ${ed || PIER_PRE ? `<button class="os-btn" onclick="pierCancelar()">Cancelar</button>` : ""}
       </div>
       ${ed ? `<div class="hint" style="margin-top:8px;">Para reabrir uma operação fechada, apague o dia e a hora do fechamento e salve.</div>` : ""}
     </div>
